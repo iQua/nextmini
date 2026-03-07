@@ -1,3 +1,5 @@
+//! Controller-facing glue for lossless unicast flows.
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -24,6 +26,7 @@ pub struct LosslessUnicastFlowManager {
 }
 
 impl LosslessUnicastFlowManager {
+    /// Construct a flow manager backed by the shared lossless runtime.
     pub fn new(
         cfg: LocalConfig,
         processors: ProcessorHandle,
@@ -38,7 +41,7 @@ impl LosslessUnicastFlowManager {
         }
     }
 
-    /// Installs any lossless unicast flows that target the local node (as source and/or destination).
+    /// Install controller-assigned flows that involve the local node.
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
             // Compute deterministic session_id and client_port from Flow fields.
@@ -57,6 +60,7 @@ impl LosslessUnicastFlowManager {
         }
     }
 
+    /// Start the sender side of one controller-assigned lossless flow.
     fn spawn_sender(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The controller might hand us duration-based flows that do not resolve
         // to a byte count; we skip those early so we do not start half-baked
@@ -164,6 +168,7 @@ impl LosslessUnicastFlowManager {
         });
     }
 
+    /// Start the receiver side of one controller-assigned lossless flow.
     fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The receiver mirrors the sender's byte budget so the two sides agree
         // on when to terminate.

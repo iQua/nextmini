@@ -1,9 +1,12 @@
+//! Sender-side validation and mode selection for optional session FEC.
+
 use std::fmt::{Display, Formatter};
 
 use nextmini_messages::lossless_session::{LosslessSessionFecMode, LosslessSessionMode};
 
 use crate::node::config::{Feature, FecTreeIdsSource, LosslessConfig};
 
+/// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightError {
     RuntimeChannelClosed,
@@ -20,11 +23,13 @@ pub enum PreflightError {
     MultiTreeRequiresIngressBackpressure,
 }
 
+/// Runtime-derived sender policy after local validation succeeds.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SenderPolicy {
     pub mode: LosslessSessionMode,
 }
 
+/// Validate that a configured block size fits in the wire manifest.
 pub(super) fn validate_block_size(block_size: usize) -> Result<u32, PreflightError> {
     if block_size == 0 {
         return Err(PreflightError::InvalidBlockSize { value: block_size });
@@ -33,6 +38,7 @@ pub(super) fn validate_block_size(block_size: usize) -> Result<u32, PreflightErr
     u32::try_from(block_size).map_err(|_| PreflightError::BlockSizeTooLarge { value: block_size })
 }
 
+/// Derive the sender's transfer mode from the local runtime configuration.
 pub(super) fn derive_sender_policy(
     runtime_config: &LosslessConfig,
 ) -> Result<SenderPolicy, PreflightError> {
@@ -63,6 +69,7 @@ pub(super) fn derive_sender_policy(
     })
 }
 
+/// Resolve and validate the tree set used for FEC symbol striping.
 fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, PreflightError> {
     let requested_tree_ids = match runtime_config.fec_tree_ids_source {
         FecTreeIdsSource::Config => runtime_config.canonical_fec_default_tree_ids(),
@@ -105,6 +112,7 @@ fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, P
     Ok(requested_tree_ids)
 }
 
+/// Render ingress feature flags in stable lowercase form for error messages.
 fn feature_mode_label(feature: &Feature) -> &'static str {
     match feature {
         Feature::Sequential => "sequential",

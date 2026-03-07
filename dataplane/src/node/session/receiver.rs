@@ -1,3 +1,10 @@
+//! Receiver task for block-first lossless sessions.
+//!
+//! The receiver accepts a manifest, acknowledges completed plain blocks
+//! directly, and optionally accumulates FEC symbols until a block can be
+//! decoded. After `Eot`, incomplete FEC blocks trigger deficit feedback so the
+//! sender can emit additional fountain symbols.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use tokio::sync::mpsc;
@@ -15,6 +22,7 @@ use crate::node::session::plan::{BlockPlan, SymbolGeometry};
 use crate::node::session::runtime::ReceiverConfig;
 use crate::node::{NodeId, NodeIdExt};
 
+/// Run one receiver session until the transfer is complete or the channel closes.
 pub async fn run(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
@@ -24,6 +32,7 @@ pub async fn run(
     receiver.run(&mut rx).await;
 }
 
+/// Stateful receiver loop shared by plain and FEC transfer modes.
 struct SessionReceiver {
     cfg: ReceiverConfig,
     processors: ProcessorHandle,
@@ -37,12 +46,14 @@ struct SessionReceiver {
     eot_seen: bool,
 }
 
+/// Accumulated FEC symbols for one logical block.
 #[derive(Default)]
 struct FecBlockState {
     symbols: BTreeMap<u32, Vec<u8>>,
 }
 
 impl SessionReceiver {
+    /// Build receiver state for one lossless session.
     fn new(cfg: ReceiverConfig, processors: ProcessorHandle) -> Self {
         let src_ip = (cfg.common.local_node_id as NodeId)
             .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
@@ -63,6 +74,7 @@ impl SessionReceiver {
         }
     }
 
+    /// Execute the receiver loop until the object is complete.
     async fn run(&mut self, rx: &mut mpsc::Receiver<InboundFrame>) {
         info!(
             session_id = self.cfg.common.session_id,
@@ -91,6 +103,7 @@ impl SessionReceiver {
         );
     }
 
+    /// Return whether the receiver has observed `Eot` and completed every block.
     fn is_complete(&self) -> bool {
         let Some(plan) = self.plan else {
             return false;
@@ -98,6 +111,7 @@ impl SessionReceiver {
         self.eot_seen && self.complete_blocks.len() as u64 == plan.total_blocks()
     }
 
+    /// Handle one inbound control frame.
     async fn handle_control_frame(&mut self, frame: InboundFrame) {
         let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
             return;
@@ -123,6 +137,7 @@ impl SessionReceiver {
         }
     }
 
+    /// Install the first valid manifest and send READY.
     async fn install_manifest(&mut self, manifest: LosslessSessionManifest) {
         if let Some(existing) = &self.manifest {
             if existing == &manifest {
@@ -167,6 +182,7 @@ impl SessionReceiver {
         self.send_ready().await;
     }
 
+    /// Handle one plain data block.
     async fn handle_block_data_frame(&mut self, frame: InboundFrame) {
         let Some(manifest) = self.manifest.as_ref() else {
             return;
@@ -191,6 +207,7 @@ impl SessionReceiver {
         self.send_block_ack(data.block_id).await;
     }
 
+    /// Handle one FEC symbol frame.
     async fn handle_block_symbol_frame(&mut self, frame: InboundFrame) {
         let Some(manifest) = self.manifest.as_ref() else {
             return;
@@ -225,6 +242,7 @@ impl SessionReceiver {
         }
     }
 
+    /// Attempt to decode a complete-enough FEC block.
     async fn try_decode_fec_block(
         &mut self,
         block_id: u64,
@@ -280,6 +298,7 @@ impl SessionReceiver {
         true
     }
 
+    /// Copy one completed block payload into the optional sink buffer.
     async fn write_block(&self, block_id: u64, payload: &[u8]) {
         let Some(plan) = self.plan else {
             return;
@@ -304,6 +323,7 @@ impl SessionReceiver {
         }
     }
 
+    /// Ensure the optional sink buffer is large enough for the full object.
     async fn ensure_sink_buffer(&self) {
         let Some(sink) = &self.cfg.sink_buffer else {
             return;
@@ -315,6 +335,7 @@ impl SessionReceiver {
         }
     }
 
+    /// Send a READY control frame back to the sender.
     async fn send_ready(&self) {
         control::send_control(
             &self.processors,
@@ -333,6 +354,7 @@ impl SessionReceiver {
         .await;
     }
 
+    /// Acknowledge completion of one logical block.
     async fn send_block_ack(&self, block_id: u64) {
         control::send_control(
             &self.processors,
@@ -349,6 +371,7 @@ impl SessionReceiver {
         .await;
     }
 
+    /// Report the current deficit for one incomplete FEC block.
     async fn send_block_status(&self, block_id: u64) {
         let deficit = self.block_deficit(block_id);
         control::send_control(
@@ -371,6 +394,7 @@ impl SessionReceiver {
         .await;
     }
 
+    /// Compute how many additional source-equivalent symbols are still needed.
     fn block_deficit(&self, block_id: u64) -> u16 {
         let Some(manifest) = self.manifest.as_ref() else {
             return 1;
@@ -391,12 +415,14 @@ impl SessionReceiver {
         }
     }
 
+    /// Re-send block acknowledgements once `Eot` arrives.
     async fn reemit_completed_acks(&self) {
         for &block_id in &self.complete_blocks {
             self.send_block_ack(block_id).await;
         }
     }
 
+    /// Emit deficit feedback for every incomplete block after `Eot`.
     async fn send_status_for_incomplete_blocks(&self) {
         let Some(plan) = self.plan else {
             return;

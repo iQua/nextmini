@@ -1,3 +1,5 @@
+//! Shared per-block acknowledgement bookkeeping for sender sessions.
+
 use std::collections::BTreeMap;
 use std::error::Error;
 use std::fmt::{Display, Formatter};
@@ -78,6 +80,7 @@ pub struct SessionLedger {
 }
 
 impl SessionLedger {
+    /// Build a ledger sized for the full receiver set and block count.
     pub fn new(
         total_blocks: u64,
         receiver_ids: impl IntoIterator<Item = usize>,
@@ -116,14 +119,17 @@ impl SessionLedger {
         })
     }
 
+    /// Return the number of receivers participating in this session.
     pub fn receiver_count(&self) -> usize {
         self.receiver_ids.len()
     }
 
+    /// Report whether every registered receiver has acknowledged every block.
     pub fn is_complete(&self) -> bool {
         self.complete_blocks == self.total_blocks
     }
 
+    /// Return the aggregate completion state for one block.
     pub fn block_state(&self, block_id: u64) -> Option<BlockState> {
         let block = self.blocks.get(usize::try_from(block_id).ok()?)?;
         Some(if block.acked_receivers == self.receiver_count() {
@@ -133,6 +139,7 @@ impl SessionLedger {
         })
     }
 
+    /// Report whether a specific receiver has already acknowledged a block.
     pub fn receiver_has_acked(
         &self,
         receiver_id: usize,
@@ -143,6 +150,7 @@ impl SessionLedger {
         Ok(block.acked_by[receiver_pos])
     }
 
+    /// Apply one per-block acknowledgement and report the resulting transitions.
     pub fn ack_block(
         &mut self,
         receiver_id: usize,

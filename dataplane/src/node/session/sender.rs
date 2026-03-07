@@ -1,3 +1,9 @@
+//! Sender task for block-first lossless sessions.
+//!
+//! Plain mode sends complete blocks on the default tree. FEC mode sends source
+//! symbols first, emits `Eot` after the source sweep, and only then responds to
+//! per-block deficit feedback with extra fountain symbols.
+
 use std::collections::BTreeSet;
 use std::net::Ipv4Addr;
 
@@ -23,6 +29,7 @@ use crate::node::{NodeId, NodeIdExt};
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_WAIT: Duration = Duration::from_millis(10);
 
+/// Run one sender session until completion or channel shutdown.
 pub async fn run(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
@@ -39,6 +46,7 @@ pub async fn run(
     sender.run(&mut ctrl_rx).await;
 }
 
+/// Stateful sender loop shared by plain and FEC transfer modes.
 struct SessionSender {
     common: CommonConfig,
     processors: ProcessorHandle,
@@ -58,6 +66,7 @@ struct SessionSender {
     fec: Option<FecSenderState>,
 }
 
+/// Additional scheduling state required when FEC mode is enabled.
 struct FecSenderState {
     blocks: Vec<FecBlockState>,
     tree_ids: Vec<u16>,
@@ -68,6 +77,7 @@ struct FecSenderState {
     round_eot_sent: bool,
 }
 
+/// Per-block sender cursor and encoder state for FEC mode.
 struct FecBlockState {
     next_source_symbol: u32,
     next_fountain_symbol: u32,
@@ -75,6 +85,7 @@ struct FecBlockState {
     encoder: Option<Encoder>,
 }
 
+/// Source object wrapper used to derive block payloads and source symbols.
 #[derive(Clone)]
 struct BlockSource {
     bytes: Bytes,
@@ -82,10 +93,12 @@ struct BlockSource {
 }
 
 impl BlockSource {
+    /// Wrap the transfer bytes or repeating template used by the sender.
     fn new(bytes: Bytes, total_bytes: u64) -> Self {
         Self { bytes, total_bytes }
     }
 
+    /// Materialize one logical block payload for the requested span.
     fn block_payload(&self, span: BlockSpan) -> Vec<u8> {
         let len = span.len();
         let offset = usize::try_from(span.offset()).ok();
@@ -111,6 +124,7 @@ impl BlockSource {
         out
     }
 
+    /// Partition one logical block into fixed-size source symbols.
     fn source_symbols(&self, span: BlockSpan, geometry: SymbolGeometry) -> Vec<Vec<u8>> {
         let block = self.block_payload(span);
         let total_symbol_bytes = geometry.source_symbols() * geometry.symbol_size();
@@ -125,6 +139,7 @@ impl BlockSource {
 }
 
 impl SessionSender {
+    /// Build sender state from the validated runtime configuration.
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
         let plan = BlockPlan::new(cfg.total_bytes, cfg.common.block_size)
             .map_err(|_| "invalid block plan for sender")?;
@@ -158,6 +173,7 @@ impl SessionSender {
         })
     }
 
+    /// Execute the sender state machine for the negotiated transfer mode.
     async fn run(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
         info!(
             session_id = self.common.session_id,
@@ -185,6 +201,7 @@ impl SessionSender {
         );
     }
 
+    /// Wait for the runtime-level topology gate before beginning the handshake.
     async fn wait_topology_ready(&mut self) {
         let Some(rx) = self.topology_ready.as_mut() else {
             return;
@@ -200,6 +217,7 @@ impl SessionSender {
         }
     }
 
+    /// Repeatedly advertise the manifest until the READY gate opens.
     async fn negotiate_ready(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) -> bool {
         if self.receiver_set.is_empty() {
             return true;
@@ -246,6 +264,7 @@ impl SessionSender {
         true
     }
 
+    /// Main send loop for plain mode.
     async fn run_plain(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
         while !self.ledger.is_complete() {
             self.drain_controls(ctrl_rx);
@@ -269,6 +288,11 @@ impl SessionSender {
         }
     }
 
+    /// Main send loop for FEC mode.
+    ///
+    /// Source symbols are always sent before extra fountain symbols. The sender
+    /// only emits extra symbols after it has completed a source-symbol sweep
+    /// and received per-block deficit feedback.
     async fn run_fec(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
         while !self.ledger.is_complete() {
             self.drain_controls(ctrl_rx);
@@ -312,12 +336,14 @@ impl SessionSender {
         }
     }
 
+    /// Drain any queued control frames without blocking the send loop.
     fn drain_controls(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
         while let Ok(frame) = ctrl_rx.try_recv() {
             self.handle_control(frame);
         }
     }
 
+    /// Wait for either new control input or a short idle retry interval.
     async fn wait_for_signal(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) -> bool {
         tokio::select! {
             maybe_frame = ctrl_rx.recv() => {
@@ -331,6 +357,7 @@ impl SessionSender {
         }
     }
 
+    /// Apply one inbound control frame to the sender state machine.
     fn handle_control(&mut self, frame: InboundFrame) {
         let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
             return;
@@ -367,6 +394,7 @@ impl SessionSender {
         }
     }
 
+    /// Record additional symbol demand for one FEC block.
     fn handle_block_status(&mut self, peer_id: usize, status: BlockStatus) {
         if !self.receiver_set.contains(&peer_id) {
             return;
@@ -387,6 +415,7 @@ impl SessionSender {
         block.extra_budget = block.extra_budget.max(status.deficit_symbols);
     }
 
+    /// Drop encoder/cache state once a block is fully acknowledged.
     fn clear_completed_block(&mut self, block_id: u64) {
         let Some(fec) = self.fec.as_mut() else {
             return;
@@ -405,6 +434,7 @@ impl SessionSender {
         }
     }
 
+    /// Return the next plain block that still needs to be sent.
     fn next_plain_block(&mut self) -> Option<u64> {
         while self.plain_cursor < self.plan.total_blocks() {
             let block_id = self.plain_cursor;
@@ -417,6 +447,7 @@ impl SessionSender {
         None
     }
 
+    /// Return the next source symbol to send in FEC mode.
     fn next_fec_source_symbol(&mut self) -> Option<(u64, u32)> {
         let fec = self.fec.as_mut()?;
         let symbols_per_block = u32::from(fec.symbols_per_block);
@@ -433,6 +464,7 @@ impl SessionSender {
         None
     }
 
+    /// Return the next extra fountain symbol requested by a receiver.
     fn next_fec_extra_symbol(&mut self) -> Option<(u64, u32)> {
         let fec = self.fec.as_mut()?;
         for (block_idx, block) in fec.blocks.iter_mut().enumerate() {
@@ -447,6 +479,7 @@ impl SessionSender {
         None
     }
 
+    /// Send the negotiated manifest to every receiver.
     async fn send_manifest(&mut self) {
         control::send_control(
             &self.processors,
@@ -465,6 +498,7 @@ impl SessionSender {
         .await;
     }
 
+    /// Emit the end-of-transmission marker for the current send round.
     async fn send_eot(&mut self) {
         control::send_control(
             &self.processors,
@@ -481,6 +515,7 @@ impl SessionSender {
         .await;
     }
 
+    /// Encode and send one plain data block.
     async fn send_plain_block(&mut self, block_id: u64) {
         let Some(span) = self.plan.block_span(block_id) else {
             return;
@@ -503,6 +538,7 @@ impl SessionSender {
         .await;
     }
 
+    /// Encode and send one source symbol in FEC mode.
     async fn send_fec_source_symbol(&mut self, block_id: u64, symbol_id: u32) -> bool {
         let Some(payload) = self.source_symbol_payload(block_id, symbol_id) else {
             return false;
@@ -522,6 +558,7 @@ impl SessionSender {
         true
     }
 
+    /// Encode and send one extra fountain symbol in FEC mode.
     async fn send_fec_extra_symbol(&mut self, block_id: u64, symbol_id: u32) -> bool {
         let Some(payload) = self.extra_symbol_payload(block_id, symbol_id) else {
             return false;
@@ -542,6 +579,7 @@ impl SessionSender {
         true
     }
 
+    /// Try to emit one FEC symbol on the first tree that currently accepts it.
     fn try_send_fec_symbol(&mut self, block_id: u64, symbol_id: u32, payload: &[u8]) -> bool {
         let Some(fec) = self.fec.as_mut() else {
             return false;
@@ -588,6 +626,7 @@ impl SessionSender {
         false
     }
 
+    /// Return the cached source symbol payload for one block and symbol index.
     fn source_symbol_payload(&mut self, block_id: u64, symbol_id: u32) -> Option<Vec<u8>> {
         let fec = self.fec.as_mut()?;
         ensure_source_symbol_cache(&self.source, self.plan, fec, block_id)?;
@@ -596,6 +635,7 @@ impl SessionSender {
         symbols.get(idx).cloned()
     }
 
+    /// Lazily build an encoder and derive one extra fountain symbol payload.
     fn extra_symbol_payload(&mut self, block_id: u64, symbol_id: u32) -> Option<Vec<u8>> {
         let fec_state = self.fec.as_ref()?;
         let geometry = fec_state.geometry;
@@ -631,6 +671,7 @@ impl SessionSender {
             .map(|encoder| encoder.coded_symbol(symbol_id))
     }
 
+    /// Apply optional pacing before sending `bytes` bytes of payload.
     async fn pace(&mut self, bytes: usize) {
         if let Some(bucket) = self.pacer.as_mut() {
             bucket.wait_for_bytes(bytes).await;
@@ -638,6 +679,7 @@ impl SessionSender {
     }
 }
 
+/// Build the initial FEC sender state for a validated manifest.
 fn build_fec_state(
     manifest: &LosslessSessionManifest,
     plan: BlockPlan,
@@ -669,6 +711,7 @@ fn build_fec_state(
     }))
 }
 
+/// Refresh the cached source-symbol slice for `block_id` if needed.
 fn ensure_source_symbol_cache(
     source: &BlockSource,
     plan: BlockPlan,
@@ -686,11 +729,13 @@ fn ensure_source_symbol_cache(
     Some(())
 }
 
+/// Borrow mutable FEC state for one block.
 fn fec_block_mut(fec: &mut FecSenderState, block_id: u64) -> Option<&mut FecBlockState> {
     let idx = usize::try_from(block_id).ok()?;
     fec.blocks.get_mut(idx)
 }
 
+/// Borrow immutable FEC state for one block.
 fn fec_block_ref(fec: &FecSenderState, block_id: u64) -> Option<&FecBlockState> {
     let idx = usize::try_from(block_id).ok()?;
     fec.blocks.get(idx)

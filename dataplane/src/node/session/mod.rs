@@ -1,4 +1,8 @@
-//! The lossless session subsystem, shared by the dataplane sender and receiver tasks.
+//! Block-oriented lossless session support for the dataplane.
+//!
+//! This subsystem owns the sender and receiver tasks used for bulk transfers,
+//! the shared block geometry and acknowledgement helpers, the optional fountain
+//! code adapter, and the controller-facing unicast flow integration.
 
 pub mod api;
 pub mod control;

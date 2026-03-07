@@ -1,3 +1,5 @@
+//! Shared block and symbol geometry for block-first lossless sessions.
+
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
@@ -28,6 +30,7 @@ pub struct BlockPlan {
 }
 
 impl BlockPlan {
+    /// Derive block geometry for a transfer of `total_bytes` using `block_size`.
     pub fn new(total_bytes: u64, block_size: usize) -> Result<Self, PlanError> {
         if block_size == 0 {
             return Err(PlanError::BlockSizeZero);
@@ -46,18 +49,22 @@ impl BlockPlan {
         })
     }
 
+    /// Return the total number of logical blocks in the transfer.
     pub const fn total_blocks(&self) -> u64 {
         self.total_blocks
     }
 
+    /// Report whether `block_id` lies within the planned transfer range.
     pub fn contains_block(&self, block_id: u64) -> bool {
         block_id < self.total_blocks
     }
 
+    /// Return the highest valid block identifier, if any blocks exist.
     pub fn last_block_id(&self) -> Option<u64> {
         self.total_blocks.checked_sub(1)
     }
 
+    /// Return the byte offset of the start of `block_id`.
     pub fn block_offset(&self, block_id: u64) -> Option<u64> {
         if !self.contains_block(block_id) {
             return None;
@@ -66,6 +73,7 @@ impl BlockPlan {
         block_id.checked_mul(self.block_size as u64)
     }
 
+    /// Return the payload length for `block_id`, trimming the final block as needed.
     pub fn block_len(&self, block_id: u64) -> Option<usize> {
         if !self.contains_block(block_id) {
             return None;
@@ -84,6 +92,7 @@ impl BlockPlan {
         }
     }
 
+    /// Return the absolute byte span for one block.
     pub(crate) fn block_span(&self, block_id: u64) -> Option<BlockSpan> {
         let offset = self.block_offset(block_id)?;
         let len = self.block_len(block_id)?;
@@ -91,6 +100,7 @@ impl BlockPlan {
         Some(BlockSpan { offset, len })
     }
 
+    /// Derive the source-symbol layout used when FEC mode is enabled.
     pub fn symbol_geometry(&self, symbols_per_block: u16) -> Result<SymbolGeometry, PlanError> {
         SymbolGeometry::new(self.block_size, symbols_per_block)
     }
@@ -104,10 +114,12 @@ pub(crate) struct BlockSpan {
 }
 
 impl BlockSpan {
+    /// Return the absolute byte offset of this block within the transfer object.
     pub(crate) const fn offset(&self) -> u64 {
         self.offset
     }
 
+    /// Return the number of payload bytes stored in this block.
     pub(crate) const fn len(&self) -> usize {
         self.len
     }
@@ -121,6 +133,7 @@ pub struct SymbolGeometry {
 }
 
 impl SymbolGeometry {
+    /// Construct source-symbol geometry for one block size and symbol count.
     pub fn new(block_size: usize, symbols_per_block: u16) -> Result<Self, PlanError> {
         if block_size == 0 {
             return Err(PlanError::BlockSizeZero);
@@ -138,10 +151,12 @@ impl SymbolGeometry {
         })
     }
 
+    /// Return the number of systematic source symbols emitted per block.
     pub fn source_symbols(&self) -> usize {
         usize::from(self.symbols_per_block)
     }
 
+    /// Return the fixed on-the-wire symbol size in bytes.
     pub const fn symbol_size(&self) -> usize {
         self.symbol_size
     }

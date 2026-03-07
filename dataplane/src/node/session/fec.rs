@@ -28,6 +28,7 @@ pub struct BlockParams {
 }
 
 impl BlockParams {
+    /// Build a reusable encoder/decoder parameter bundle for one logical block.
     #[must_use]
     pub const fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
         Self {
@@ -52,9 +53,13 @@ impl BlockParams {
 /// Adapter-level representation of emitted source/coded symbols.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EncodedSymbol {
+    /// Encoding symbol identifier carried on the wire.
     pub esi: u32,
+    /// Raw symbol payload bytes.
     pub payload: Vec<u8>,
+    /// Whether this is a systematic source symbol.
     pub is_source: bool,
+    /// Placeholder degree metadata for callers that want to expose it later.
     pub degree: usize,
 }
 
@@ -167,16 +172,19 @@ impl Encoder {
         packets.into_iter().next().unwrap().data().to_vec()
     }
 
+    /// Return the next coded ESI that will be assigned by [`Self::emit_coded`].
     #[must_use]
     pub const fn next_coded_esi(&self) -> u32 {
         self.next_coded_esi
     }
 
+    /// Return the number of systematic source symbols in this block.
     #[must_use]
     pub fn source_symbol_count(&self) -> usize {
         self.k
     }
 
+    /// Return the fixed symbol size used by this encoder.
     #[must_use]
     pub fn symbol_size(&self) -> usize {
         self.symbol_size
@@ -186,16 +194,22 @@ impl Encoder {
 /// Lightweight decoder parameter view for callers that need sizing metadata.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DecoderParams {
+    /// Number of systematic source symbols expected for the block.
     pub source_symbols: usize,
+    /// Number of intermediate symbols exposed by the adapter.
     pub intermediate_symbols: usize,
+    /// Fixed symbol size used during decode.
     pub symbol_size: usize,
 }
 
 /// Adapter-level decode output.
 #[derive(Debug, Clone)]
 pub struct DecodeOutput {
+    /// Reconstructed source symbols in systematic order.
     pub source_symbols: Vec<Vec<u8>>,
+    /// Intermediate symbols exposed by the adapter, if any.
     pub intermediate_symbols: Vec<Vec<u8>>,
+    /// Aggregate decode statistics reported by the adapter.
     pub stats: DecodeStats,
 }
 
@@ -208,6 +222,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// Construct a decoder for one logical block.
     #[must_use]
     pub fn new(source_symbols: usize, symbol_size: usize, _seed: u64) -> Self {
         let params = BlockParams::new(source_symbols, symbol_size, _seed);
@@ -220,11 +235,13 @@ impl Decoder {
         }
     }
 
+    /// Construct a decoder from shared block parameters.
     #[must_use]
     pub fn from_block(params: BlockParams) -> Self {
         Self::new(params.source_symbols, params.symbol_size, params.seed)
     }
 
+    /// Return the sizing metadata implied by this decoder.
     #[must_use]
     pub fn params(&self) -> DecoderParams {
         DecoderParams {
@@ -256,6 +273,7 @@ impl Decoder {
         Vec::new()
     }
 
+    /// Attempt to reconstruct the source symbols from the received symbol set.
     pub fn decode(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
         let mut decoder = SourceBlockDecoder::new(0, &self.oti, self.block_length);
         let packets: Vec<EncodingPacket> = symbols
