@@ -347,7 +347,7 @@ def run_source(args: argparse.Namespace) -> None:
     )
     log(f"Controller assigned group {group_id} ({group_ip}).", args.quiet)
     log(
-        f"Receiver IDs={receiver_ids} chunk_size={args.chunk_size}",
+        f"Receiver IDs={receiver_ids} block_size={args.chunk_size}",
         args.quiet,
     )
     log(
@@ -418,7 +418,7 @@ def run_source(args: argparse.Namespace) -> None:
         group_ip,
         receiver_ids,
         view,
-        chunk_size=args.chunk_size,
+        block_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
@@ -471,7 +471,7 @@ def run_receiver(args: argparse.Namespace) -> None:
         group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
-        chunk_size=args.chunk_size,
+        block_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
     )

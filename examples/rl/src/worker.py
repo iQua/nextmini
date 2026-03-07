@@ -111,7 +111,7 @@ class Worker:
             group_ip,
             src_node_id,
             expected_bytes=expected_bytes,
-            chunk_size=config.CHUNK_SIZE,
+            block_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT
         )
@@ -166,7 +166,7 @@ class Worker:
                         group_ip,
                         src_node_id,
                         expected_bytes=size,
-                        chunk_size=config.CHUNK_SIZE,
+                        block_size=config.CHUNK_SIZE,
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT
                     )
@@ -325,7 +325,7 @@ class Worker:
                         self.trainer_user_ip,
                         [self.trainer_node_id],
                         view,
-                        chunk_size=config.CHUNK_SIZE,
+                        block_size=config.CHUNK_SIZE,
                         src_port=self.local_port,
                         dst_port=self.trainer_port,
                     )

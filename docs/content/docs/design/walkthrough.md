@@ -4059,7 +4059,7 @@ pub use crate::node::session::fec_policy::PreflightError;
 pub struct CommonConfig {
     pub session_id: SessionId,
     pub dest_ip: Ipv4Addr,
-    pub chunk_size: usize,
+    pub block_size: usize,
     pub src_port: u16,
     pub dst_port: u16,
     pub data_bucket: Option<TokenBucketSpec>,
@@ -4094,15 +4094,7 @@ pub struct SenderConfig {
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
-    /// Optional FEC declaration. When present, sender uses strict FEC-only negotiation
-    /// and switches retirement semantics from cumulative chunk ACKs to per-block FEC status.
-    pub fec_manifest: Option<FecManifest>,
-    /// Explicit sender-allowed tree IDs for collaborative FEC dispatch.
-    pub fec_tree_ids: Vec<u16>,
-    /// Per-tree lane depth for collaborative FEC dispatch.
-    pub fec_tree_lane_depth: usize,
-    /// Max FEC symbols to dispatch per sender scheduler cycle.
-    pub fec_dispatch_burst: usize,
+    pub manifest: LosslessSessionManifest,
     pub ready_grace_ms: u64,
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -4566,14 +4558,14 @@ sed -n '220,760p' python-api/src/lib.rs
 #[pymethods]
 impl Dataplane {
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, chunk_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, block_size=8500, src_port=None, dst_port=None))]
     fn send_data(
         &self,
         group_id: u64,
         dest_ip: &str,
         receiver_ids: Vec<usize>,
         buffer: PacketView,
-        chunk_size: usize,
+        block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
@@ -4585,8 +4577,8 @@ impl Dataplane {
             ));
         }
 
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        if block_size == 0 {
+            return Err(PyRuntimeError::new_err("block_size must be positive."));
         }
 
         let total_bytes = buffer.inner.len() as u64;
@@ -4608,7 +4600,7 @@ impl Dataplane {
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: dest_ip_addr,
-                    chunk_size,
+                    block_size,
                     src_port: sp,
                     dst_port: dp,
                     data_bucket: runtime_config.data_bucket.clone(),
@@ -4639,14 +4631,14 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
         group_id: u64,
         dest_ip: &str,
         source_node_id: usize,
         expected_bytes: u64,
-        chunk_size: usize,
+        block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
@@ -4656,8 +4648,8 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
 
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        if block_size == 0 {
+            return Err(PyRuntimeError::new_err("block_size must be positive."));
         }
 
         // Compute deterministic session_id from group_id and source_node_id
@@ -4672,7 +4664,7 @@ impl Dataplane {
                 let common = session::runtime::CommonConfig {
                     session_id: sid,
                     dest_ip: ip,
-                    chunk_size,
+                    block_size,
                     src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
                     dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
                     data_bucket: runtime_config.data_bucket.clone(),
@@ -4700,7 +4692,7 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, chunk_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
@@ -4708,15 +4700,15 @@ impl Dataplane {
         dest_ip: String,
         source_node_id: usize,
         expected_bytes: u64,
-        chunk_size: usize,
+        block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<Bound<'py, PyAny>> {
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
-        if chunk_size == 0 {
-            return Err(PyRuntimeError::new_err("chunk_size must be positive."));
+        if block_size == 0 {
+            return Err(PyRuntimeError::new_err("block_size must be positive."));
         }
 
         // Compute deterministic session_id from group_id and source_node_id
@@ -4742,7 +4734,7 @@ impl Dataplane {
                     let common = session::runtime::CommonConfig {
                         session_id: sid,
                         dest_ip: ip,
-                        chunk_size,
+                        block_size,
                         src_port: sp,
                         dst_port: dp,
                         data_bucket: runtime_config.data_bucket.clone(),
