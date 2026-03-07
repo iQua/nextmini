@@ -28,6 +28,7 @@ pub fn update_receiver_progress(
         | LosslessSessionControl::Ready { .. }
         | LosslessSessionControl::FecCapabilities { .. }
         | LosslessSessionControl::FecStatus { .. }
+        | LosslessSessionControl::FecCancel { .. }
         | LosslessSessionControl::Eot { .. } => None,
     }
 }
@@ -63,6 +64,7 @@ pub fn update_receiver_fec_status(
         | LosslessSessionControl::Ready { .. }
         | LosslessSessionControl::FecCapabilities { .. }
         | LosslessSessionControl::Ack { .. }
+        | LosslessSessionControl::FecCancel { .. }
         | LosslessSessionControl::Eot { .. } => None,
     }
 }
