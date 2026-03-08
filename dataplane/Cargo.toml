@@ -45,7 +45,7 @@ hex = "0.4"
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-splice = "0.2"
 rtnetlink = "0.20"
-nix = { version = "0.31", features = ["sched", "hostname", "fs", "mman"] }
+nix = { version = "0.31", features = ["sched", "hostname", "fs", "mman", "signal"] }
 
 [features]
 default = []
