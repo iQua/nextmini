@@ -221,7 +221,6 @@ mod tests {
             .collect();
 
         let params = BlockParams::new(k, symbol_size, 0);
-        let encoder = Encoder::from_block(params, &source_data).unwrap();
         let decoder = Decoder::from_block(params);
 
         let symbols: Vec<ReceivedSymbol> = source_data
