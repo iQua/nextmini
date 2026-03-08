@@ -13,10 +13,12 @@ use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::LosslessSessionManifest;
 
 use crate::node::config::LosslessConfig;
-use crate::node::processor::ProcessorHandle;
+use crate::node::packet::{LosslessTransportMeta, Packet};
+use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
 use crate::node::session::api::{Command, InboundFrame, SessionId};
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::{fec_policy, receiver, sender};
+use crate::node::{NodeId, NodeIdExt};
 
 pub use crate::node::session::fec_policy::PreflightError;
 
@@ -297,6 +299,7 @@ impl LosslessRuntime {
         manifest
             .validate()
             .expect("runtime-derived manifest must validate");
+        self.validate_sender_ingress_contract(&req.common, &manifest)?;
 
         let mut cfg = SenderConfig {
             common: req.common,
@@ -319,6 +322,43 @@ impl LosslessRuntime {
         self.tasks.insert(sid, sender_handle);
 
         Ok(sid)
+    }
+
+    /// Reject multi-tree FEC sessions unless processor ingress exposes
+    /// tree-specific non-blocking backpressure for this exact path.
+    fn validate_sender_ingress_contract(
+        &self,
+        common: &CommonConfig,
+        manifest: &LosslessSessionManifest,
+    ) -> Result<(), PreflightError> {
+        let nextmini_messages::lossless_session::LosslessSessionMode::Fec(fec) = &manifest.mode
+        else {
+            return Ok(());
+        };
+        if fec.tree_ids.len() <= 1 {
+            return Ok(());
+        }
+
+        let src_ip = (common.local_node_id as NodeId)
+            .ip_addr(common.user_space_base_addr, common.local_netmask);
+        let probe = Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            src_ip,
+            common.src_port,
+            common.dest_ip,
+            common.dst_port,
+            Some(LosslessTransportMeta {
+                session_id: common.session_id,
+                tree_id: Some(fec.tree_ids[0]),
+            }),
+            b"x",
+        );
+        if self.processors.lossless_ingress_contract(&probe)
+            != LosslessIngressContract::TreeVisibleNonBlocking
+        {
+            return Err(PreflightError::MultiTreeRequiresTreeVisibleIngress);
+        }
+
+        Ok(())
     }
 
     /// Allocate an ingress channel and spawn the receiver task.

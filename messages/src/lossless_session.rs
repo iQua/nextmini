@@ -697,7 +697,12 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             }
 
             let mode = match mode_kind {
-                LosslessSessionModeKind::Plain => LosslessSessionMode::Plain,
+                LosslessSessionModeKind::Plain => {
+                    if scheme != 0 || symbols_per_block != 0 || !tree_ids.is_empty() {
+                        return None;
+                    }
+                    LosslessSessionMode::Plain
+                }
                 LosslessSessionModeKind::Fec => LosslessSessionMode::Fec(LosslessSessionFecMode {
                     scheme,
                     symbols_per_block,
@@ -1021,6 +1026,30 @@ mod tests {
         );
         bad_tree_count[LosslessSessionHeader::LEN + 2] = 7;
         assert!(decode_control(&bad_tree_count).is_none());
+    }
+
+    #[test]
+    fn decode_control_rejects_plain_manifest_with_fec_fields() {
+        let mut encoded = encode_control(
+            11,
+            &LosslessSessionControl::Manifest {
+                manifest: plain_manifest(),
+            },
+        );
+        let body_start = LosslessSessionHeader::LEN;
+
+        encoded[body_start + 1] = FecScheme::RaptorQ as u8;
+        encoded[body_start + 2] = 1;
+        encoded[body_start + 24..body_start + 26].copy_from_slice(&4u16.to_be_bytes());
+        encoded.extend_from_slice(&7u16.to_be_bytes());
+
+        let body_len = MANIFEST_FIXED_BODY_LEN + 2;
+        encoded[16..20].copy_from_slice(&(body_len as u32).to_be_bytes());
+
+        assert!(
+            decode_control(&encoded).is_none(),
+            "plain manifests must not carry FEC scheme, symbol, or tree-id fields"
+        );
     }
 
     #[test]

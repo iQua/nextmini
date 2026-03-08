@@ -11,6 +11,7 @@ use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::LosslessRuntimeHandle;
 use nextmini::node::session::runtime::{CommonConfig, PreflightError, SenderRequest};
+use nextmini_messages::OperatingMode;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionMode};
 
 struct RuntimeHarness {
@@ -153,6 +154,36 @@ async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
             Err(PreflightError::TreeIdsMustBeSortedUnique { .. })
         ),
         "tree ids should be validated, not canonicalized"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_multitree_fec_when_ingress_contract_is_shared_queue() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        operating_mode: OperatingMode::Max,
+        feature: nextmini::node::config::Feature::Sequential,
+        channel_backpressure: true,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_symbols_per_block = 4;
+    runtime_cfg.fec_default_tree_ids = vec![1, 3];
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2004).await;
+
+    assert!(
+        matches!(
+            started,
+            Err(PreflightError::MultiTreeRequiresTreeVisibleIngress)
+        ),
+        "multi-tree FEC should be rejected when processor ingress collapses onto a shared queue"
     );
 }
 

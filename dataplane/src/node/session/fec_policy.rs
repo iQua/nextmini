@@ -20,6 +20,7 @@ pub enum PreflightError {
     TooManyTreeIds { configured: usize, max: usize },
     MultiTreeRequiresSequentialIngress { feature: Feature },
     MultiTreeRequiresIngressBackpressure,
+    MultiTreeRequiresTreeVisibleIngress,
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -145,6 +146,10 @@ impl Display for PreflightError {
             Self::MultiTreeRequiresIngressBackpressure => write!(
                 f,
                 "collaborative multi-tree fec requires channel_backpressure=true to avoid ingress drops"
+            ),
+            Self::MultiTreeRequiresTreeVisibleIngress => write!(
+                f,
+                "collaborative multi-tree fec requires tree-visible non-blocking ingress for this session path"
             ),
         }
     }
