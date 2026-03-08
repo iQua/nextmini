@@ -39,9 +39,13 @@ sets.
     session runtime behavior.
 - **Validation**:
   - `cargo test -p nextmini --test plain_transfer -- --nocapture`
-- **Status**: Pending
+- **Status**: Completed
 - **Work Log**:
-  - Not started.
+  - Added `dataplane/tests/plain_transfer.rs`.
+  - Covered plain receiver `Ready`/`BlockAck`/sink-write behavior and plain sender
+    completion after `BlockAck`.
+  - Shifted from a bridged sender+receiver test to focused sender/receiver tests
+    after the bridge harness proved flaky and unnecessary for this coverage gap.
 
 ### T2: Add multi-block transfer coverage
 
@@ -59,9 +63,13 @@ sets.
   - Verifies block IDs beyond `0` are exercised by the integration path.
 - **Validation**:
   - `cargo test -p nextmini --test multiblock_transfer -- --nocapture`
-- **Status**: Pending
+- **Status**: Completed
 - **Work Log**:
-  - Not started.
+  - Added `dataplane/tests/multiblock_transfer.rs`.
+  - Covered multi-block plain sender emission, plain receiver writes/acks, FEC
+    sender symbol emission across blocks, and FEC receiver decode/ack across
+    multiple blocks.
+  - Exercised block IDs `0`, `1`, and `2` through the integration path.
 
 ### T3: Add multi-receiver completion coverage
 
@@ -80,9 +88,12 @@ sets.
   - Keeps coverage aligned with per-block, non-cumulative ACK semantics.
 - **Validation**:
   - `cargo test -p nextmini --test multi_receiver -- --nocapture`
-- **Status**: Pending
+- **Status**: Completed
 - **Work Log**:
-  - Not started.
+  - Added `dataplane/tests/multi_receiver.rs`.
+  - Covered sender completion gating across two receivers and two blocks.
+  - Verified the session remains incomplete until every receiver has acknowledged
+    every block.
 
 ### T4: Add topology-ready and ready-grace coverage
 
@@ -101,9 +112,12 @@ sets.
     internals.
 - **Validation**:
   - `cargo test -p nextmini --test runtime_ready -- --nocapture`
-- **Status**: Pending
+- **Status**: Completed
 - **Work Log**:
-  - Not started.
+  - Added `dataplane/tests/runtime_ready.rs`.
+  - Covered topology-ready gating before handshake start and ready-grace opening
+    behavior when no `Ready` arrives.
+  - Verified both tests use the public runtime/session APIs.
 
 ### T5: Integrate and validate the expanded suite
 
@@ -126,6 +140,8 @@ sets.
   - `cargo test -p nextmini --test multi_receiver -- --nocapture`
   - `cargo test -p nextmini --test runtime_ready -- --nocapture`
   - `cargo nextest run --no-default-features --features python-extension --features dev-tests`
-- **Status**: Pending
+- **Status**: Completed
 - **Work Log**:
-  - Not started.
+  - Ran targeted integration tests for the new coverage files.
+  - Ran `cargo nextest run --no-default-features --features python-extension --features dev-tests`.
+  - Final suite result: `362` tests passed, `0` failed.
