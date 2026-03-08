@@ -94,12 +94,6 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
         LosslessSessionControl::BlockAck { block_id: 0 }
     );
 
-    tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
-        peer_id: Some(SOURCE_NODE_ID),
-    })
-    .await
-    .expect("eot should reach receiver");
     drop(tx);
 
     timeout(Duration::from_secs(2), receiver_task)

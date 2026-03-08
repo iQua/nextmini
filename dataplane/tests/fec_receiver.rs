@@ -164,16 +164,11 @@ async fn receiver_acks_decoded_block_and_writes_sink() {
         "receiver should ack the completed block after decoding it"
     );
 
-    send_frame(
-        &harness.tx,
-        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
-    )
-    .await;
     drop(harness.tx);
 
     timeout(Duration::from_secs(2), harness.receiver_task)
         .await
-        .expect("receiver task should stop after EOT and completion")
+        .expect("receiver task should stop after block completion")
         .expect("receiver task should exit cleanly");
 
     let sink = harness.sink.lock().await.clone();

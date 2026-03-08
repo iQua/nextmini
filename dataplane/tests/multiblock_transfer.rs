@@ -173,12 +173,6 @@ async fn plain_receiver_writes_and_acks_every_block() {
     }
     assert_eq!(acked, BTreeSet::from([0, 1, 2]));
 
-    tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(0xA11C_E102, &LosslessSessionControl::Eot),
-        peer_id: Some(SOURCE_NODE_ID),
-    })
-    .await
-    .expect("eot should reach receiver");
     drop(tx);
 
     timeout(Duration::from_secs(2), receiver_task)
@@ -358,12 +352,6 @@ async fn fec_receiver_decodes_and_acks_every_block() {
     }
     assert_eq!(acked, BTreeSet::from([0, 1, 2]));
 
-    tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(0xA11C_E104, &LosslessSessionControl::Eot),
-        peer_id: Some(SOURCE_NODE_ID),
-    })
-    .await
-    .expect("eot should reach receiver");
     drop(tx);
 
     timeout(Duration::from_secs(2), receiver_task)
