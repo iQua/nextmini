@@ -103,12 +103,12 @@ impl SessionReceiver {
         );
     }
 
-    /// Return whether the receiver has observed `Eot` and completed every block.
+    /// Return whether the receiver has completed every planned block.
     fn is_complete(&self) -> bool {
         let Some(plan) = self.plan else {
             return false;
         };
-        self.eot_seen && self.complete_blocks.len() as u64 == plan.total_blocks()
+        self.complete_blocks.len() as u64 == plan.total_blocks()
     }
 
     /// Handle one inbound control frame.
@@ -489,5 +489,44 @@ mod tests {
         };
 
         assert_eq!(receiver.block_deficit(0), 3);
+    }
+
+    #[test]
+    fn receiver_completion_does_not_require_eot() {
+        let receiver = SessionReceiver {
+            cfg: ReceiverConfig {
+                common: crate::node::session::runtime::CommonConfig {
+                    session_id: 8,
+                    dest_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                    block_size: 8,
+                    src_port: 1,
+                    dst_port: 2,
+                    data_bucket: None,
+                    local_node_id: 1,
+                    user_space_base_addr: std::net::Ipv4Addr::new(10, 0, 0, 0),
+                    local_netmask: std::net::Ipv4Addr::new(255, 255, 255, 0),
+                },
+                source_node_id: 2,
+                expected_bytes: 16,
+                sink_buffer: None,
+                fec_enabled: false,
+            },
+            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
+            src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+            dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+            manifest: Some(LosslessSessionManifest {
+                block_size: 8,
+                total_bytes: 16,
+                total_blocks: 2,
+                mode: LosslessSessionMode::Plain,
+            }),
+            plan: BlockPlan::new(16, 8).ok(),
+            geometry: None,
+            complete_blocks: BTreeSet::from([0, 1]),
+            fec_blocks: BTreeMap::new(),
+            eot_seen: false,
+        };
+
+        assert!(receiver.is_complete());
     }
 }
