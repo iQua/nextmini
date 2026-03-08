@@ -129,7 +129,6 @@ dp_dst.set_group_routes(group_id=1, edges=[(1, 2), (2, 3)])
 
 recv_sid = dp_dst.receive_data(
     group_id=1,
-    dest_ip="239.255.0.10",
     source_node_id=1,
     expected_bytes=1_024_000,
     block_size=8192,

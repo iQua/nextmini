@@ -4035,24 +4035,28 @@ use crate::node::session::{fec_policy, receiver, sender};
 
 pub use crate::node::session::fec_policy::PreflightError;
 
-/// Socket addressing and runtime knobs shared by senders and receivers.
+/// Shared per-session settings.
 #[derive(Clone, Debug)]
-pub struct CommonConfig {
+pub struct SessionConfig {
     pub session_id: SessionId,
-    pub dest_ip: Ipv4Addr,
     pub block_size: usize,
-    pub src_port: u16,
-    pub dst_port: u16,
-    pub data_bucket: Option<TokenBucketSpec>,
-    pub local_node_id: usize,
-    pub user_space_base_addr: Ipv4Addr,
-    pub local_netmask: Ipv4Addr,
 }
 
-/// Sender-only configuration (fan-out, source path, ready grace, etc.).
+/// Precomputed transport envelope used for data/control traffic.
+#[derive(Clone, Debug)]
+pub struct TransportRoute {
+    pub src_ip: Ipv4Addr,
+    pub dst_ip: Ipv4Addr,
+    pub src_port: u16,
+    pub dst_port: u16,
+}
+
+/// Sender-only configuration (fan-out, source path, pacing, ready grace, etc.).
 #[derive(Clone, Debug)]
 pub struct SenderRequest {
-    pub common: CommonConfig,
+    pub session: SessionConfig,
+    pub route: TransportRoute,
+    pub pacing: Option<TokenBucketSpec>,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
@@ -4062,8 +4066,9 @@ pub struct SenderRequest {
 /// Receiver-only request payload accepted at the runtime API boundary.
 #[derive(Clone, Debug)]
 pub struct ReceiverRequest {
-    pub common: CommonConfig,
-    pub source_node_id: usize,
+    pub session: SessionConfig,
+    pub route: TransportRoute,
+    pub local_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
@@ -4071,7 +4076,9 @@ pub struct ReceiverRequest {
 /// Sender task configuration after runtime derives internal FEC policy.
 #[derive(Clone, Debug)]
 pub struct SenderConfig {
-    pub common: CommonConfig,
+    pub session: SessionConfig,
+    pub route: TransportRoute,
+    pub pacing: Option<TokenBucketSpec>,
     pub receiver_ids: Vec<usize>,
     pub total_bytes: u64,
     pub source_buffer: Bytes,
@@ -4083,12 +4090,12 @@ pub struct SenderConfig {
 /// Receiver task configuration after runtime derives internal FEC policy.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
-    pub common: CommonConfig,
-    pub source_node_id: usize,
+    pub session: SessionConfig,
+    pub route: TransportRoute,
+    pub local_node_id: usize,
     pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
-    /// Advertised FEC capabilities for sender preflight compatibility checks.
-    pub fec_capabilities: FecCapabilities,
+    pub fec_enabled: bool,
 }
 
 /// Handle for communicating with the lossless runtime actor.
@@ -4578,19 +4585,23 @@ impl Dataplane {
                 let runtime_config = &self.cfg.lossless_runtime_config;
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
-                let common = session::runtime::CommonConfig {
+                let session_cfg = session::runtime::SessionConfig {
                     session_id: sid,
-                    dest_ip: dest_ip_addr,
                     block_size,
+                };
+                let route = session::runtime::TransportRoute {
+                    src_ip: self
+                        .cfg
+                        .node_id
+                        .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask),
+                    dst_ip: dest_ip_addr,
                     src_port: sp,
                     dst_port: dp,
-                    data_bucket: runtime_config.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
                 };
                 let cfg = session::runtime::SenderRequest {
-                    common,
+                    session: session_cfg,
+                    route,
+                    pacing: runtime_config.data_bucket.clone(),
                     receiver_ids,
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
@@ -4612,19 +4623,16 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
         group_id: u64,
-        dest_ip: &str,
         source_node_id: usize,
         expected_bytes: u64,
         block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
-        #[allow(unused_variables)]
-        let ip = parse_ipv4(dest_ip)?;
         if expected_bytes == 0 {
             return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
         }
@@ -4639,22 +4647,26 @@ impl Dataplane {
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.lossless_runtime {
-                let runtime_config = &self.cfg.lossless_runtime_config;
                 let cap = usize::try_from(expected_bytes).unwrap_or(0);
                 let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
-                let common = session::runtime::CommonConfig {
-                    session_id: sid,
-                    dest_ip: ip,
-                    block_size,
-                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
-                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
-                    data_bucket: runtime_config.data_bucket.clone(),
-                    local_node_id: self.cfg.node_id,
-                    user_space_base_addr: self.cfg.user_space_base_addr,
-                    local_netmask: self.cfg.local_netmask,
-                };
                 let cfg = session::runtime::ReceiverRequest {
-                    common,
+                    session: session::runtime::SessionConfig {
+                        session_id: sid,
+                        block_size,
+                    },
+                    route: session::runtime::TransportRoute {
+                        src_ip: self.cfg.node_id.user_space_ip(
+                            self.cfg.user_space_base_addr,
+                            self.cfg.local_netmask,
+                        ),
+                        dst_ip: source_node_id.user_space_ip(
+                            self.cfg.user_space_base_addr,
+                            self.cfg.local_netmask,
+                        ),
+                        src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                        dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                    },
+                    local_node_id: self.cfg.node_id,
                     source_node_id,
                     expected_bytes,
                     sink_buffer: Some(sink_buf.clone()),
@@ -4673,12 +4685,11 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
         group_id: u64,
-        dest_ip: String,
         source_node_id: usize,
         expected_bytes: u64,
         block_size: usize,
@@ -4699,7 +4710,6 @@ impl Dataplane {
         {
             if let Some(handle) = &self.lossless_runtime {
                 let handle = handle.clone();
-                let runtime_config = self.cfg.lossless_runtime_config.clone();
                 let buffer_registry = self.buffer_registry.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
@@ -4708,23 +4718,20 @@ impl Dataplane {
                 let netmask = self.cfg.local_netmask;
 
                 return future_into_py(py, async move {
-                    let ip = parse_ipv4(&dest_ip)?;
-
                     let cap = usize::try_from(expected_bytes).unwrap_or(0);
                     let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
-                    let common = session::runtime::CommonConfig {
-                        session_id: sid,
-                        dest_ip: ip,
-                        block_size,
-                        src_port: sp,
-                        dst_port: dp,
-                        data_bucket: runtime_config.data_bucket.clone(),
-                        local_node_id,
-                        user_space_base_addr: base_addr,
-                        local_netmask: netmask,
-                    };
                     let cfg = session::runtime::ReceiverRequest {
-                        common,
+                        session: session::runtime::SessionConfig {
+                            session_id: sid,
+                            block_size,
+                        },
+                        route: session::runtime::TransportRoute {
+                            src_ip: local_node_id.user_space_ip(base_addr, netmask),
+                            dst_ip: source_node_id.user_space_ip(base_addr, netmask),
+                            src_port: sp,
+                            dst_port: dp,
+                        },
+                        local_node_id,
                         source_node_id,
                         expected_bytes,
                         sink_buffer: Some(sink_buf.clone()),
@@ -4744,7 +4751,7 @@ impl Dataplane {
         }
 
         #[cfg(not(feature = "python-extension"))]
-        let _ = (&dest_ip, src_port, dst_port);
+        let _ = (src_port, dst_port);
 
         // Fallback if feature disabled (immediate return)
         future_into_py(py, async move {

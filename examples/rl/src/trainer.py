@@ -572,7 +572,6 @@ class Trainer:
                     # IMPORTANT: Register receiver FIRST, before signaling worker
                     sid = self.dataplane.receive_data(
                         rollout_group_id,
-                        self.user_space_address,
                         worker_node_id,
                         expected_bytes=size,
                         block_size=config.CHUNK_SIZE,

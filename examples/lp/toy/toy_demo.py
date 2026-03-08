@@ -262,7 +262,6 @@ def run_receiver(args: argparse.Namespace) -> nm.Dataplane:
         async def receive_wrapper() -> int:
             return await dp.receive_data_async(
                 group_id,
-                group_ip,
                 src_node_id,
                 expected_bytes=expected_bytes,
                 block_size=int(meta.get("block_size", args.chunk_size)),

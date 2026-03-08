@@ -468,7 +468,6 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     sid = dataplane.receive_data(
         group_id,
-        group_ip,
         args.source_node_id,
         expected_bytes=args.expected_bytes,
         block_size=args.chunk_size,
