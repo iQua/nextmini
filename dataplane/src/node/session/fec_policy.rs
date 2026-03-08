@@ -6,7 +6,7 @@ use nextmini_messages::lossless_session::{
     LosslessSessionFecMode, LosslessSessionMode, MAX_MANIFEST_TREE_IDS,
 };
 
-use crate::node::config::{Feature, LosslessConfig};
+use crate::node::config::LosslessConfig;
 
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,8 +18,6 @@ pub enum PreflightError {
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
-    MultiTreeRequiresSequentialIngress { feature: Feature },
-    MultiTreeRequiresIngressBackpressure,
     MultiTreeRequiresTreeVisibleIngress,
 }
 
@@ -84,26 +82,7 @@ fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, P
         });
     }
 
-    if tree_count > 1 {
-        if runtime_config.ingress_feature != Feature::Sequential {
-            return Err(PreflightError::MultiTreeRequiresSequentialIngress {
-                feature: runtime_config.ingress_feature.clone(),
-            });
-        }
-        if !runtime_config.ingress_channel_backpressure {
-            return Err(PreflightError::MultiTreeRequiresIngressBackpressure);
-        }
-    }
-
     Ok(requested_tree_ids)
-}
-
-/// Render ingress feature flags in stable lowercase form for error messages.
-fn feature_mode_label(feature: &Feature) -> &'static str {
-    match feature {
-        Feature::Sequential => "sequential",
-        Feature::Concurrent => "concurrent",
-    }
 }
 
 impl Display for PreflightError {
@@ -137,15 +116,6 @@ impl Display for PreflightError {
             Self::TooManyTreeIds { configured, max } => write!(
                 f,
                 "configured fec tree_ids length {configured} exceeds wire manifest capacity {max}"
-            ),
-            Self::MultiTreeRequiresSequentialIngress { feature } => write!(
-                f,
-                "collaborative multi-tree fec requires sequential ingress (feature={})",
-                feature_mode_label(feature)
-            ),
-            Self::MultiTreeRequiresIngressBackpressure => write!(
-                f,
-                "collaborative multi-tree fec requires channel_backpressure=true to avoid ingress drops"
             ),
             Self::MultiTreeRequiresTreeVisibleIngress => write!(
                 f,
