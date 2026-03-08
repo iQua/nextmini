@@ -89,37 +89,28 @@ struct FecBlockState {
 #[derive(Clone)]
 struct BlockSource {
     bytes: Bytes,
-    total_bytes: u64,
 }
 
 impl BlockSource {
     /// Wrap the transfer bytes or repeating template used by the sender.
-    fn new(bytes: Bytes, total_bytes: u64) -> Self {
-        Self { bytes, total_bytes }
+    fn new(bytes: Bytes) -> Self {
+        Self { bytes }
     }
 
     /// Materialize one logical block payload for the requested span.
     fn block_payload(&self, span: BlockSpan) -> Vec<u8> {
         let len = span.len();
-        let offset = usize::try_from(span.offset()).ok();
-        let full_object_len = usize::try_from(self.total_bytes).ok();
-
-        if let (Some(offset), Some(full_len)) = (offset, full_object_len)
-            && self.bytes.len() >= full_len
-            && offset + len <= self.bytes.len()
-        {
+        let Some(offset) = usize::try_from(span.offset()).ok() else {
+            return vec![0u8; len];
+        };
+        if offset + len <= self.bytes.len() {
             return self.bytes.slice(offset..offset + len).to_vec();
         }
 
-        if self.bytes.is_empty() {
-            return vec![0u8; len];
-        }
-
-        let mut out = Vec::with_capacity(len);
-        while out.len() < len {
-            let remaining = len - out.len();
-            let take = remaining.min(self.bytes.len());
-            out.extend_from_slice(&self.bytes[..take]);
+        let mut out = vec![0u8; len];
+        if offset < self.bytes.len() {
+            let available = len.min(self.bytes.len() - offset);
+            out[..available].copy_from_slice(&self.bytes[offset..offset + available]);
         }
         out
     }
@@ -149,7 +140,7 @@ impl SessionSender {
             .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
         let pacer = cfg.common.data_bucket.clone().map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
-        let source = BlockSource::new(cfg.source_buffer.clone(), cfg.total_bytes);
+        let source = BlockSource::new(cfg.source_buffer.clone());
         let receiver_set = cfg.receiver_ids.iter().copied().collect::<BTreeSet<_>>();
         let fec = build_fec_state(&cfg.manifest, plan)?;
 
@@ -746,16 +737,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn block_source_repeats_template_when_buffer_is_short() {
-        let source = BlockSource::new(Bytes::from_static(b"ab"), 8);
+    fn block_source_zero_fills_when_buffer_is_short() {
+        let source = BlockSource::new(Bytes::from_static(b"ab"));
         let plan = BlockPlan::new(8, 4).expect("valid plan");
         let payload = source.block_payload(plan.block_span(1).expect("second block"));
-        assert_eq!(payload, b"abab");
+        assert_eq!(payload, b"\0\0\0\0");
     }
 
     #[test]
     fn block_source_builds_fixed_size_source_symbols() {
-        let source = BlockSource::new(Bytes::from_static(b"abcdef"), 6);
+        let source = BlockSource::new(Bytes::from_static(b"abcdef"));
         let plan = BlockPlan::new(6, 6).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");
         let symbols = source.source_symbols(plan.block_span(0).expect("first block"), geometry);

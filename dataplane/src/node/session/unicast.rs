@@ -93,10 +93,17 @@ impl LosslessUnicastFlowManager {
             }
 
             // We currently inject a fixed pattern; higher-level APIs fill the
-            // buffer before the flow is scheduled. Reuse a single block-sized
-            // template instead of allocating the entire payload up front.
-            let template_len = runtime_config.default_block_size.max(1);
-            let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
+            // buffer before the flow is scheduled. Build the exact payload here
+            // so the session sender remains a straightforward block slicer.
+            let Ok(source_len) = usize::try_from(total_bytes) else {
+                warn!(
+                    flow_id = flow_id,
+                    total_bytes,
+                    "LosslessUnicastFlow: flow too large for explicit source buffer"
+                );
+                return;
+            };
+            let source_buffer = Bytes::from(vec![0xAAu8; source_len]);
 
             let common = CommonConfig {
                 session_id,

@@ -54,7 +54,7 @@ pub struct SenderRequest {
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
     pub total_bytes: u64,
-    /// Source bytes or repeating template used to build payload blocks.
+    /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
     /// Maximum time to wait for READY frames before opening the data gate.
     pub ready_grace_ms: u64,
@@ -82,7 +82,7 @@ pub struct SenderConfig {
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
     pub total_bytes: u64,
-    /// Source bytes or repeating template used to build payload blocks.
+    /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
     pub manifest: LosslessSessionManifest,
