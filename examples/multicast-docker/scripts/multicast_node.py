@@ -287,13 +287,13 @@ def write_group_info(
     atomic_write_json(group_info_path(args), payload)
 
 
-def wait_for_group_info(args: argparse.Namespace, timeout: int) -> Tuple[int, str]:
+def wait_for_group_info(args: argparse.Namespace, timeout: int) -> int:
     path = group_info_path(args)
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if path.exists():
             data = json.loads(path.read_text())
-            return int(data["group_id"]), data["group_ip"]
+            return int(data["group_id"])
         time.sleep(1)
     raise TimeoutError(f"Timed out waiting for group info file at {path}.")
 
@@ -449,9 +449,9 @@ def run_receiver(args: argparse.Namespace) -> None:
     if args.expected_bytes is None or args.expected_bytes <= 0:
         raise SystemExit("expected-bytes must be known for lossless reception.")
 
-    group_id, group_ip = wait_for_group_info(args, args.group_timeout)
+    group_id = wait_for_group_info(args, args.group_timeout)
     local_node_id = dataplane.node_id
-    log(f"Joining multicast group id={group_id} ({group_ip})...", args.quiet)
+    log(f"Joining multicast group id={group_id}...", args.quiet)
     dataplane.join_group(group_id)
     log(
         f"Receiver transfer mode hint={args.fec}; runtime config controls FEC behavior.",
