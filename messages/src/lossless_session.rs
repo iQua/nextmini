@@ -1,18 +1,19 @@
 use serde::{Deserialize, Serialize};
 
-/// Magic constant (legacy "RLM1" ASCII) used by lossless session frames.
+/// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-pub const LOSSLESS_SESSION_BASE_VERSION: u8 = 1;
-pub const LOSSLESS_SESSION_FEC_VERSION: u8 = 2;
-/// Legacy alias kept for compatibility with existing non-FEC call sites.
-pub const LOSSLESS_SESSION_VERSION: u8 = LOSSLESS_SESSION_BASE_VERSION;
+/// Single cutover protocol version for the block-first wire model.
+pub const LOSSLESS_SESSION_VERSION: u8 = 3;
+/// Maximum number of tree ids representable in a manifest body.
+pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
 /// Top-level frame kind carried in the header.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionKind {
-    Data = 1,
-    Control = 2,
+    BlockData = 1,
+    BlockSymbol = 2,
+    Control = 3,
 }
 
 /// Control sub-kind (only meaningful when kind == Control).
@@ -21,11 +22,27 @@ pub enum LosslessSessionKind {
 pub enum LosslessSessionCtrlKind {
     Manifest = 1,
     Ready = 2,
-    Ack = 3,
-    Eot = 4,
-    FecManifest = 5,
-    FecCapabilities = 6,
-    FecStatus = 7,
+    BlockAck = 3,
+    BlockStatus = 4,
+    Eot = 5,
+}
+
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LosslessSessionModeKind {
+    Plain = 1,
+    Fec = 2,
+}
+
+impl LosslessSessionModeKind {
+    #[inline]
+    pub fn from_wire(raw: u8) -> Option<Self> {
+        match raw {
+            x if x == Self::Plain as u8 => Some(Self::Plain),
+            x if x == Self::Fec as u8 => Some(Self::Fec),
+            _ => None,
+        }
+    }
 }
 
 #[repr(u8)]
@@ -43,33 +60,27 @@ impl FecScheme {
     #[inline]
     pub fn from_wire(raw: u8) -> Option<Self> {
         match raw {
-            x if x == FecScheme::RaptorQ as u8 => Some(FecScheme::RaptorQ),
+            x if x == Self::RaptorQ as u8 => Some(Self::RaptorQ),
             _ => None,
         }
     }
-
-    #[inline]
-    pub const fn bit(self) -> u32 {
-        1u32 << ((self as u8) - 1)
-    }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FecManifest {
-    pub protocol_version: u8,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LosslessSessionFecMode {
     /// Raw wire scheme identifier to preserve clean handling for unknown schemes.
     pub scheme: u8,
     pub symbols_per_block: u16,
-    pub symbol_size: u16,
+    pub tree_ids: Vec<u16>,
 }
 
-impl FecManifest {
-    pub fn new_raptorq(symbols_per_block: u16, symbol_size: u16) -> Self {
+impl LosslessSessionFecMode {
+    #[must_use]
+    pub fn new_raptorq(symbols_per_block: u16, tree_ids: Vec<u16>) -> Self {
         Self {
-            protocol_version: LOSSLESS_SESSION_FEC_VERSION,
             scheme: FecScheme::RaptorQ.to_wire(),
             symbols_per_block,
-            symbol_size,
+            tree_ids,
         }
     }
 
@@ -79,71 +90,234 @@ impl FecManifest {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FecCapabilities {
-    pub protocol_version: u8,
-    /// Bitset of supported schemes. Bit 0 => scheme id 1, etc.
-    pub supported_schemes: u32,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum LosslessSessionMode {
+    Plain,
+    Fec(LosslessSessionFecMode),
 }
 
-impl FecCapabilities {
-    pub fn empty() -> Self {
-        Self {
-            protocol_version: LOSSLESS_SESSION_FEC_VERSION,
-            supported_schemes: 0,
+impl LosslessSessionMode {
+    #[inline]
+    pub const fn kind(&self) -> LosslessSessionModeKind {
+        match self {
+            Self::Plain => LosslessSessionModeKind::Plain,
+            Self::Fec(_) => LosslessSessionModeKind::Fec,
         }
     }
 
-    pub fn with_scheme(mut self, scheme: FecScheme) -> Self {
-        self.supported_schemes |= scheme.bit();
-        self
-    }
-
     #[inline]
-    pub fn supports_scheme_wire(&self, scheme: u8) -> bool {
-        if scheme == 0 || scheme > 32 {
-            return false;
-        }
-        (self.supported_schemes & (1u32 << (scheme - 1))) != 0
-    }
-
-    #[inline]
-    pub fn supports_manifest(&self, manifest: &FecManifest) -> bool {
-        self.protocol_version >= manifest.protocol_version
-            && self.supports_scheme_wire(manifest.scheme)
+    pub const fn is_fec(&self) -> bool {
+        matches!(self, Self::Fec(_))
     }
 }
 
-impl Default for FecCapabilities {
-    fn default() -> Self {
-        Self::empty().with_scheme(FecScheme::RaptorQ)
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LosslessSessionManifest {
+    pub block_size: u32,
+    pub total_bytes: u64,
+    pub total_blocks: u64,
+    pub mode: LosslessSessionMode,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct FecStatus {
+pub struct BlockStatus {
     pub block_id: u64,
     pub deficit_symbols: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LosslessSessionValidationError {
+    ZeroBlockSize,
+    InconsistentTotalBlocks {
+        expected: u64,
+        actual: u64,
+    },
+    UnknownFecScheme {
+        scheme: u8,
+    },
+    ZeroSymbolsPerBlock,
+    FecTreeIdsEmpty,
+    TooManyTreeIds {
+        configured: usize,
+        max: usize,
+    },
+    TreeIdsMustBeSortedUnique,
+    ZeroDeficitSymbols,
+    BlockDataRequiresPlainMode,
+    BlockSymbolRequiresFecMode,
+    BlockStatusRequiresFecMode,
+    BlockIdOutOfRange {
+        block_id: u64,
+        total_blocks: u64,
+    },
+    BlockDataLenMismatch {
+        block_id: u64,
+        expected: u32,
+        actual: u32,
+    },
+    BlockSymbolTreeIdNotAdvertised {
+        tree_id: u16,
+    },
+}
+
+impl LosslessSessionManifest {
+    pub fn total_blocks_for(
+        total_bytes: u64,
+        block_size: u32,
+    ) -> Result<u64, LosslessSessionValidationError> {
+        if block_size == 0 {
+            return Err(LosslessSessionValidationError::ZeroBlockSize);
+        }
+        let block_size = u64::from(block_size);
+        if total_bytes == 0 {
+            Ok(0)
+        } else {
+            Ok(total_bytes.div_ceil(block_size))
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
+        let expected = Self::total_blocks_for(self.total_bytes, self.block_size)?;
+        if self.total_blocks != expected {
+            return Err(LosslessSessionValidationError::InconsistentTotalBlocks {
+                expected,
+                actual: self.total_blocks,
+            });
+        }
+
+        if let LosslessSessionMode::Fec(fec) = &self.mode {
+            if fec.scheme_kind().is_none() {
+                return Err(LosslessSessionValidationError::UnknownFecScheme {
+                    scheme: fec.scheme,
+                });
+            }
+            if fec.symbols_per_block == 0 {
+                return Err(LosslessSessionValidationError::ZeroSymbolsPerBlock);
+            }
+            if fec.tree_ids.is_empty() {
+                return Err(LosslessSessionValidationError::FecTreeIdsEmpty);
+            }
+            if fec.tree_ids.len() > MAX_MANIFEST_TREE_IDS {
+                return Err(LosslessSessionValidationError::TooManyTreeIds {
+                    configured: fec.tree_ids.len(),
+                    max: MAX_MANIFEST_TREE_IDS,
+                });
+            }
+            if !fec.tree_ids.windows(2).all(|pair| pair[0] < pair[1]) {
+                return Err(LosslessSessionValidationError::TreeIdsMustBeSortedUnique);
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_block_id(&self, block_id: u64) -> Result<(), LosslessSessionValidationError> {
+        self.validate()?;
+        if block_id >= self.total_blocks {
+            return Err(LosslessSessionValidationError::BlockIdOutOfRange {
+                block_id,
+                total_blocks: self.total_blocks,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn expected_block_payload_len(
+        &self,
+        block_id: u64,
+    ) -> Result<u32, LosslessSessionValidationError> {
+        self.validate_block_id(block_id)?;
+        if self.total_blocks == 0 {
+            return Ok(0);
+        }
+        if block_id + 1 == self.total_blocks {
+            let rem = (self.total_bytes % u64::from(self.block_size)) as u32;
+            if rem == 0 {
+                Ok(self.block_size)
+            } else {
+                Ok(rem)
+            }
+        } else {
+            Ok(self.block_size)
+        }
+    }
+
+    pub fn validate_block_data(
+        &self,
+        data: &LosslessSessionBlockData,
+    ) -> Result<(), LosslessSessionValidationError> {
+        if self.mode.is_fec() {
+            return Err(LosslessSessionValidationError::BlockDataRequiresPlainMode);
+        }
+        let expected = self.expected_block_payload_len(data.block_id)?;
+        if data.payload_len != expected {
+            return Err(LosslessSessionValidationError::BlockDataLenMismatch {
+                block_id: data.block_id,
+                expected,
+                actual: data.payload_len,
+            });
+        }
+        Ok(())
+    }
+
+    pub fn validate_block_symbol(
+        &self,
+        symbol: &LosslessSessionBlockSymbol,
+    ) -> Result<(), LosslessSessionValidationError> {
+        let LosslessSessionMode::Fec(fec) = &self.mode else {
+            return Err(LosslessSessionValidationError::BlockSymbolRequiresFecMode);
+        };
+        self.validate_block_id(symbol.block_id)?;
+        if !fec.tree_ids.contains(&symbol.tree_id) {
+            return Err(
+                LosslessSessionValidationError::BlockSymbolTreeIdNotAdvertised {
+                    tree_id: symbol.tree_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_control(
+        &self,
+        control: &LosslessSessionControl,
+    ) -> Result<(), LosslessSessionValidationError> {
+        self.validate()?;
+        control.validate()?;
+        match control {
+            LosslessSessionControl::Manifest { manifest } => manifest.validate(),
+            LosslessSessionControl::Ready { .. } | LosslessSessionControl::Eot => Ok(()),
+            LosslessSessionControl::BlockAck { block_id } => self.validate_block_id(*block_id),
+            LosslessSessionControl::BlockStatus { status } => {
+                if !self.mode.is_fec() {
+                    return Err(LosslessSessionValidationError::BlockStatusRequiresFecMode);
+                }
+                self.validate_block_id(status.block_id)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LosslessSessionFecData {
+pub struct LosslessSessionBlockData {
+    pub block_id: u64,
+    pub payload_len: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LosslessSessionBlockSymbol {
     pub block_id: u64,
     pub symbol_id: u32,
     pub tree_id: u16,
     pub payload_len: u32,
 }
 
-impl LosslessSessionFecData {
-    pub const DEFAULT_TREE_ID: u16 = 0;
-}
-
-/// Fixed header for both DATA and CONTROL frames.
+/// Fixed header for both block and control frames.
 ///
 /// Layout (big-endian):
 /// - magic:      u32  (LOSSLESS_SESSION_MAGIC)
 /// - version:    u8   (LOSSLESS_SESSION_VERSION)
-/// - kind:       u8   (1=Data, 2=Control)
+/// - kind:       u8   (1=BlockData, 2=BlockSymbol, 3=Control)
 /// - ctrl_kind:  u8   (LosslessSessionCtrlKind value when kind=Control, else 0)
 /// - reserved:   u8   (0; alignment/padding)
 /// - session_id: u64  (flow/session demux)
@@ -168,7 +342,7 @@ impl LosslessSessionHeader {
         out[4] = self.version;
         out[5] = self.kind as u8;
         out[6] = self.ctrl_kind;
-        out[7] = 0; // reserved
+        out[7] = 0;
         out[8..16].copy_from_slice(&self.session_id.to_be_bytes());
         out[16..20].copy_from_slice(&self.body_len.to_be_bytes());
     }
@@ -183,19 +357,16 @@ impl LosslessSessionHeader {
             return None;
         }
         let version = buf[4];
-        if !matches!(
-            version,
-            LOSSLESS_SESSION_BASE_VERSION | LOSSLESS_SESSION_FEC_VERSION
-        ) {
+        if version != LOSSLESS_SESSION_VERSION {
             return None;
         }
         let kind = match buf[5] {
-            1 => LosslessSessionKind::Data,
-            2 => LosslessSessionKind::Control,
+            1 => LosslessSessionKind::BlockData,
+            2 => LosslessSessionKind::BlockSymbol,
+            3 => LosslessSessionKind::Control,
             _ => return None,
         };
         let ctrl_kind = buf[6];
-        // buf[7] reserved
         let session_id = u64::from_be_bytes(buf[8..16].try_into().ok()?);
         let body_len = u32::from_be_bytes(buf[16..20].try_into().ok()?);
         Some((
@@ -212,58 +383,46 @@ impl LosslessSessionHeader {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub struct LosslessSessionData {
-    pub index: u64,
-    pub payload_len: u32,
-}
-
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
-    Manifest {
-        chunk_size: u32,
-        total_bytes: u64,
-    },
-    FecManifest {
-        chunk_size: u32,
-        total_bytes: u64,
-        fec: FecManifest,
-    },
-    Ready {
-        node_id: u64,
-    },
-    FecCapabilities {
-        node_id: u64,
-        capabilities: FecCapabilities,
-    },
-    Ack {
-        up_to: u64,
-    },
-    FecStatus {
-        status: FecStatus,
-    },
-    /// End-of-transfer marker with the last expected chunk.
-    Eot {
-        last_index: u64,
-    },
+    Manifest { manifest: LosslessSessionManifest },
+    Ready { node_id: u64 },
+    BlockAck { block_id: u64 },
+    BlockStatus { status: BlockStatus },
+    Eot,
 }
 
-/// Encode a DATA frame (header + LosslessSessionData + payload) into a fresh Vec<u8>.
-pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
+impl LosslessSessionControl {
+    pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
+        match self {
+            Self::Manifest { manifest } => manifest.validate(),
+            Self::Ready { .. } | Self::BlockAck { .. } | Self::Eot => Ok(()),
+            Self::BlockStatus { status } => {
+                if status.deficit_symbols == 0 {
+                    return Err(LosslessSessionValidationError::ZeroDeficitSymbols);
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+/// Encode a `BlockData` frame into a fresh `Vec<u8>`.
+pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<u8> {
     let body_len = 8 + 4 + payload.len() as u32;
     let mut out = vec![0u8; LosslessSessionHeader::LEN + body_len as usize];
     LosslessSessionHeader {
         magic: LOSSLESS_SESSION_MAGIC,
-        version: LOSSLESS_SESSION_BASE_VERSION,
-        kind: LosslessSessionKind::Data,
+        version: LOSSLESS_SESSION_VERSION,
+        kind: LosslessSessionKind::BlockData,
         ctrl_kind: 0,
         session_id,
         body_len,
     }
     .encode_into(&mut out[..LosslessSessionHeader::LEN]);
     let mut pos = LosslessSessionHeader::LEN;
-    out[pos..pos + 8].copy_from_slice(&index.to_be_bytes());
+    out[pos..pos + 8].copy_from_slice(&block_id.to_be_bytes());
     pos += 8;
     out[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
     pos += 4;
@@ -271,8 +430,8 @@ pub fn encode_data(session_id: u64, index: u64, payload: &[u8]) -> Vec<u8> {
     out
 }
 
-/// Encode a FEC DATA frame (header + LosslessSessionFecData + payload) into a fresh Vec<u8>.
-pub fn encode_fec_data(
+/// Encode a `BlockSymbol` frame into a fresh `Vec<u8>`.
+pub fn encode_block_symbol(
     session_id: u64,
     block_id: u64,
     symbol_id: u32,
@@ -283,8 +442,8 @@ pub fn encode_fec_data(
     let mut out = vec![0u8; LosslessSessionHeader::LEN + body_len as usize];
     LosslessSessionHeader {
         magic: LOSSLESS_SESSION_MAGIC,
-        version: LOSSLESS_SESSION_FEC_VERSION,
-        kind: LosslessSessionKind::Data,
+        version: LOSSLESS_SESSION_VERSION,
+        kind: LosslessSessionKind::BlockSymbol,
         ctrl_kind: 0,
         session_id,
         body_len,
@@ -298,7 +457,7 @@ pub fn encode_fec_data(
     pos += 4;
     out[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
     pos += 2;
-    out[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes()); // reserved
+    out[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes());
     pos += 2;
     out[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
     pos += 4;
@@ -306,39 +465,19 @@ pub fn encode_fec_data(
     out
 }
 
-/// Encode a FEC DATA frame with the default tree id (`0`).
-pub fn encode_fec_data_default_tree(
-    session_id: u64,
-    block_id: u64,
-    symbol_id: u32,
-    payload: &[u8],
-) -> Vec<u8> {
-    encode_fec_data(
-        session_id,
-        block_id,
-        symbol_id,
-        LosslessSessionFecData::DEFAULT_TREE_ID,
-        payload,
-    )
-}
-
-/// Try to decode a DATA frame; returns (header, data header, payload slice).
-pub fn decode_data(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSessionData, &[u8])> {
+/// Try to decode a `BlockData` frame; returns (header, block metadata, payload slice).
+pub fn decode_block_data(
+    buf: &[u8],
+) -> Option<(LosslessSessionHeader, LosslessSessionBlockData, &[u8])> {
     let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
-    if hdr.kind != LosslessSessionKind::Data {
+    if hdr.kind != LosslessSessionKind::BlockData || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.version != LOSSLESS_SESSION_BASE_VERSION {
-        return None;
-    }
-    if hdr.body_len < 12 {
-        return None;
-    }
-    if buf.len() < off + hdr.body_len as usize {
+    if hdr.body_len < 12 || buf.len() < off + hdr.body_len as usize {
         return None;
     }
     let mut pos = off;
-    let index = u64::from_be_bytes(buf[pos..pos + 8].try_into().ok()?);
+    let block_id = u64::from_be_bytes(buf[pos..pos + 8].try_into().ok()?);
     pos += 8;
     let payload_len = u32::from_be_bytes(buf[pos..pos + 4].try_into().ok()?);
     pos += 4;
@@ -351,26 +490,23 @@ pub fn decode_data(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSession
     }
     Some((
         hdr,
-        LosslessSessionData { index, payload_len },
+        LosslessSessionBlockData {
+            block_id,
+            payload_len,
+        },
         &buf[pos..payload_end],
     ))
 }
 
-/// Try to decode a FEC DATA frame; returns (header, FEC metadata, payload slice).
-pub fn decode_fec_data(
+/// Try to decode a `BlockSymbol` frame; returns (header, block metadata, payload slice).
+pub fn decode_block_symbol(
     buf: &[u8],
-) -> Option<(LosslessSessionHeader, LosslessSessionFecData, &[u8])> {
+) -> Option<(LosslessSessionHeader, LosslessSessionBlockSymbol, &[u8])> {
     let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
-    if hdr.kind != LosslessSessionKind::Data {
+    if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.version != LOSSLESS_SESSION_FEC_VERSION {
-        return None;
-    }
-    if hdr.body_len < 20 {
-        return None;
-    }
-    if buf.len() < off + hdr.body_len as usize {
+    if hdr.body_len < 20 || buf.len() < off + hdr.body_len as usize {
         return None;
     }
 
@@ -381,7 +517,6 @@ pub fn decode_fec_data(
     pos += 4;
     let tree_id = u16::from_be_bytes(buf[pos..pos + 2].try_into().ok()?);
     pos += 2;
-    // reserved
     pos += 2;
     let payload_len = u32::from_be_bytes(buf[pos..pos + 4].try_into().ok()?);
     pos += 4;
@@ -397,7 +532,7 @@ pub fn decode_fec_data(
 
     Some((
         hdr,
-        LosslessSessionFecData {
+        LosslessSessionBlockSymbol {
             block_id,
             symbol_id,
             tree_id,
@@ -407,113 +542,109 @@ pub fn decode_fec_data(
     ))
 }
 
-/// Maximum size of a control frame.
-///
-/// Largest body is currently `FecManifest` (18 bytes).
-pub const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN + 18;
+const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
 
-/// Encode a CONTROL frame into the provided buffer, returning the number of bytes written.
-/// The buffer must be at least MAX_CONTROL_FRAME_SIZE bytes.
+/// Maximum size of a control frame under the block-first protocol.
 ///
-/// Returns the slice of the buffer containing the encoded frame.
+/// The largest body is `Manifest` with `u8::MAX` tree ids.
+pub const MAX_CONTROL_FRAME_SIZE: usize =
+    LosslessSessionHeader::LEN + MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2);
+
+fn manifest_tree_ids(mode: &LosslessSessionMode) -> &[u16] {
+    match mode {
+        LosslessSessionMode::Plain => &[],
+        LosslessSessionMode::Fec(fec) => &fec.tree_ids,
+    }
+}
+
+fn control_body_len(control: &LosslessSessionControl) -> usize {
+    match control {
+        LosslessSessionControl::Manifest { manifest } => {
+            MANIFEST_FIXED_BODY_LEN + (manifest_tree_ids(&manifest.mode).len() * 2)
+        }
+        LosslessSessionControl::Ready { .. } => 8,
+        LosslessSessionControl::BlockAck { .. } => 8,
+        LosslessSessionControl::BlockStatus { .. } => 12,
+        LosslessSessionControl::Eot => 0,
+    }
+}
+
+/// Encode a CONTROL frame into the provided buffer.
+/// The buffer must be at least `MAX_CONTROL_FRAME_SIZE` bytes.
 pub fn encode_control_into<'a>(
     buf: &'a mut [u8],
     session_id: u64,
     control: &LosslessSessionControl,
 ) -> &'a [u8] {
-    let version = default_control_version(control);
-    encode_control_into_with_version(buf, session_id, version, control)
-}
+    control
+        .validate()
+        .expect("lossless control must validate before encoding");
+    let body_len = control_body_len(control);
+    assert!(
+        buf.len() >= LosslessSessionHeader::LEN + body_len,
+        "buffer too small for encoded control frame"
+    );
 
-/// Encode a CONTROL frame into the provided buffer using an explicit protocol version.
-pub fn encode_control_into_with_version<'a>(
-    buf: &'a mut [u8],
-    session_id: u64,
-    version: u8,
-    control: &LosslessSessionControl,
-) -> &'a [u8] {
-    use LosslessSessionControl::*;
-    let mut version = match version {
-        LOSSLESS_SESSION_BASE_VERSION | LOSSLESS_SESSION_FEC_VERSION => version,
-        _ => default_control_version(control),
-    };
-    if version == LOSSLESS_SESSION_BASE_VERSION
-        && matches!(
-            control,
-            FecManifest { .. } | FecCapabilities { .. } | FecStatus { .. }
-        )
-    {
-        version = LOSSLESS_SESSION_FEC_VERSION;
-    }
+    let ctrl_kind = match control {
+        LosslessSessionControl::Manifest { manifest } => {
+            manifest
+                .validate()
+                .expect("manifest must validate before encoding");
+            let body_start = LosslessSessionHeader::LEN;
+            let (scheme, symbols_per_block, tree_ids) = match &manifest.mode {
+                LosslessSessionMode::Plain => (0u8, 0u16, &[][..]),
+                LosslessSessionMode::Fec(fec) => {
+                    (fec.scheme, fec.symbols_per_block, fec.tree_ids.as_slice())
+                }
+            };
+            assert!(
+                tree_ids.len() <= MAX_MANIFEST_TREE_IDS,
+                "manifest tree set exceeds wire capacity"
+            );
 
-    // Encode the body directly into the buffer after the header
-    let (ctrl_kind, body_len) = match control {
-        Manifest {
-            chunk_size,
-            total_bytes,
-        } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 4].copy_from_slice(&chunk_size.to_be_bytes());
-            buf[body_start + 4..body_start + 12].copy_from_slice(&total_bytes.to_be_bytes());
-            (LosslessSessionCtrlKind::Manifest as u8, 12)
+            buf[body_start] = manifest.mode.kind() as u8;
+            buf[body_start + 1] = scheme;
+            buf[body_start + 2] = tree_ids.len() as u8;
+            buf[body_start + 3] = 0;
+            buf[body_start + 4..body_start + 8].copy_from_slice(&manifest.block_size.to_be_bytes());
+            buf[body_start + 8..body_start + 16]
+                .copy_from_slice(&manifest.total_bytes.to_be_bytes());
+            buf[body_start + 16..body_start + 24]
+                .copy_from_slice(&manifest.total_blocks.to_be_bytes());
+            buf[body_start + 24..body_start + 26].copy_from_slice(&symbols_per_block.to_be_bytes());
+            buf[body_start + 26..body_start + 28].copy_from_slice(&0u16.to_be_bytes());
+
+            let mut pos = body_start + MANIFEST_FIXED_BODY_LEN;
+            for tree_id in tree_ids {
+                buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+                pos += 2;
+            }
+            LosslessSessionCtrlKind::Manifest as u8
         }
-        FecManifest {
-            chunk_size,
-            total_bytes,
-            fec,
-        } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 4].copy_from_slice(&chunk_size.to_be_bytes());
-            buf[body_start + 4..body_start + 12].copy_from_slice(&total_bytes.to_be_bytes());
-            buf[body_start + 12] = fec.protocol_version;
-            buf[body_start + 13] = fec.scheme;
-            buf[body_start + 14..body_start + 16]
-                .copy_from_slice(&fec.symbols_per_block.to_be_bytes());
-            buf[body_start + 16..body_start + 18].copy_from_slice(&fec.symbol_size.to_be_bytes());
-            (LosslessSessionCtrlKind::FecManifest as u8, 18)
-        }
-        Ready { node_id } => {
+        LosslessSessionControl::Ready { node_id } => {
             let body_start = LosslessSessionHeader::LEN;
             buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
-            (LosslessSessionCtrlKind::Ready as u8, 8)
+            LosslessSessionCtrlKind::Ready as u8
         }
-        FecCapabilities {
-            node_id,
-            capabilities,
-        } => {
+        LosslessSessionControl::BlockAck { block_id } => {
             let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
-            buf[body_start + 8] = capabilities.protocol_version;
-            buf[body_start + 9] = 0;
-            buf[body_start + 10..body_start + 12].copy_from_slice(&0u16.to_be_bytes());
-            buf[body_start + 12..body_start + 16]
-                .copy_from_slice(&capabilities.supported_schemes.to_be_bytes());
-            (LosslessSessionCtrlKind::FecCapabilities as u8, 16)
+            buf[body_start..body_start + 8].copy_from_slice(&block_id.to_be_bytes());
+            LosslessSessionCtrlKind::BlockAck as u8
         }
-        Ack { up_to } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&up_to.to_be_bytes());
-            (LosslessSessionCtrlKind::Ack as u8, 8)
-        }
-        FecStatus { status } => {
+        LosslessSessionControl::BlockStatus { status } => {
             let body_start = LosslessSessionHeader::LEN;
             buf[body_start..body_start + 8].copy_from_slice(&status.block_id.to_be_bytes());
             buf[body_start + 8..body_start + 10]
                 .copy_from_slice(&status.deficit_symbols.to_be_bytes());
             buf[body_start + 10..body_start + 12].copy_from_slice(&0u16.to_be_bytes());
-            (LosslessSessionCtrlKind::FecStatus as u8, 12)
+            LosslessSessionCtrlKind::BlockStatus as u8
         }
-        Eot { last_index } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&last_index.to_be_bytes());
-            (LosslessSessionCtrlKind::Eot as u8, 8)
-        }
+        LosslessSessionControl::Eot => LosslessSessionCtrlKind::Eot as u8,
     };
 
-    // Encode the header at the start of the buffer
     LosslessSessionHeader {
         magic: LOSSLESS_SESSION_MAGIC,
-        version,
+        version: LOSSLESS_SESSION_VERSION,
         kind: LosslessSessionKind::Control,
         ctrl_kind,
         session_id,
@@ -524,21 +655,7 @@ pub fn encode_control_into_with_version<'a>(
     &buf[..LosslessSessionHeader::LEN + body_len]
 }
 
-fn default_control_version(control: &LosslessSessionControl) -> u8 {
-    match control {
-        LosslessSessionControl::FecManifest { .. }
-        | LosslessSessionControl::FecCapabilities { .. }
-        | LosslessSessionControl::FecStatus { .. } => LOSSLESS_SESSION_FEC_VERSION,
-        LosslessSessionControl::Manifest { .. }
-        | LosslessSessionControl::Ready { .. }
-        | LosslessSessionControl::Ack { .. }
-        | LosslessSessionControl::Eot { .. } => LOSSLESS_SESSION_BASE_VERSION,
-    }
-}
-
-/// Encode a CONTROL frame (header + control body) into a fresh Vec<u8>.
-///
-/// Note: Consider using `encode_control_into` with a stack buffer for better performance.
+/// Encode a CONTROL frame (header + control body) into a fresh `Vec<u8>`.
 pub fn encode_control(session_id: u64, control: &LosslessSessionControl) -> Vec<u8> {
     let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
     let frame = encode_control_into(&mut buf, session_id, control);
@@ -547,96 +664,95 @@ pub fn encode_control(session_id: u64, control: &LosslessSessionControl) -> Vec<
 
 /// Try to decode a CONTROL frame; returns (header, parsed control).
 pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSessionControl)> {
-    use LosslessSessionControl::*;
     let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
     if hdr.kind != LosslessSessionKind::Control {
         return None;
     }
-    // Guard against out-of-bounds before slicing body to avoid panics.
     if buf.len() < off + hdr.body_len as usize {
         return None;
     }
     let body = &buf[off..off + hdr.body_len as usize];
     let ctrl = match hdr.ctrl_kind {
         x if x == LosslessSessionCtrlKind::Manifest as u8 => {
-            if body.len() != 12 {
+            if body.len() < MANIFEST_FIXED_BODY_LEN {
                 return None;
             }
-            let chunk_size = u32::from_be_bytes(body[0..4].try_into().ok()?);
-            let total_bytes = u64::from_be_bytes(body[4..12].try_into().ok()?);
-            Manifest {
-                chunk_size,
-                total_bytes,
-            }
-        }
-        x if x == LosslessSessionCtrlKind::FecManifest as u8 => {
-            if hdr.version != LOSSLESS_SESSION_FEC_VERSION || body.len() != 18 {
+            let mode_kind = LosslessSessionModeKind::from_wire(body[0])?;
+            let scheme = body[1];
+            let tree_count = body[2] as usize;
+            let block_size = u32::from_be_bytes(body[4..8].try_into().ok()?);
+            let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
+            let total_blocks = u64::from_be_bytes(body[16..24].try_into().ok()?);
+            let symbols_per_block = u16::from_be_bytes(body[24..26].try_into().ok()?);
+
+            if body.len() != MANIFEST_FIXED_BODY_LEN + (tree_count * 2) {
                 return None;
             }
-            let chunk_size = u32::from_be_bytes(body[0..4].try_into().ok()?);
-            let total_bytes = u64::from_be_bytes(body[4..12].try_into().ok()?);
-            let fec = crate::lossless_session::FecManifest {
-                protocol_version: body[12],
-                scheme: body[13],
-                symbols_per_block: u16::from_be_bytes(body[14..16].try_into().ok()?),
-                symbol_size: u16::from_be_bytes(body[16..18].try_into().ok()?),
+
+            let mut tree_ids = Vec::with_capacity(tree_count);
+            let mut pos = MANIFEST_FIXED_BODY_LEN;
+            for _ in 0..tree_count {
+                tree_ids.push(u16::from_be_bytes(body[pos..pos + 2].try_into().ok()?));
+                pos += 2;
+            }
+
+            let mode = match mode_kind {
+                LosslessSessionModeKind::Plain => {
+                    if scheme != 0 || symbols_per_block != 0 || !tree_ids.is_empty() {
+                        return None;
+                    }
+                    LosslessSessionMode::Plain
+                }
+                LosslessSessionModeKind::Fec => LosslessSessionMode::Fec(LosslessSessionFecMode {
+                    scheme,
+                    symbols_per_block,
+                    tree_ids,
+                }),
             };
-            FecManifest {
-                chunk_size,
+            let manifest = LosslessSessionManifest {
+                block_size,
                 total_bytes,
-                fec,
-            }
+                total_blocks,
+                mode,
+            };
+            manifest.validate().ok()?;
+            LosslessSessionControl::Manifest { manifest }
         }
         x if x == LosslessSessionCtrlKind::Ready as u8 => {
             if body.len() != 8 {
                 return None;
             }
             let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            Ready { node_id }
+            LosslessSessionControl::Ready { node_id }
         }
-        x if x == LosslessSessionCtrlKind::FecCapabilities as u8 => {
-            if hdr.version != LOSSLESS_SESSION_FEC_VERSION || body.len() != 16 {
-                return None;
-            }
-            let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            let capabilities = crate::lossless_session::FecCapabilities {
-                protocol_version: body[8],
-                supported_schemes: u32::from_be_bytes(body[12..16].try_into().ok()?),
-            };
-            FecCapabilities {
-                node_id,
-                capabilities,
-            }
-        }
-        x if x == LosslessSessionCtrlKind::Ack as u8 => {
+        x if x == LosslessSessionCtrlKind::BlockAck as u8 => {
             if body.len() != 8 {
                 return None;
             }
-            let up_to = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            Ack { up_to }
+            let block_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
+            LosslessSessionControl::BlockAck { block_id }
         }
-        x if x == LosslessSessionCtrlKind::FecStatus as u8 => {
-            if hdr.version != LOSSLESS_SESSION_FEC_VERSION || body.len() != 12 {
+        x if x == LosslessSessionCtrlKind::BlockStatus as u8 => {
+            if body.len() != 12 {
                 return None;
             }
             let block_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
             let deficit_symbols = u16::from_be_bytes(body[8..10].try_into().ok()?);
-            FecStatus {
-                status: crate::lossless_session::FecStatus {
-                    block_id,
-                    deficit_symbols,
-                },
-            }
+            let status = BlockStatus {
+                block_id,
+                deficit_symbols,
+            };
+            LosslessSessionControl::BlockStatus { status }
         }
         x if x == LosslessSessionCtrlKind::Eot as u8 => {
-            if body.len() != 8 {
+            if !body.is_empty() {
                 return None;
             }
-            let last_index = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            Eot { last_index }
+            LosslessSessionControl::Eot
         }
         _ => return None,
     };
+    ctrl.validate().ok()?;
     Some((hdr, ctrl))
 }
 
@@ -644,141 +760,112 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
 mod tests {
     use super::*;
 
+    fn plain_manifest() -> LosslessSessionManifest {
+        LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2500,
+            total_blocks: 3,
+            mode: LosslessSessionMode::Plain,
+        }
+    }
+
+    fn fec_manifest() -> LosslessSessionManifest {
+        LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2500,
+            total_blocks: 3,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(8, vec![1, 3, 5])),
+        }
+    }
+
     #[test]
-    fn roundtrip_data() {
-        let payload = b"hello world";
-        let buf = encode_data(42, 7, payload);
-        let (hdr, data, body) = decode_data(&buf).expect("decode data");
+    fn roundtrip_block_data() {
+        let payload = b"plain block";
+        let buf = encode_block_data(42, 7, payload);
+        let (hdr, data, body) = decode_block_data(&buf).expect("decode block data");
         assert_eq!(hdr.magic, LOSSLESS_SESSION_MAGIC);
         assert_eq!(hdr.version, LOSSLESS_SESSION_VERSION);
-        assert_eq!(hdr.kind as u8, LosslessSessionKind::Data as u8);
+        assert_eq!(hdr.kind, LosslessSessionKind::BlockData);
         assert_eq!(hdr.session_id, 42);
-        assert_eq!(data.index, 7);
+        assert_eq!(data.block_id, 7);
         assert_eq!(data.payload_len as usize, payload.len());
         assert_eq!(body, payload);
     }
 
     #[test]
-    fn roundtrip_fec_data_and_default_tree() {
-        let payload = b"fec payload";
-        let buf = encode_fec_data_default_tree(42, 9, 3, payload);
-        let (hdr, data, body) = decode_fec_data(&buf).expect("decode fec data");
+    fn roundtrip_block_symbol() {
+        let payload = b"fec symbol";
+        let buf = encode_block_symbol(42, 9, 3, 5, payload);
+        let (hdr, data, body) = decode_block_symbol(&buf).expect("decode block symbol");
         assert_eq!(hdr.session_id, 42);
-        assert_eq!(hdr.version, LOSSLESS_SESSION_FEC_VERSION);
+        assert_eq!(hdr.kind, LosslessSessionKind::BlockSymbol);
         assert_eq!(data.block_id, 9);
         assert_eq!(data.symbol_id, 3);
-        assert_eq!(data.tree_id, 0);
+        assert_eq!(data.tree_id, 5);
         assert_eq!(data.payload_len as usize, payload.len());
         assert_eq!(body, payload);
         assert!(
-            decode_data(&buf).is_none(),
-            "legacy decoder must reject v2 fec data"
+            decode_block_data(&buf).is_none(),
+            "wrong decoder must reject block symbol"
         );
     }
 
     #[test]
     fn roundtrip_controls() {
+        let manifest_plain = LosslessSessionControl::Manifest {
+            manifest: plain_manifest(),
+        };
+        let manifest_fec = LosslessSessionControl::Manifest {
+            manifest: fec_manifest(),
+        };
         let ctrls = vec![
-            LosslessSessionControl::Manifest {
-                chunk_size: 4096,
-                total_bytes: 123456,
-            },
-            LosslessSessionControl::FecManifest {
-                chunk_size: 4096,
-                total_bytes: 123456,
-                fec: FecManifest::new_raptorq(64, 1400),
-            },
+            manifest_plain,
+            manifest_fec,
             LosslessSessionControl::Ready { node_id: 99 },
-            LosslessSessionControl::FecCapabilities {
-                node_id: 99,
-                capabilities: FecCapabilities::default(),
-            },
-            LosslessSessionControl::Ack { up_to: 77 },
-            LosslessSessionControl::FecStatus {
-                status: FecStatus {
-                    block_id: 3,
-                    deficit_symbols: 2,
+            LosslessSessionControl::BlockAck { block_id: 2 },
+            LosslessSessionControl::BlockStatus {
+                status: BlockStatus {
+                    block_id: 2,
+                    deficit_symbols: 3,
                 },
             },
-            LosslessSessionControl::Eot { last_index: 15 },
+            LosslessSessionControl::Eot,
         ];
+
         for ctrl in ctrls {
             let buf = encode_control(77, &ctrl);
             let (hdr, decoded) = decode_control(&buf).expect("decode control");
             assert_eq!(hdr.session_id, 77);
-            let expected_version = match ctrl {
-                LosslessSessionControl::FecManifest { .. }
-                | LosslessSessionControl::FecCapabilities { .. }
-                | LosslessSessionControl::FecStatus { .. } => LOSSLESS_SESSION_FEC_VERSION,
-                _ => LOSSLESS_SESSION_BASE_VERSION,
-            };
-            assert_eq!(hdr.version, expected_version);
+            assert_eq!(hdr.version, LOSSLESS_SESSION_VERSION);
             assert_eq!(decoded, ctrl);
         }
-    }
-
-    #[test]
-    fn bad_magic_rejected() {
-        let mut buf = encode_data(1, 1, b"x");
-        buf[0] = 0; // break magic
-        assert!(decode_data(&buf).is_none());
-    }
-
-    #[test]
-    fn decode_data_rejects_truncated_payload() {
-        let buf = encode_data(1, 1, b"abc");
-        // Corrupt payload_len to be larger than actual bytes
-        let mut bad = buf.clone();
-        // LosslessSessionHeader::LEN + 8 (index) position payload_len (4 bytes)
-        let pos = LosslessSessionHeader::LEN + 8;
-        bad[pos..pos + 4].copy_from_slice(&(9999u32.to_be_bytes()));
-        assert!(decode_data(&bad).is_none());
     }
 
     #[test]
     fn encode_control_into_matches_encode_control() {
         let ctrls = vec![
             LosslessSessionControl::Manifest {
-                chunk_size: 4096,
-                total_bytes: 123456,
+                manifest: plain_manifest(),
             },
-            LosslessSessionControl::FecManifest {
-                chunk_size: 4096,
-                total_bytes: 123456,
-                fec: FecManifest::new_raptorq(64, 1400),
+            LosslessSessionControl::Manifest {
+                manifest: fec_manifest(),
             },
-            LosslessSessionControl::Ready { node_id: 99 },
-            LosslessSessionControl::FecCapabilities {
-                node_id: 99,
-                capabilities: FecCapabilities::default(),
-            },
-            LosslessSessionControl::Ack { up_to: 77 },
-            LosslessSessionControl::FecStatus {
-                status: FecStatus {
-                    block_id: 3,
-                    deficit_symbols: 1,
+            LosslessSessionControl::Ready { node_id: 11 },
+            LosslessSessionControl::BlockAck { block_id: 1 },
+            LosslessSessionControl::BlockStatus {
+                status: BlockStatus {
+                    block_id: 1,
+                    deficit_symbols: 2,
                 },
             },
-            LosslessSessionControl::Eot { last_index: 15 },
+            LosslessSessionControl::Eot,
         ];
 
         for ctrl in ctrls {
-            // Encode using the original heap-allocating version
             let heap_encoded = encode_control(42, &ctrl);
-
-            // Encode using the stack-buffer version
             let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
             let stack_encoded = encode_control_into(&mut buf, 42, &ctrl);
-
-            // Should produce identical output
-            assert_eq!(
-                heap_encoded.as_slice(),
-                stack_encoded,
-                "encode_control_into should produce same output as encode_control for {:?}",
-                ctrl
-            );
-
-            // Both should decode correctly
+            assert_eq!(heap_encoded.as_slice(), stack_encoded);
             let (_, decoded_heap) = decode_control(&heap_encoded).expect("decode heap");
             let (_, decoded_stack) = decode_control(stack_encoded).expect("decode stack");
             assert_eq!(decoded_heap, ctrl);
@@ -787,109 +874,205 @@ mod tests {
     }
 
     #[test]
-    fn decode_control_rejects_short_bodies() {
-        // Start from a valid manifest and then truncate body bytes
+    fn manifest_validation_rejects_bad_shapes() {
+        let zero_block = LosslessSessionManifest {
+            block_size: 0,
+            total_bytes: 1,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Plain,
+        };
+        assert_eq!(
+            zero_block.validate(),
+            Err(LosslessSessionValidationError::ZeroBlockSize)
+        );
+
+        let bad_total_blocks = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2049,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Plain,
+        };
+        assert_eq!(
+            bad_total_blocks.validate(),
+            Err(LosslessSessionValidationError::InconsistentTotalBlocks {
+                expected: 3,
+                actual: 2,
+            })
+        );
+
+        let bad_fec = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 1024,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode {
+                scheme: 99,
+                symbols_per_block: 0,
+                tree_ids: vec![],
+            }),
+        };
+        assert_eq!(
+            bad_fec.validate(),
+            Err(LosslessSessionValidationError::UnknownFecScheme { scheme: 99 })
+        );
+    }
+
+    #[test]
+    fn plain_mode_rejects_fec_only_frames() {
+        let manifest = plain_manifest();
+        let symbol = LosslessSessionBlockSymbol {
+            block_id: 0,
+            symbol_id: 0,
+            tree_id: 1,
+            payload_len: 128,
+        };
+        assert_eq!(
+            manifest.validate_block_symbol(&symbol),
+            Err(LosslessSessionValidationError::BlockSymbolRequiresFecMode)
+        );
+        assert_eq!(
+            manifest.validate_control(&LosslessSessionControl::BlockStatus {
+                status: BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                },
+            }),
+            Err(LosslessSessionValidationError::BlockStatusRequiresFecMode)
+        );
+    }
+
+    #[test]
+    fn fec_mode_rejects_plain_only_frames_and_unknown_tree_ids() {
+        let manifest = fec_manifest();
+        let data = LosslessSessionBlockData {
+            block_id: 0,
+            payload_len: 1024,
+        };
+        assert_eq!(
+            manifest.validate_block_data(&data),
+            Err(LosslessSessionValidationError::BlockDataRequiresPlainMode)
+        );
+
+        let bad_symbol = LosslessSessionBlockSymbol {
+            block_id: 0,
+            symbol_id: 5,
+            tree_id: 99,
+            payload_len: 128,
+        };
+        assert_eq!(
+            manifest.validate_block_symbol(&bad_symbol),
+            Err(LosslessSessionValidationError::BlockSymbolTreeIdNotAdvertised { tree_id: 99 })
+        );
+    }
+
+    #[test]
+    fn plain_manifest_validates_block_lengths() {
+        let manifest = plain_manifest();
+        let full_block = LosslessSessionBlockData {
+            block_id: 0,
+            payload_len: 1024,
+        };
+        manifest
+            .validate_block_data(&full_block)
+            .expect("first block should use full block size");
+
+        let tail_block = LosslessSessionBlockData {
+            block_id: 2,
+            payload_len: 452,
+        };
+        manifest
+            .validate_block_data(&tail_block)
+            .expect("tail block should use the remainder");
+
+        let bad_tail = LosslessSessionBlockData {
+            block_id: 2,
+            payload_len: 1024,
+        };
+        assert_eq!(
+            manifest.validate_block_data(&bad_tail),
+            Err(LosslessSessionValidationError::BlockDataLenMismatch {
+                block_id: 2,
+                expected: 452,
+                actual: 1024,
+            })
+        );
+    }
+
+    #[test]
+    fn decode_control_rejects_invalid_manifest_and_short_bodies() {
         let good = encode_control(
             9,
             &LosslessSessionControl::Manifest {
-                chunk_size: 4096,
-                total_bytes: 123,
+                manifest: plain_manifest(),
             },
         );
-        let mut bad = good.clone();
-        // Truncate to just header (no body)
-        bad.truncate(LosslessSessionHeader::LEN);
-        assert!(decode_control(&bad).is_none());
+        let mut truncated = good.clone();
+        truncated.truncate(LosslessSessionHeader::LEN);
+        assert!(decode_control(&truncated).is_none());
 
-        // Ready requires 8 bytes; provide fewer
         let ready = encode_control(1, &LosslessSessionControl::Ready { node_id: 7 });
         let mut bad_ready = ready.clone();
         bad_ready.truncate(LosslessSessionHeader::LEN + 4);
         assert!(decode_control(&bad_ready).is_none());
 
-        // Ack requires 8 bytes
-        let ack = encode_control(1, &LosslessSessionControl::Ack { up_to: 1 });
-        let mut bad_ack = ack.clone();
-        bad_ack.truncate(LosslessSessionHeader::LEN + 6);
-        assert!(decode_control(&bad_ack).is_none());
+        let mut bad_mode = good.clone();
+        bad_mode[LosslessSessionHeader::LEN] = 9;
+        assert!(decode_control(&bad_mode).is_none());
 
-        // EOT requires 8 bytes (index only)
-        let eot = encode_control(1, &LosslessSessionControl::Eot { last_index: 42 });
-        let mut bad_eot = eot.clone();
-        bad_eot.truncate(LosslessSessionHeader::LEN + 4);
-        assert!(decode_control(&bad_eot).is_none());
-
-        let fec_manifest = encode_control(
-            1,
-            &LosslessSessionControl::FecManifest {
-                chunk_size: 1024,
-                total_bytes: 4096,
-                fec: FecManifest::new_raptorq(32, 1400),
+        let mut bad_tree_count = encode_control(
+            10,
+            &LosslessSessionControl::Manifest {
+                manifest: fec_manifest(),
             },
         );
-        let mut bad_fec_manifest = fec_manifest.clone();
-        bad_fec_manifest.truncate(LosslessSessionHeader::LEN + 10);
-        assert!(decode_control(&bad_fec_manifest).is_none());
-
-        let fec_caps = encode_control(
-            1,
-            &LosslessSessionControl::FecCapabilities {
-                node_id: 7,
-                capabilities: FecCapabilities::default(),
-            },
-        );
-        let mut bad_fec_caps = fec_caps.clone();
-        bad_fec_caps.truncate(LosslessSessionHeader::LEN + 12);
-        assert!(decode_control(&bad_fec_caps).is_none());
-
-        let fec_status = encode_control(
-            1,
-            &LosslessSessionControl::FecStatus {
-                status: FecStatus {
-                    block_id: 1,
-                    deficit_symbols: 2,
-                },
-            },
-        );
-        let mut bad_fec_status = fec_status.clone();
-        bad_fec_status.truncate(LosslessSessionHeader::LEN + 8);
-        assert!(decode_control(&bad_fec_status).is_none());
+        bad_tree_count[LosslessSessionHeader::LEN + 2] = 7;
+        assert!(decode_control(&bad_tree_count).is_none());
     }
 
     #[test]
-    fn unknown_fec_scheme_is_preserved_for_clean_rejection() {
-        let control = LosslessSessionControl::FecManifest {
-            chunk_size: 1200,
-            total_bytes: 8192,
-            fec: FecManifest {
-                protocol_version: LOSSLESS_SESSION_FEC_VERSION,
-                scheme: 99,
-                symbols_per_block: 32,
-                symbol_size: 1200,
+    fn decode_control_rejects_plain_manifest_with_fec_fields() {
+        let mut encoded = encode_control(
+            11,
+            &LosslessSessionControl::Manifest {
+                manifest: plain_manifest(),
             },
-        };
-        let buf = encode_control(3, &control);
-        let (_, decoded) = decode_control(&buf).expect("decode control with unknown scheme");
-        let LosslessSessionControl::FecManifest { fec, .. } = decoded else {
-            panic!("expected fec manifest");
-        };
-        assert_eq!(fec.scheme, 99);
-        assert!(fec.scheme_kind().is_none());
+        );
+        let body_start = LosslessSessionHeader::LEN;
+
+        encoded[body_start + 1] = FecScheme::RaptorQ as u8;
+        encoded[body_start + 2] = 1;
+        encoded[body_start + 24..body_start + 26].copy_from_slice(&4u16.to_be_bytes());
+        encoded.extend_from_slice(&7u16.to_be_bytes());
+
+        let body_len = MANIFEST_FIXED_BODY_LEN + 2;
+        encoded[16..20].copy_from_slice(&(body_len as u32).to_be_bytes());
+
+        assert!(
+            decode_control(&encoded).is_none(),
+            "plain manifests must not carry FEC scheme, symbol, or tree-id fields"
+        );
     }
 
     #[test]
-    fn fec_controls_force_v2_header_when_requested_with_v1() {
-        let control = LosslessSessionControl::FecStatus {
-            status: FecStatus {
-                block_id: 10,
-                deficit_symbols: 1,
+    fn decode_rejects_bad_magic_and_wrong_kinds() {
+        let mut buf = encode_block_data(1, 1, b"x");
+        buf[0] = 0;
+        assert!(decode_block_data(&buf).is_none());
+
+        let symbol = encode_block_symbol(1, 0, 0, 1, b"y");
+        assert!(decode_block_data(&symbol).is_none());
+    }
+
+    #[test]
+    fn zero_deficit_block_status_is_rejected() {
+        let control = LosslessSessionControl::BlockStatus {
+            status: BlockStatus {
+                block_id: 1,
+                deficit_symbols: 0,
             },
         };
-        let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
-        let frame =
-            encode_control_into_with_version(&mut buf, 11, LOSSLESS_SESSION_BASE_VERSION, &control);
-        let (hdr, decoded) = decode_control(frame).expect("decode control");
-        assert_eq!(hdr.version, LOSSLESS_SESSION_FEC_VERSION);
-        assert_eq!(decoded, control);
+        assert_eq!(
+            control.validate(),
+            Err(LosslessSessionValidationError::ZeroDeficitSymbols)
+        );
     }
 }

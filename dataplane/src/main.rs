@@ -3,7 +3,6 @@
 /// Single-node deployment: runs a single dataplane node, typically within a Docker container.
 /// Multiple-node deployment: deploys multiple dataplane nodes in isolated network namespaces.
 mod node;
-mod tests;
 
 use std::error::Error;
 

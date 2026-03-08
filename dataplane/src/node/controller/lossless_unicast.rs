@@ -1,3 +1,5 @@
+//! Controller-facing orchestration for lossless unicast flows.
+
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
@@ -11,7 +13,9 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
-use crate::node::session::runtime::{CommonConfig, ReceiverRequest, SenderRequest};
+use crate::node::session::runtime::{
+    ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
+};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Manages controller-assigned lossless unicast flows on a dataplane node.
@@ -24,6 +28,7 @@ pub struct LosslessUnicastFlowManager {
 }
 
 impl LosslessUnicastFlowManager {
+    /// Construct a flow manager backed by the shared lossless runtime.
     pub fn new(
         cfg: LocalConfig,
         processors: ProcessorHandle,
@@ -38,7 +43,7 @@ impl LosslessUnicastFlowManager {
         }
     }
 
-    /// Installs any lossless unicast flows that target the local node (as source and/or destination).
+    /// Install controller-assigned flows that involve the local node.
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
             // Compute deterministic session_id and client_port from Flow fields.
@@ -57,6 +62,7 @@ impl LosslessUnicastFlowManager {
         }
     }
 
+    /// Start the sender side of one controller-assigned lossless flow.
     fn spawn_sender(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The controller might hand us duration-based flows that do not resolve
         // to a byte count; we skip those early so we do not start half-baked
@@ -76,6 +82,8 @@ impl LosslessUnicastFlowManager {
 
         tokio::spawn(async move {
             let runtime_config = cfg.lossless_runtime_config.clone();
+            let src_ip =
+                (cfg.node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let dst_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
@@ -89,25 +97,33 @@ impl LosslessUnicastFlowManager {
             }
 
             // We currently inject a fixed pattern; higher-level APIs fill the
-            // buffer before the flow is scheduled. Reuse a single chunk-sized
-            // template instead of allocating the entire payload up front.
-            let template_len = runtime_config.default_chunk_size.max(1);
-            let source_buffer = Bytes::from(vec![0xAAu8; template_len]);
+            // buffer before the flow is scheduled. Build the exact payload here
+            // so the session sender remains a straightforward block slicer.
+            let Ok(source_len) = usize::try_from(total_bytes) else {
+                warn!(
+                    flow_id = flow_id,
+                    total_bytes,
+                    "LosslessUnicastFlow: flow too large for explicit source buffer"
+                );
+                return;
+            };
+            let source_buffer = Bytes::from(vec![0xAAu8; source_len]);
 
-            let common = CommonConfig {
+            let session = SessionConfig {
                 session_id,
-                dest_ip: dst_ip,
-                chunk_size: runtime_config.default_chunk_size,
+                block_size: runtime_config.default_block_size,
+            };
+            let route = TransportRoute {
+                src_ip,
+                dst_ip,
                 src_port,
                 dst_port,
-                data_bucket,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
             };
 
             let sender_cfg = SenderRequest {
-                common,
+                session,
+                route,
+                pacing: data_bucket,
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
@@ -164,6 +180,7 @@ impl LosslessUnicastFlowManager {
         });
     }
 
+    /// Start the receiver side of one controller-assigned lossless flow.
     fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The receiver mirrors the sender's byte budget so the two sides agree
         // on when to terminate.
@@ -180,28 +197,27 @@ impl LosslessUnicastFlowManager {
 
         tokio::spawn(async move {
             let runtime_config = cfg.lossless_runtime_config.clone();
-            let dest_ip =
-                (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+            let src_ip =
+                (cfg.node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+            let dst_ip =
+                (flow.src_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
             let dst_port = cfg.user_space_server_port;
-            let data_bucket =
-                bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
-
-            let common = CommonConfig {
+            let session = SessionConfig {
                 session_id,
-                dest_ip,
-                chunk_size: runtime_config.default_chunk_size,
+                block_size: runtime_config.default_block_size,
+            };
+            let route = TransportRoute {
+                src_ip,
+                dst_ip,
                 src_port,
                 dst_port,
-                data_bucket,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
             };
 
             let receiver_cfg = ReceiverRequest {
-                common,
-                source_node_id: flow.src_node_id,
+                session,
+                route,
+                local_node_id: cfg.node_id,
                 expected_bytes,
                 sink_buffer: None,
             };
@@ -287,4 +303,74 @@ fn flow_id_for_unicast(cfg: &LocalConfig, flow: &Flow, src_port: u16, dst_port: 
         .ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
 
     Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nextmini_messages::{FlowSpec, FlowTransport};
+
+    fn lossless_flow(flow_len: FlowLen) -> Flow {
+        Flow {
+            controller_id: Some(17),
+            src_node_id: 3,
+            dst_node_id: 7,
+            route_id: Some(11),
+            flow_spec: FlowSpec {
+                flow_len,
+                flow_rate: Some(200),
+                flow_weight: Some(5),
+                transport: FlowTransport::LosslessUnicast,
+            },
+        }
+    }
+
+    #[test]
+    fn session_id_for_flow_is_deterministic() {
+        let flow = lossless_flow(FlowLen::Bytes(4096));
+        assert_eq!(session_id_for_flow(&flow), session_id_for_flow(&flow));
+    }
+
+    #[test]
+    fn client_port_for_flow_uses_controller_id_offset() {
+        let flow = lossless_flow(FlowLen::Bytes(1));
+        assert_eq!(client_port_for_flow(&flow, 4000), 4017);
+    }
+
+    #[test]
+    fn flow_bytes_returns_exact_byte_length() {
+        let flow = lossless_flow(FlowLen::Bytes(4096));
+        assert_eq!(flow_bytes(&flow), Some(4096));
+    }
+
+    #[test]
+    fn flow_bytes_derives_duration_length_from_rate() {
+        let flow = lossless_flow(FlowLen::Duration(2.5));
+        assert_eq!(flow_bytes(&flow), Some(500));
+    }
+
+    #[test]
+    fn flow_bytes_rejects_duration_without_rate() {
+        let mut flow = lossless_flow(FlowLen::Duration(2.5));
+        flow.flow_spec.flow_rate = None;
+        assert_eq!(flow_bytes(&flow), None);
+    }
+
+    #[test]
+    fn bucket_from_flow_rate_uses_override_or_default() {
+        let default = Some(TokenBucketSpec {
+            rate: 100,
+            bucket_size: 300,
+        });
+
+        assert_eq!(
+            bucket_from_flow_rate(Some(250), &default),
+            Some(TokenBucketSpec {
+                rate: 250,
+                bucket_size: 500,
+            })
+        );
+        assert_eq!(bucket_from_flow_rate(None, &default), default);
+    }
 }

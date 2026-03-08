@@ -118,7 +118,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
                 "group_ip": group_ip,
                 "src_node_id": src_node_id,
                 "expected_bytes": len(payload),
-                "chunk_size": args.chunk_size,
+                "block_size": args.chunk_size,
             },
             src_port=CTRL_SRC_PORT,  # source -> receiver
             dst_port=CTRL_DST_PORT,
@@ -208,7 +208,7 @@ def run_source(args: argparse.Namespace) -> nm.Dataplane:
     builder.write(payload)
     view = builder.freeze()
 
-    sid = dp.send_data(group_id, group_ip, receiver_ids, view, chunk_size=args.chunk_size)
+    sid = dp.send_data(group_id, group_ip, receiver_ids, view, block_size=args.chunk_size)
     ok = dp.lossless_wait(sid, timeout_ms=60_000)
     print(f"[src] send done ok={ok} sid={sid}", flush=True)
     return dp
@@ -262,10 +262,9 @@ def run_receiver(args: argparse.Namespace) -> nm.Dataplane:
         async def receive_wrapper() -> int:
             return await dp.receive_data_async(
                 group_id,
-                group_ip,
                 src_node_id,
                 expected_bytes=expected_bytes,
-                chunk_size=int(meta.get("chunk_size", args.chunk_size)),
+                block_size=int(meta.get("block_size", args.chunk_size)),
             )
 
         receive_task = asyncio.create_task(receive_wrapper())

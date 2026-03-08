@@ -113,7 +113,7 @@ send_sid = dp_src.send_data(
     dest_ip=group_ip,
     receiver_ids=[2, 3],
     buffer=frozen,
-    chunk_size=8192,
+    block_size=8192,
 )
 print(dp_src.lossless_wait(send_sid, timeout_ms=60_000))
 ```
@@ -129,10 +129,9 @@ dp_dst.set_group_routes(group_id=1, edges=[(1, 2), (2, 3)])
 
 recv_sid = dp_dst.receive_data(
     group_id=1,
-    dest_ip="239.255.0.10",
     source_node_id=1,
     expected_bytes=1_024_000,
-    chunk_size=8192,
+    block_size=8192,
 )
 
 async def wait_for_session() -> None:

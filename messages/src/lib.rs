@@ -10,8 +10,9 @@ use serde::{Deserialize, Serialize};
 mod ip_ser;
 pub mod lossless_session;
 pub use lossless_session::{
-    FecCapabilities, FecManifest, FecScheme, FecStatus, LOSSLESS_SESSION_BASE_VERSION,
-    LOSSLESS_SESSION_FEC_VERSION, LosslessSessionFecData,
+    BlockStatus, FecScheme, LOSSLESS_SESSION_VERSION, LosslessSessionBlockData,
+    LosslessSessionBlockSymbol, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode,
 };
 
 /// Used to indicate that an integer value is invalid.
@@ -110,10 +111,6 @@ pub enum DataplaneToController {
         group_id: GroupId,
         trees: Vec<GroupRouteTree>,
     },
-    /// Periodic lossless session stats from dataplane (feature-gated at source).
-    LosslessStats {
-        stats: LosslessStats,
-    },
 }
 
 /// The new app flow message reported to controller from a src node to dest node.
@@ -148,21 +145,6 @@ pub struct RouteAssignment {
     pub flow_id: [u8; 16],
     pub route_id: usize,
     pub time: i64,
-}
-
-/// Lossless session metrics (optional)
-#[derive(Serialize, Deserialize, Debug, Clone)]
-pub struct LosslessStats {
-    pub session_id: u64,
-    pub node_id: usize,
-    /// "sender" | "receiver"
-    pub role: String,
-    pub bytes: u64,
-    pub chunks: u64,
-    pub resends: u64,
-    pub repairs: u64,
-    pub fec_used: u64,
-    pub ts_ms: i64,
 }
 
 /// Performance metrics for a particular flow on a link from a local node to remote node.
@@ -475,4 +457,34 @@ pub struct RoutingTableEntry {
         deserialize_with = "deserialize_forward_mode"
     )]
     pub forward_mode: RouteForwardingMode,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DataplaneToController;
+
+    #[test]
+    fn dataplane_to_controller_rejects_removed_lossless_stats_variant() {
+        let payload = serde_json::json!({
+            "type": "LosslessStats",
+            "stats": {
+                "session_id": 7,
+                "node_id": 1,
+                "role": "sender",
+                "bytes": 1024,
+                "chunks": 8,
+                "resends": 0,
+                "repairs": 2,
+                "fec_used": 1,
+                "ts_ms": 12345
+            }
+        });
+
+        let decoded = serde_json::from_value::<DataplaneToController>(payload);
+
+        assert!(
+            decoded.is_err(),
+            "the controller message surface should not accept removed lossless session stats"
+        );
+    }
 }

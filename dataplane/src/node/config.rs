@@ -42,28 +42,6 @@ pub enum Feature {
     Concurrent,
 }
 
-/// Policy for deriving default FEC symbol size when runtime builds a sender manifest internally.
-#[derive(Clone, Default, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FecSymbolSizePolicy {
-    /// Default symbol size follows the session `chunk_size`.
-    #[default]
-    ChunkSize,
-    /// Default symbol size uses the configured `fec_default_symbol_size`.
-    Fixed,
-}
-
-/// Source for sender FEC tree-id allowlists when callers do not provide explicit IDs.
-#[derive(Clone, Default, Debug, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum FecTreeIdsSource {
-    /// Use `fec_default_tree_ids` from runtime config.
-    #[default]
-    Config,
-    /// Use runtime route-installed tree IDs.
-    InstalledRoutes,
-}
-
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -699,8 +677,8 @@ impl LocalConfig {
 /// Lossless session configuration knobs (consumed when the lossless subsystem is enabled).
 #[derive(Debug, Clone, Deserialize)]
 pub struct LosslessConfig {
-    /// Default data chunk size in bytes.
-    pub default_chunk_size: usize,
+    /// Default data block size in bytes.
+    pub default_block_size: usize,
 
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
@@ -709,66 +687,17 @@ pub struct LosslessConfig {
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
 
-    /// Depth of each sender-local collaborative FEC tree lane.
-    #[serde(default = "default_fec_tree_lane_depth")]
-    pub fec_tree_lane_depth: usize,
-
-    /// Maximum FEC symbols a sender dispatches per scheduler cycle.
-    #[serde(default = "default_fec_dispatch_burst")]
-    pub fec_dispatch_burst: usize,
-
-    /// Upper bound on explicit `fec_tree_ids` accepted at runtime preflight.
-    #[serde(default = "default_fec_max_tree_lanes")]
-    pub fec_max_tree_lanes: usize,
-
-    /// On/off gate for collaborative multi-tree FEC sessions.
-    #[serde(default = "default_fec_collaborative_multitree_enabled")]
-    pub fec_collaborative_multitree_enabled: bool,
-
     /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
     #[serde(default = "default_fec_enabled")]
     pub fec_enabled: bool,
 
-    /// Strict compatibility gate for FEC sessions. When false, runtime rejects FEC sessions
-    /// rather than allowing non-negotiated operation.
-    #[serde(default = "default_fec_require_capability")]
-    pub fec_require_capability: bool,
-
-    /// Default `FecManifest.symbols_per_block` used when runtime derives sender manifests internally.
+    /// Default `symbols_per_block` used when runtime derives sender manifests internally.
     #[serde(default = "default_fec_default_symbols_per_block")]
     pub fec_default_symbols_per_block: u16,
 
-    /// Policy for deriving default `FecManifest.symbol_size`.
-    #[serde(default = "default_fec_symbol_size_policy")]
-    pub fec_symbol_size_policy: FecSymbolSizePolicy,
-
-    /// Fixed default `FecManifest.symbol_size` used when `fec_symbol_size_policy=fixed`.
-    #[serde(default = "default_fec_default_symbol_size")]
-    pub fec_default_symbol_size: u16,
-
-    /// Source used to derive sender FEC tree-id allowlist when runtime internalizes FEC policy.
-    #[serde(default = "default_fec_tree_ids_source")]
-    pub fec_tree_ids_source: FecTreeIdsSource,
-
-    /// Config-driven fallback tree IDs used when `fec_tree_ids_source=config`.
+    /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
-
-    /// Lower bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbols_per_block_min")]
-    pub fec_symbols_per_block_min: u16,
-
-    /// Upper bound for `FecManifest.symbols_per_block` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbols_per_block_max")]
-    pub fec_symbols_per_block_max: u16,
-
-    /// Lower bound for `FecManifest.symbol_size` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbol_size_min")]
-    pub fec_symbol_size_min: u16,
-
-    /// Upper bound for `FecManifest.symbol_size` accepted by runtime preflight.
-    #[serde(default = "default_fec_symbol_size_max")]
-    pub fec_symbol_size_max: u16,
 
     /// Effective processor ingress policy copied from `LocalConfig.feature`.
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
@@ -781,67 +710,15 @@ pub struct LosslessConfig {
     pub ingress_channel_backpressure: bool,
 }
 
-impl LosslessConfig {
-    /// Returns an ordered `(min, max)` range for `symbols_per_block`.
-    pub fn fec_symbols_per_block_bounds(&self) -> (u16, u16) {
-        ordered_u16_bounds(
-            self.fec_symbols_per_block_min,
-            self.fec_symbols_per_block_max,
-        )
-    }
-
-    /// Returns an ordered `(min, max)` range for `symbol_size`.
-    pub fn fec_symbol_size_bounds(&self) -> (u16, u16) {
-        ordered_u16_bounds(self.fec_symbol_size_min, self.fec_symbol_size_max)
-    }
-
-    /// Returns default `symbols_per_block` clamped into configured bounds.
-    pub fn canonical_fec_default_symbols_per_block(&self) -> u16 {
-        let (min, max) = self.fec_symbols_per_block_bounds();
-        self.fec_default_symbols_per_block.clamp(min, max)
-    }
-
-    /// Returns default `symbol_size` for the given `chunk_size`, clamped into configured bounds.
-    /// Returns `None` when policy derives from `chunk_size` and it exceeds `u16::MAX`.
-    pub fn canonical_fec_default_symbol_size(&self, chunk_size: usize) -> Option<u16> {
-        let raw = match self.fec_symbol_size_policy {
-            FecSymbolSizePolicy::ChunkSize => u16::try_from(chunk_size).ok()?,
-            FecSymbolSizePolicy::Fixed => self.fec_default_symbol_size,
-        };
-        let (min, max) = self.fec_symbol_size_bounds();
-        Some(raw.clamp(min, max))
-    }
-
-    /// Returns sorted, unique default tree IDs from config.
-    pub fn canonical_fec_default_tree_ids(&self) -> Vec<u16> {
-        let mut tree_ids = self.fec_default_tree_ids.clone();
-        tree_ids.sort_unstable();
-        tree_ids.dedup();
-        tree_ids
-    }
-}
-
 impl Default for LosslessConfig {
     fn default() -> Self {
         Self {
-            default_chunk_size: 8500,
+            default_block_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
-            fec_tree_lane_depth: 32,
-            fec_dispatch_burst: 1,
-            fec_max_tree_lanes: 64,
-            fec_collaborative_multitree_enabled: true,
             fec_enabled: false,
-            fec_require_capability: true,
             fec_default_symbols_per_block: 32,
-            fec_symbol_size_policy: FecSymbolSizePolicy::ChunkSize,
-            fec_default_symbol_size: 8500,
-            fec_tree_ids_source: FecTreeIdsSource::Config,
             fec_default_tree_ids: vec![0],
-            fec_symbols_per_block_min: 1,
-            fec_symbols_per_block_max: 1024,
-            fec_symbol_size_min: 1,
-            fec_symbol_size_max: 16_384,
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
         }
@@ -852,68 +729,16 @@ const fn default_ready_grace_ms() -> u64 {
     1500
 }
 
-const fn default_fec_tree_lane_depth() -> usize {
-    32
-}
-
-const fn default_fec_dispatch_burst() -> usize {
-    1
-}
-
-const fn default_fec_max_tree_lanes() -> usize {
-    64
-}
-
-const fn default_fec_collaborative_multitree_enabled() -> bool {
-    true
-}
-
 const fn default_fec_enabled() -> bool {
     false
-}
-
-const fn default_fec_require_capability() -> bool {
-    true
 }
 
 const fn default_fec_default_symbols_per_block() -> u16 {
     32
 }
 
-const fn default_fec_symbol_size_policy() -> FecSymbolSizePolicy {
-    FecSymbolSizePolicy::ChunkSize
-}
-
-const fn default_fec_default_symbol_size() -> u16 {
-    8500
-}
-
-const fn default_fec_tree_ids_source() -> FecTreeIdsSource {
-    FecTreeIdsSource::Config
-}
-
 fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
-}
-
-const fn default_fec_symbols_per_block_min() -> u16 {
-    1
-}
-
-const fn default_fec_symbols_per_block_max() -> u16 {
-    1024
-}
-
-const fn default_fec_symbol_size_min() -> u16 {
-    1
-}
-
-const fn default_fec_symbol_size_max() -> u16 {
-    16_384
-}
-
-const fn ordered_u16_bounds(a: u16, b: u16) -> (u16, u16) {
-    if a <= b { (a, b) } else { (b, a) }
 }
 
 fn default_local_address() -> Ipv4Addr {
@@ -948,7 +773,7 @@ fn default_netmask() -> Ipv4Addr {
 
 #[cfg(test)]
 mod tests {
-    use super::{FecSymbolSizePolicy, FecTreeIdsSource, LocalConfig, LosslessConfig};
+    use super::{LocalConfig, LosslessConfig};
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -1020,40 +845,22 @@ mod tests {
     }
 
     #[test]
-    fn lossless_defaults_keep_fec_opt_in_and_strict() {
+    fn lossless_defaults_keep_fec_opt_in_and_explicit() {
         let cfg = LocalConfig::default();
         let lossless = cfg.lossless_runtime_config;
 
-        assert_eq!(lossless.fec_tree_lane_depth, 32);
-        assert_eq!(lossless.fec_dispatch_burst, 1);
-        assert_eq!(lossless.fec_max_tree_lanes, 64);
-        assert!(
-            lossless.fec_collaborative_multitree_enabled,
-            "collaborative multi-tree mode should be enabled by default"
-        );
+        assert_eq!(lossless.default_block_size, 8500);
         assert!(
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
         );
-        assert!(
-            lossless.fec_require_capability,
-            "strict capability negotiation should be enabled by default"
-        );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
-        assert_eq!(
-            lossless.fec_symbol_size_policy,
-            FecSymbolSizePolicy::ChunkSize
-        );
-        assert_eq!(lossless.fec_default_symbol_size, 8500);
-        assert_eq!(lossless.fec_tree_ids_source, FecTreeIdsSource::Config);
-        assert_eq!(lossless.canonical_fec_default_tree_ids(), vec![0]);
+        assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,
             "lossless defaults should assume backpressured ingress unless synced from LocalConfig"
         );
-        assert_eq!(lossless.fec_symbols_per_block_bounds(), (1, 1024));
-        assert_eq!(lossless.fec_symbol_size_bounds(), (1, 16_384));
     }
 
     #[test]
@@ -1077,59 +884,14 @@ mod tests {
     }
 
     #[test]
-    fn lossless_bounds_are_normalized_when_reversed() {
-        let cfg = LosslessConfig {
-            fec_symbols_per_block_min: 96,
-            fec_symbols_per_block_max: 8,
-            fec_symbol_size_min: 8192,
-            fec_symbol_size_max: 1400,
-            ..Default::default()
-        };
-
-        assert_eq!(cfg.fec_symbols_per_block_bounds(), (8, 96));
-        assert_eq!(cfg.fec_symbol_size_bounds(), (1400, 8192));
-    }
-
-    #[test]
-    fn lossless_fec_defaults_are_canonicalized_to_bounds_and_unique_tree_ids() {
+    fn lossless_fec_defaults_are_not_canonicalized() {
         let cfg = LosslessConfig {
             fec_default_symbols_per_block: 0,
-            fec_symbols_per_block_min: 8,
-            fec_symbols_per_block_max: 64,
-            fec_tree_ids_source: FecTreeIdsSource::Config,
             fec_default_tree_ids: vec![5, 1, 5, 3],
             ..Default::default()
         };
 
-        assert_eq!(cfg.canonical_fec_default_symbols_per_block(), 8);
-        assert_eq!(cfg.canonical_fec_default_tree_ids(), vec![1, 3, 5]);
-    }
-
-    #[test]
-    fn lossless_symbol_size_policy_derives_default_symbol_size() {
-        let chunk_policy = LosslessConfig {
-            fec_symbol_size_policy: FecSymbolSizePolicy::ChunkSize,
-            ..Default::default()
-        };
-        assert_eq!(
-            chunk_policy.canonical_fec_default_symbol_size(1400),
-            Some(1400)
-        );
-        assert_eq!(
-            chunk_policy.canonical_fec_default_symbol_size(usize::from(u16::MAX) + 1),
-            None
-        );
-
-        let fixed_policy = LosslessConfig {
-            fec_symbol_size_policy: FecSymbolSizePolicy::Fixed,
-            fec_default_symbol_size: 900,
-            fec_symbol_size_min: 1200,
-            fec_symbol_size_max: 1600,
-            ..Default::default()
-        };
-        assert_eq!(
-            fixed_policy.canonical_fec_default_symbol_size(1400),
-            Some(1200)
-        );
+        assert_eq!(cfg.fec_default_symbols_per_block, 0);
+        assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
     }
 }

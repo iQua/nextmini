@@ -2,7 +2,6 @@
 //!
 //! The lossless session subsystem can use this module without taking a direct
 //! dependency on frame layout or transport metadata.
-#![allow(dead_code)]
 
 use raptorq::{
     EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBlockDecoder,
@@ -28,6 +27,7 @@ pub struct BlockParams {
 }
 
 impl BlockParams {
+    /// Build a reusable encoder/decoder parameter bundle for one logical block.
     #[must_use]
     pub const fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
         Self {
@@ -49,15 +49,6 @@ impl BlockParams {
     }
 }
 
-/// Adapter-level representation of emitted source/coded symbols.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct EncodedSymbol {
-    pub esi: u32,
-    pub payload: Vec<u8>,
-    pub is_source: bool,
-    pub degree: usize,
-}
-
 /// Reason for decode failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
@@ -69,10 +60,6 @@ impl std::fmt::Display for DecodeError {
         write!(f, "InsufficientSymbols")
     }
 }
-
-/// Decode statistics (placeholder — cberner/raptorq does not expose internals).
-#[derive(Debug, Clone, Default)]
-pub struct DecodeStats;
 
 /// Opaque received symbol for decoder input.
 #[derive(Debug, Clone)]
@@ -86,8 +73,6 @@ pub struct ReceivedSymbol {
 pub struct Encoder {
     inner: SourceBlockEncoder,
     k: usize,
-    symbol_size: usize,
-    next_coded_esi: u32,
 }
 
 impl Encoder {
@@ -101,12 +86,7 @@ impl Encoder {
         let params = BlockParams::new(k, symbol_size, _seed);
         let flat = flatten_symbols(source_symbols, symbol_size);
         let inner = SourceBlockEncoder::new(0, &params.oti(), &flat);
-        Some(Self {
-            inner,
-            k,
-            symbol_size,
-            next_coded_esi: k as u32,
-        })
+        Some(Self { inner, k })
     }
 
     /// Constructs an encoder from shared block parameters.
@@ -118,47 +98,6 @@ impl Encoder {
         Self::new(source_symbols, params.symbol_size, params.seed)
     }
 
-    /// Emits systematic symbols (ESI 0..K-1) in deterministic order.
-    #[must_use]
-    pub fn emit_systematic(&mut self) -> Vec<EncodedSymbol> {
-        self.inner
-            .source_packets()
-            .into_iter()
-            .map(|pkt| {
-                let esi = pkt.payload_id().encoding_symbol_id();
-                EncodedSymbol {
-                    esi,
-                    payload: pkt.data().to_vec(),
-                    is_source: true,
-                    degree: 1,
-                }
-            })
-            .collect()
-    }
-
-    /// Emits `count` coded symbols (ESI >= K) in deterministic ESI order.
-    #[must_use]
-    pub fn emit_coded(&mut self, count: usize) -> Vec<EncodedSymbol> {
-        if count == 0 {
-            return Vec::new();
-        }
-        let coded_index = self.next_coded_esi - self.k as u32;
-        let packets = self.inner.repair_packets(coded_index, count as u32);
-        self.next_coded_esi += count as u32;
-        packets
-            .into_iter()
-            .map(|pkt| {
-                let esi = pkt.payload_id().encoding_symbol_id();
-                EncodedSymbol {
-                    esi,
-                    payload: pkt.data().to_vec(),
-                    is_source: false,
-                    degree: 0,
-                }
-            })
-            .collect()
-    }
-
     /// Generates a deterministic coded symbol payload for the provided ESI (ESI >= K).
     #[must_use]
     pub fn coded_symbol(&self, esi: u32) -> Vec<u8> {
@@ -167,36 +106,13 @@ impl Encoder {
         packets.into_iter().next().unwrap().data().to_vec()
     }
 
-    #[must_use]
-    pub const fn next_coded_esi(&self) -> u32 {
-        self.next_coded_esi
-    }
-
-    #[must_use]
-    pub fn source_symbol_count(&self) -> usize {
-        self.k
-    }
-
-    #[must_use]
-    pub fn symbol_size(&self) -> usize {
-        self.symbol_size
-    }
-}
-
-/// Lightweight decoder parameter view for callers that need sizing metadata.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DecoderParams {
-    pub source_symbols: usize,
-    pub intermediate_symbols: usize,
-    pub symbol_size: usize,
 }
 
 /// Adapter-level decode output.
 #[derive(Debug, Clone)]
 pub struct DecodeOutput {
+    /// Reconstructed source symbols in systematic order.
     pub source_symbols: Vec<Vec<u8>>,
-    pub intermediate_symbols: Vec<Vec<u8>>,
-    pub stats: DecodeStats,
 }
 
 /// Thin decoder wrapper around `raptorq::SourceBlockDecoder`.
@@ -208,6 +124,7 @@ pub struct Decoder {
 }
 
 impl Decoder {
+    /// Construct a decoder for one logical block.
     #[must_use]
     pub fn new(source_symbols: usize, symbol_size: usize, _seed: u64) -> Self {
         let params = BlockParams::new(source_symbols, symbol_size, _seed);
@@ -220,27 +137,16 @@ impl Decoder {
         }
     }
 
+    /// Construct a decoder from shared block parameters.
     #[must_use]
     pub fn from_block(params: BlockParams) -> Self {
         Self::new(params.source_symbols, params.symbol_size, params.seed)
     }
 
-    #[must_use]
-    pub fn params(&self) -> DecoderParams {
-        DecoderParams {
-            source_symbols: self.k,
-            intermediate_symbols: self.k,
-            symbol_size: self.symbol_size,
-        }
-    }
-
     /// Builds a source symbol in decoder input format.
     #[must_use]
     pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        assert!(
-            (esi as usize) < self.k,
-            "source ESI must be less than K"
-        );
+        assert!((esi as usize) < self.k, "source ESI must be less than K");
         ReceivedSymbol { esi, payload }
     }
 
@@ -250,15 +156,7 @@ impl Decoder {
         ReceivedSymbol { esi, payload }
     }
 
-    /// Returns deterministic zero-valued constraint symbols.
-    ///
-    /// The cberner/raptorq crate handles constraint equations internally,
-    /// so this returns an empty vec.
-    #[must_use]
-    pub fn constraint_symbols(&self) -> Vec<ReceivedSymbol> {
-        Vec::new()
-    }
-
+    /// Attempt to reconstruct the source symbols from the received symbol set.
     pub fn decode(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
         let mut decoder = SourceBlockDecoder::new(0, &self.oti, self.block_length);
         let packets: Vec<EncodingPacket> = symbols
@@ -275,8 +173,7 @@ impl Decoder {
                         source_syms.push(flat_data[start..end].to_vec());
                     } else if start < flat_data.len() {
                         let mut sym = vec![0u8; self.symbol_size];
-                        sym[..flat_data.len() - start]
-                            .copy_from_slice(&flat_data[start..]);
+                        sym[..flat_data.len() - start].copy_from_slice(&flat_data[start..]);
                         source_syms.push(sym);
                     } else {
                         source_syms.push(vec![0u8; self.symbol_size]);
@@ -284,8 +181,6 @@ impl Decoder {
                 }
                 Ok(DecodeOutput {
                     source_symbols: source_syms,
-                    intermediate_symbols: Vec::new(),
-                    stats: DecodeStats,
                 })
             }
             None => Err(DecodeError::InsufficientSymbols),
@@ -326,13 +221,12 @@ mod tests {
             .collect();
 
         let params = BlockParams::new(k, symbol_size, 0);
-        let mut encoder = Encoder::from_block(params, &source_data).unwrap();
         let decoder = Decoder::from_block(params);
 
-        let systematic = encoder.emit_systematic();
-        let symbols: Vec<ReceivedSymbol> = systematic
+        let symbols: Vec<ReceivedSymbol> = source_data
             .iter()
-            .map(|s| decoder.source_symbol(s.esi, s.payload.clone()))
+            .enumerate()
+            .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
             .collect();
         let output = decoder.decode(&symbols).unwrap();
         for (i, (decoded, expected)) in output
@@ -358,21 +252,21 @@ mod tests {
             .collect();
 
         let params = BlockParams::new(k, symbol_size, 0);
-        let mut encoder = Encoder::from_block(params, &source_data).unwrap();
+        let encoder = Encoder::from_block(params, &source_data).unwrap();
         let decoder = Decoder::from_block(params);
 
-        let systematic = encoder.emit_systematic();
-        let coded = encoder.emit_coded(k);
         let half_k = k / 2;
 
-        let mut symbols: Vec<ReceivedSymbol> = systematic[..half_k]
+        let mut symbols: Vec<ReceivedSymbol> = source_data[..half_k]
             .iter()
-            .map(|s| decoder.source_symbol(s.esi, s.payload.clone()))
+            .enumerate()
+            .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
             .collect();
         symbols.extend(
-            coded[..k - half_k]
-                .iter()
-                .map(|s| decoder.coded_symbol(s.esi, s.payload.clone())),
+            (0..(k - half_k)).map(|offset| {
+                let esi = k as u32 + offset as u32;
+                decoder.coded_symbol(esi, encoder.coded_symbol(esi))
+            }),
         );
 
         let output = decoder.decode(&symbols).unwrap();

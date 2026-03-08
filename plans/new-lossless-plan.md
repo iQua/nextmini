@@ -232,6 +232,7 @@ to `block_size` during the migration.
 
 ### T3 — Rework The Wire Protocol In `messages/`
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Replace the old wire model with a block-first protocol.
   - Define the frame set:
@@ -256,9 +257,31 @@ to `block_size` during the migration.
 - Validation:
   - unit tests for encode/decode round-trips
   - grep confirms no old chunk/cumulative wire variants remain in the active API
+- Work log:
+  - Rewrote `messages/src/lossless_session.rs` around a single cutover version and
+    block-first frame set: `BlockData`, `BlockSymbol`, and control
+    `{Manifest, Ready, BlockAck, BlockStatus, Eot}`.
+  - Moved mode selection into `LosslessSessionManifest` using
+    `LosslessSessionMode::{Plain, Fec(...)}` instead of split legacy/FEC manifest
+    types.
+  - Added manifest-aware validation helpers for block geometry, FEC tree sets,
+    plain-vs-FEC frame legality, and zero-deficit `BlockStatus` rejection.
+  - Updated `messages/src/lib.rs` re-exports to the new message-surface types.
+- Files modified:
+  - `messages/src/lossless_session.rs`
+  - `messages/src/lib.rs`
+  - `plans/new-lossless-plan.md`
+- Validation performed:
+  - `cargo test -p nextmini-messages`
+  - `rg -n "\\bAck\\b|\\bFecManifest\\b|\\bFecCapabilities\\b|\\bFecStatus\\b|\\bencode_data\\b|\\bdecode_data\\b|\\bencode_fec_data\\b|\\bdecode_fec_data\\b|\\bchunk_size\\b|\\blast_index\\b|\\bLosslessSessionData\\b|\\bLosslessSessionFecData\\b|\\bLOSSLESS_SESSION_BASE_VERSION\\b|\\bLOSSLESS_SESSION_FEC_VERSION\\b" messages/src/lossless_session.rs messages/src/lib.rs`
+- Errors/gotchas:
+  - This task intentionally updates the `messages/` wire surface first. Downstream
+    dataplane/runtime call sites still refer to the old protocol and are expected
+    to be migrated by dependent tasks instead of being redesigned here.
 
 ### T4 — Build Shared Block Geometry And Shared Ledgers
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Implement `plan.rs` for:
     - `total_blocks`
@@ -279,9 +302,32 @@ to `block_size` during the migration.
 - Validation:
   - unit tests for offset math, final-block boundaries, duplicate ack behavior,
     and completion criteria
+- Work log:
+  - Added `dataplane/src/node/session/plan.rs` with shared block geometry,
+    final-block sizing, and FEC source-symbol range derivation.
+  - Added `dataplane/src/node/session/ledger.rs` with per-peer per-block ACK
+    tracking, duplicate-ACK idempotence, and session-completion bookkeeping.
+  - Exported the new modules from `dataplane/src/node/session/mod.rs`.
+- Files modified/created:
+  - `dataplane/src/node/session/mod.rs`
+  - `dataplane/src/node/session/plan.rs`
+  - `dataplane/src/node/session/ledger.rs`
+  - `plans/new-lossless-plan.md`
+- Validation performed:
+  - Attempted `cargo test -p nextmini --lib node::session::plan`
+  - `rustc --edition 2024 --test dataplane/src/node/session/plan.rs -o /tmp/nextmini_plan_tests && /tmp/nextmini_plan_tests`
+  - `rustc --edition 2024 --test dataplane/src/node/session/ledger.rs -o /tmp/nextmini_ledger_tests && /tmp/nextmini_ledger_tests`
+- Errors/gotchas:
+  - Initial ledger implementation borrowed `self` immutably after taking a
+    mutable block borrow; fixed before validation.
+  - The narrow cargo test is currently blocked by parallel protocol rewrite work:
+    `messages/src/lossless_session.rs` has already moved to block-first wire types
+    while legacy session/runtime modules outside T4 still reference the removed
+    chunk/FEC symbols and helpers.
 
 ### T5 — Add Tree-Visible Non-Blocking Processor Ingress Contract
 - `depends_on: [T1]`
+- `status: completed`
 - Scope:
   - Make processor ingress the FEC backpressure boundary.
   - Expose non-blocking submission with explicit result values such as:
@@ -298,9 +344,33 @@ to `block_size` during the migration.
   - sender-usable non-blocking ingress API
   - clear runtime guardrails for sequential/tree-visible ingress
 - Validation:
-  - targeted tests for per-tree backpressure signaling
-  - explicit negative test for shared-queue mode if it cannot supply per-tree
-    semantics
+  - `cargo test -p nextmini processor::tests --lib`
+- Work log:
+  - Confirmed current `HEAD` already contains the explicit lossless-ingress
+    contract surface in `dataplane/src/node/processor.rs`:
+    `LosslessIngressContract`, `LosslessIngressSubmission`,
+    `ProcessorHandle::lossless_ingress_contract`, and
+    `ProcessorHandle::try_submit_lossless_packet`.
+  - Validated that sequential ingress hashes FEC packets by `(flow_id, tree_id)`
+    and reports `TreeVisibleNonBlocking` semantics.
+  - Classified concurrent ingress and remote `OperatingMode::Max` connector
+    routing as `SharedQueueNonBlocking`, making unsupported non-tree-visible
+    paths explicit for later preflight/sender gating.
+  - Confirmed targeted processor tests cover both per-tree backpressure and
+    explicit shared-queue negative behavior.
+- Files modified:
+  - `dataplane/src/node/processor.rs`
+  - `plans/new-lossless-plan.md`
+- Errors/gotchas:
+  - The repository already had `try_process_packet` and `SendOutcome`; T5 is
+    the additional tree-visibility contract layered on top of that non-blocking
+    result surface.
+  - Sequential processor ingress is tree-visible, but remote
+    `OperatingMode::Max` traffic still enters through the connector's shared
+    queue and must not be treated as collaborative multi-tree capable.
+  - By commit time, the processor-side code for this task had already landed in
+    local `HEAD` as `254388f`, so this task commit only records validation and
+    plan status.
 
 ### T6 — Rebuild The Session Runtime Around Typed Block-First Frames
 - `depends_on: [T2, T3, T4]`

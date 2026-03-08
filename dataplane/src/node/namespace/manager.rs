@@ -11,7 +11,6 @@ use nix::sys::signal::{Signal, kill};
 use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd;
 use nix::unistd::Pid;
-use rand::{Rng, rng};
 use tokio::runtime;
 use tracing::{error, info, warn};
 use url::Url;
@@ -92,10 +91,9 @@ fn random_suffix(len: usize) -> String {
     const CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ\
                              abcdefghijklmnopqrstuvwxyz\
                              0123456789";
-    let mut rng = rng();
     (0..len)
         .map(|_| {
-            let idx = rng.random_range(0..CHARSET.len());
+            let idx = rand::random_range(0..CHARSET.len());
             CHARSET[idx] as char
         })
         .collect()

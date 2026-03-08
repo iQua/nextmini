@@ -45,7 +45,7 @@ Group and multicast calls (`create_group`, `join_group`, `leave_group`, `set_gro
 
 Lossless methods also run inside existing runtime state. `Dataplane` captures the shared `LosslessRuntimeHandle` from `Conductor` and delegates sender/receiver setup to it.
 
-`send_data` validates the request (`receiver_ids`, `chunk_size`, non-empty buffer) and starts a sender session.
+`send_data` validates the request (`receiver_ids`, `block_size`, non-empty buffer) and starts a sender session.
 `send_data` and `receive_data` compute the same session id format from `(group_id, source_node_id)`; the sender uses its local node id as source, while the receiver passes explicit `source_node_id`.
 
 `receive_data` and `receive_data_async` register receive requests, preallocate a sink buffer when requested, and keep that buffer in a local registry keyed by session id until explicitly consumed.

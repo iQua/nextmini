@@ -331,7 +331,7 @@ class Trainer:
             self.group_ip,
             receiver_ids,
             view,
-            chunk_size=config.CHUNK_SIZE,
+            block_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT # All workers listen on BASE_PORT for multicast
         )
@@ -510,7 +510,7 @@ class Trainer:
             self.group_ip,
             receiver_ids,
             view,
-            chunk_size=config.CHUNK_SIZE,
+            block_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT
         )
@@ -572,10 +572,9 @@ class Trainer:
                     # IMPORTANT: Register receiver FIRST, before signaling worker
                     sid = self.dataplane.receive_data(
                         rollout_group_id,
-                        self.user_space_address,
                         worker_node_id,
                         expected_bytes=size,
-                        chunk_size=config.CHUNK_SIZE,
+                        block_size=config.CHUNK_SIZE,
                         src_port=worker_port,
                         dst_port=config.TRAINER_PORT,
                     )

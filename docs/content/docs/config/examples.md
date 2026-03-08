@@ -84,21 +84,9 @@ delay_tolerance = 500
 backlog_tolerance = 0
 
 [lossless_runtime_config]
-default_chunk_size = 8500
+default_block_size = 8500
 ready_grace_ms = 1500
-fec_tree_lane_depth = 32
-fec_dispatch_burst = 1
-fec_max_tree_lanes = 64
-fec_collaborative_multitree_enabled = true
 fec_enabled = false
-fec_require_capability = true
 fec_default_symbols_per_block = 32
-fec_symbol_size_policy = "chunk_size"
-fec_default_symbol_size = 8500
-fec_tree_ids_source = "config"
 fec_default_tree_ids = [0]
-fec_symbols_per_block_min = 1
-fec_symbols_per_block_max = 1024
-fec_symbol_size_min = 1
-fec_symbol_size_max = 16384
 ```

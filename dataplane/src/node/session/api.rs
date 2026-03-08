@@ -1,50 +1,47 @@
+//! Lightweight runtime-facing types shared across the lossless session actor.
+
 use tokio::sync::oneshot;
 
 use crate::node::session::runtime::{PreflightError, ReceiverRequest, SenderRequest};
 
+/// Opaque identifier used to route lossless session control and data frames.
 pub type SessionId = u64;
 
-// Re-export the LosslessRuntimeHandle as the public API
 pub use crate::node::session::runtime::LosslessRuntimeHandle;
 
 /// Metadata and payload extracted from inbound lossless frames.
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
-    /// Raw payload extracted from the transport pipeline.
+    /// Raw session frame bytes.
     pub bytes: Vec<u8>,
-    /// Optional identifier for the peer that sourced the frame.
+    /// Optional peer identity derived from the lower transport path.
     pub peer_id: Option<usize>,
 }
 
-/// Commands processed by the lossless runtime event loop. Most commands are
-/// async (reply over oneshot) so the caller can await session IDs or
-/// completion state.
+/// Commands sent to the background lossless runtime task.
 pub(super) enum Command {
+    /// Start a sender task for the provided session request.
     StartSender {
         cfg: SenderRequest,
         reply: oneshot::Sender<Result<SessionId, PreflightError>>,
     },
+    /// Start a receiver task for the provided session request.
     StartReceiver {
         cfg: ReceiverRequest,
         reply: oneshot::Sender<SessionId>,
     },
-    Stop {
-        session: SessionId,
-    },
-    /// Deliver an inbound lossless frame (bytes) to a receiver session.
+    /// Abort and remove a running session task.
+    Stop { session: SessionId },
+    /// Deliver one decoded session frame to the matching task.
     Deliver {
         session: SessionId,
         frame: InboundFrame,
     },
+    /// Wait for a task to finish and report whether it existed.
     Wait {
         session: SessionId,
         reply: oneshot::Sender<bool>,
     },
-    #[allow(dead_code)]
-    AllocateSession {
-        reply: oneshot::Sender<SessionId>,
-    },
-    SetTopologyReady {
-        ready: bool,
-    },
+    /// Update the sender-side topology-ready gate shared by new sessions.
+    SetTopologyReady { ready: bool },
 }
