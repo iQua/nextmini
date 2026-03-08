@@ -2285,7 +2285,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::LosslessRuntimeHandle;
-use crate::node::session::unicast::LosslessUnicastFlowManager;
+use crate::node::controller::lossless_unicast::LosslessUnicastFlowManager;
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -2365,7 +2365,7 @@ impl ControllerInterfaceHandle {
             LosslessRuntimeHandle::new(processors.clone(), config.lossless_runtime_config.clone());
         processors.connect_lossless_handle(lossless_runtime.clone());
 
-        // creates the lossless unicast flow manager with the correct processors
+        // creates the controller-facing lossless unicast flow manager with the correct processors
         let lossless_unicast = LosslessUnicastFlowManager::new(
             config.clone(),
             processors.clone(),

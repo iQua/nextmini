@@ -1,4 +1,4 @@
-//! Controller-facing glue for lossless unicast flows.
+//! Controller-facing orchestration for lossless unicast flows.
 
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -299,4 +299,74 @@ fn flow_id_for_unicast(cfg: &LocalConfig, flow: &Flow, src_port: u16, dst_port: 
         .ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
 
     Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use nextmini_messages::{FlowSpec, FlowTransport};
+
+    fn lossless_flow(flow_len: FlowLen) -> Flow {
+        Flow {
+            controller_id: Some(17),
+            src_node_id: 3,
+            dst_node_id: 7,
+            route_id: Some(11),
+            flow_spec: FlowSpec {
+                flow_len,
+                flow_rate: Some(200),
+                flow_weight: Some(5),
+                transport: FlowTransport::LosslessUnicast,
+            },
+        }
+    }
+
+    #[test]
+    fn session_id_for_flow_is_deterministic() {
+        let flow = lossless_flow(FlowLen::Bytes(4096));
+        assert_eq!(session_id_for_flow(&flow), session_id_for_flow(&flow));
+    }
+
+    #[test]
+    fn client_port_for_flow_uses_controller_id_offset() {
+        let flow = lossless_flow(FlowLen::Bytes(1));
+        assert_eq!(client_port_for_flow(&flow, 4000), 4017);
+    }
+
+    #[test]
+    fn flow_bytes_returns_exact_byte_length() {
+        let flow = lossless_flow(FlowLen::Bytes(4096));
+        assert_eq!(flow_bytes(&flow), Some(4096));
+    }
+
+    #[test]
+    fn flow_bytes_derives_duration_length_from_rate() {
+        let flow = lossless_flow(FlowLen::Duration(2.5));
+        assert_eq!(flow_bytes(&flow), Some(500));
+    }
+
+    #[test]
+    fn flow_bytes_rejects_duration_without_rate() {
+        let mut flow = lossless_flow(FlowLen::Duration(2.5));
+        flow.flow_spec.flow_rate = None;
+        assert_eq!(flow_bytes(&flow), None);
+    }
+
+    #[test]
+    fn bucket_from_flow_rate_uses_override_or_default() {
+        let default = Some(TokenBucketSpec {
+            rate: 100,
+            bucket_size: 300,
+        });
+
+        assert_eq!(
+            bucket_from_flow_rate(Some(250), &default),
+            Some(TokenBucketSpec {
+                rate: 250,
+                bucket_size: 500,
+            })
+        );
+        assert_eq!(bucket_from_flow_rate(None, &default), default);
+    }
 }
