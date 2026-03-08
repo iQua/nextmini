@@ -33,7 +33,9 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
     let session_id = 0xA11C_E301;
     runtime
         .start_sender(SenderRequest {
-            common: capture.common_config(session_id, 16),
+            session: capture.session_config(session_id, 16),
+            route: capture.route(),
+            pacing: None,
             receiver_ids: vec![RECEIVER_NODE_ID],
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
@@ -113,7 +115,9 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
     let session_id = 0xA11C_E302;
     runtime
         .start_sender(SenderRequest {
-            common: capture.common_config(session_id, 16),
+            session: capture.session_config(session_id, 16),
+            route: capture.route(),
+            pacing: None,
             receiver_ids: vec![RECEIVER_NODE_ID],
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"qrstuvwxyzabcdef"),

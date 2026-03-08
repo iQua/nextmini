@@ -18,38 +18,39 @@ use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
 use crate::node::session::api::{Command, InboundFrame, SessionId};
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::{fec_policy, receiver, sender};
-use crate::node::{NodeId, NodeIdExt};
-
 pub use crate::node::session::fec_policy::PreflightError;
 
 /// Settings shared by sender and receiver session tasks.
 #[derive(Clone, Debug)]
-pub struct CommonConfig {
+pub struct SessionConfig {
     /// Session identifier used for frame routing.
     pub session_id: SessionId,
-    /// Peer IP address for the synthetic TCP wrapper.
-    pub dest_ip: Ipv4Addr,
     /// Canonical logical block size for this transfer.
     pub block_size: usize,
+}
+
+/// Precomputed transport envelope used for outbound lossless session frames.
+#[derive(Clone, Copy, Debug)]
+pub struct TransportRoute {
+    /// Local source IP address for the synthetic TCP wrapper.
+    pub src_ip: Ipv4Addr,
+    /// Remote destination IP address for the synthetic TCP wrapper.
+    pub dst_ip: Ipv4Addr,
     /// Local TCP source port used for outbound frames.
     pub src_port: u16,
     /// Remote TCP destination port used for outbound frames.
     pub dst_port: u16,
-    /// Optional pacing configuration applied to outbound data.
-    pub data_bucket: Option<TokenBucketSpec>,
-    /// Local node identifier used to derive the source address.
-    pub local_node_id: usize,
-    /// Base address for user-space node addressing.
-    pub user_space_base_addr: Ipv4Addr,
-    /// Netmask paired with `user_space_base_addr`.
-    pub local_netmask: Ipv4Addr,
 }
 
 /// User-facing request used to start a sender session.
 #[derive(Clone, Debug)]
 pub struct SenderRequest {
-    /// Shared per-session transport settings.
-    pub common: CommonConfig,
+    /// Shared per-session settings.
+    pub session: SessionConfig,
+    /// Precomputed transport envelope for sender traffic.
+    pub route: TransportRoute,
+    /// Optional pacing configuration applied to outbound data.
+    pub pacing: Option<TokenBucketSpec>,
     /// Receiver node IDs expected to acknowledge each block.
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
@@ -63,10 +64,12 @@ pub struct SenderRequest {
 /// User-facing request used to start a receiver session.
 #[derive(Clone, Debug)]
 pub struct ReceiverRequest {
-    /// Shared per-session transport settings.
-    pub common: CommonConfig,
-    /// Sender node ID expected to originate the transfer.
-    pub source_node_id: usize,
+    /// Shared per-session settings.
+    pub session: SessionConfig,
+    /// Precomputed transport envelope for receiver control traffic.
+    pub route: TransportRoute,
+    /// Local node identifier advertised in READY.
+    pub local_node_id: usize,
     /// Expected number of payload bytes for the completed object.
     pub expected_bytes: u64,
     /// Optional in-memory sink populated with completed blocks.
@@ -76,8 +79,12 @@ pub struct ReceiverRequest {
 /// Fully derived sender configuration passed to the sender task.
 #[derive(Clone, Debug)]
 pub struct SenderConfig {
-    /// Shared per-session transport settings.
-    pub common: CommonConfig,
+    /// Shared per-session settings.
+    pub session: SessionConfig,
+    /// Precomputed transport envelope for sender traffic.
+    pub route: TransportRoute,
+    /// Optional pacing configuration applied to outbound data.
+    pub pacing: Option<TokenBucketSpec>,
     /// Receiver node IDs expected to acknowledge each block.
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
@@ -95,10 +102,12 @@ pub struct SenderConfig {
 /// Fully derived receiver configuration passed to the receiver task.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
-    /// Shared per-session transport settings.
-    pub common: CommonConfig,
-    /// Sender node ID expected to originate the transfer.
-    pub source_node_id: usize,
+    /// Shared per-session settings.
+    pub session: SessionConfig,
+    /// Precomputed transport envelope for receiver control traffic.
+    pub route: TransportRoute,
+    /// Local node identifier advertised in READY.
+    pub local_node_id: usize,
     /// Expected number of payload bytes for the completed object.
     pub expected_bytes: u64,
     /// Optional in-memory sink populated with completed blocks.
@@ -282,11 +291,11 @@ impl LosslessRuntime {
 
     /// Derive sender state, allocate an ingress channel, and spawn the sender task.
     fn spawn_sender(&mut self, req: SenderRequest) -> Result<SessionId, PreflightError> {
-        let sid = req.common.session_id;
-        let block_size = fec_policy::validate_block_size(req.common.block_size)?;
-        let plan = BlockPlan::new(req.total_bytes, req.common.block_size).map_err(|_| {
+        let sid = req.session.session_id;
+        let block_size = fec_policy::validate_block_size(req.session.block_size)?;
+        let plan = BlockPlan::new(req.total_bytes, req.session.block_size).map_err(|_| {
             PreflightError::InvalidBlockSize {
-                value: req.common.block_size,
+                value: req.session.block_size,
             }
         })?;
         let policy = fec_policy::derive_sender_policy(&self.config)?;
@@ -299,10 +308,12 @@ impl LosslessRuntime {
         manifest
             .validate()
             .expect("runtime-derived manifest must validate");
-        self.validate_sender_ingress_contract(&req.common, &manifest)?;
+        self.validate_sender_ingress_contract(&req.route, &req.session, &manifest)?;
 
         let mut cfg = SenderConfig {
-            common: req.common,
+            session: req.session,
+            route: req.route,
+            pacing: req.pacing,
             receiver_ids: req.receiver_ids,
             total_bytes: req.total_bytes,
             source_buffer: req.source_buffer,
@@ -328,7 +339,8 @@ impl LosslessRuntime {
     /// tree-specific non-blocking backpressure for this exact path.
     fn validate_sender_ingress_contract(
         &self,
-        common: &CommonConfig,
+        route: &TransportRoute,
+        session: &SessionConfig,
         manifest: &LosslessSessionManifest,
     ) -> Result<(), PreflightError> {
         let nextmini_messages::lossless_session::LosslessSessionMode::Fec(fec) = &manifest.mode
@@ -339,15 +351,13 @@ impl LosslessRuntime {
             return Ok(());
         }
 
-        let src_ip = (common.local_node_id as NodeId)
-            .ip_addr(common.user_space_base_addr, common.local_netmask);
         let probe = Packet::build_ipv4_tcp_packet_with_lossless_meta(
-            src_ip,
-            common.src_port,
-            common.dest_ip,
-            common.dst_port,
+            route.src_ip,
+            route.src_port,
+            route.dst_ip,
+            route.dst_port,
             Some(LosslessTransportMeta {
-                session_id: common.session_id,
+                session_id: session.session_id,
                 tree_id: Some(fec.tree_ids[0]),
             }),
             b"x",
@@ -363,10 +373,11 @@ impl LosslessRuntime {
 
     /// Allocate an ingress channel and spawn the receiver task.
     fn spawn_receiver(&mut self, req: ReceiverRequest) -> SessionId {
-        let sid = req.common.session_id;
+        let sid = req.session.session_id;
         let cfg = ReceiverConfig {
-            common: req.common,
-            source_node_id: req.source_node_id,
+            session: req.session,
+            route: req.route,
+            local_node_id: req.local_node_id,
             expected_bytes: req.expected_bytes,
             sink_buffer: req.sink_buffer,
             fec_enabled: self.config.fec_enabled,

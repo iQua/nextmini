@@ -8,8 +8,6 @@ mod fec;
 mod plain;
 
 use std::collections::BTreeSet;
-use std::net::Ipv4Addr;
-
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
@@ -25,8 +23,7 @@ use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
 use crate::node::session::ledger::SessionLedger;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
-use crate::node::session::runtime::{CommonConfig, SenderConfig};
-use crate::node::{NodeId, NodeIdExt};
+use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
 
 use self::fec::FecSender;
 use self::plain::PlainSender;
@@ -68,7 +65,8 @@ struct SessionSender {
 
 /// Sender state that is truly common across plain and FEC modes.
 pub(super) struct SenderShared {
-    pub(super) common: CommonConfig,
+    pub(super) session: SessionConfig,
+    pub(super) route: TransportRoute,
     pub(super) processors: ProcessorHandle,
     pub(super) manifest: LosslessSessionManifest,
     pub(super) receiver_ids: Vec<usize>,
@@ -79,7 +77,6 @@ pub(super) struct SenderShared {
     pub(super) ledger: SessionLedger,
     pub(super) ready_grace: Duration,
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
-    pub(super) src_ip: Ipv4Addr,
     pub(super) pacer: Option<TokenBucket>,
 }
 
@@ -136,13 +133,11 @@ impl BlockSource {
 impl SessionSender {
     /// Build sender state from the validated runtime configuration.
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
-        let plan = BlockPlan::new(cfg.total_bytes, cfg.common.block_size)
+        let plan = BlockPlan::new(cfg.total_bytes, cfg.session.block_size)
             .map_err(|_| "invalid block plan for sender")?;
         let ledger = SessionLedger::new(plan.total_blocks(), cfg.receiver_ids.iter().copied())
             .map_err(|_| "unable to allocate sender ledger")?;
-        let src_ip = (cfg.common.local_node_id as NodeId)
-            .ip_addr(cfg.common.user_space_base_addr, cfg.common.local_netmask);
-        let pacer = cfg.common.data_bucket.clone().map(TokenBucket::new);
+        let pacer = cfg.pacing.clone().map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer.clone());
         let receiver_set = cfg.receiver_ids.iter().copied().collect::<BTreeSet<_>>();
@@ -154,7 +149,8 @@ impl SessionSender {
 
         Ok(Self {
             shared: SenderShared {
-                common: cfg.common,
+                session: cfg.session,
+                route: cfg.route,
                 processors,
                 manifest,
                 receiver_ids: cfg.receiver_ids,
@@ -165,7 +161,6 @@ impl SessionSender {
                 ledger,
                 ready_grace,
                 topology_ready: cfg.topology_ready,
-                src_ip,
                 pacer,
             },
             mode,
@@ -175,7 +170,7 @@ impl SessionSender {
     /// Execute the sender state machine for the negotiated transfer mode.
     async fn run(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
         info!(
-            session_id = self.shared.common.session_id,
+            session_id = self.shared.session.session_id,
             total_bytes = self.shared.manifest.total_bytes,
             total_blocks = self.shared.manifest.total_blocks,
             receivers = self.shared.receiver_ids.len(),
@@ -198,7 +193,7 @@ impl SessionSender {
         }
 
         info!(
-            session_id = self.shared.common.session_id,
+            session_id = self.shared.session.session_id,
             complete = self.shared.ledger.is_complete(),
             "Lossless sender finished"
         );
@@ -264,7 +259,7 @@ impl SenderShared {
                 .copied()
                 .collect::<Vec<_>>();
             warn!(
-                session_id = self.common.session_id,
+                session_id = self.session.session_id,
                 ?missing,
                 "Lossless sender opening data gate before all receivers sent Ready"
             );
@@ -344,12 +339,12 @@ impl SenderShared {
         control::send_control(
             &self.processors,
             control::FrameRoute {
-                session_id: self.common.session_id,
+                session_id: self.session.session_id,
                 tree_id: None,
-                src_ip: self.src_ip,
-                src_port: self.common.src_port,
-                dst_ip: self.common.dest_ip,
-                dst_port: self.common.dst_port,
+                src_ip: self.route.src_ip,
+                src_port: self.route.src_port,
+                dst_ip: self.route.dst_ip,
+                dst_port: self.route.dst_port,
             },
             &LosslessSessionControl::Manifest {
                 manifest: self.manifest.clone(),
@@ -363,12 +358,12 @@ impl SenderShared {
         control::send_control(
             &self.processors,
             control::FrameRoute {
-                session_id: self.common.session_id,
+                session_id: self.session.session_id,
                 tree_id: None,
-                src_ip: self.src_ip,
-                src_port: self.common.src_port,
-                dst_ip: self.common.dest_ip,
-                dst_port: self.common.dst_port,
+                src_ip: self.route.src_ip,
+                src_port: self.route.src_port,
+                dst_ip: self.route.dst_ip,
+                dst_port: self.route.dst_port,
             },
             &LosslessSessionControl::Eot,
         )

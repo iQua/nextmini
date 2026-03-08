@@ -10,7 +10,9 @@ use nextmini::node::NodeIdExt;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::LosslessRuntimeHandle;
-use nextmini::node::session::runtime::{CommonConfig, PreflightError, SenderRequest};
+use nextmini::node::session::runtime::{
+    PreflightError, SenderRequest, SessionConfig, TransportRoute,
+};
 use nextmini_messages::OperatingMode;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionMode};
 
@@ -37,7 +39,9 @@ async fn start_runtime_sender(
 
     let started_sid = runtime
         .start_sender(SenderRequest {
-            common: capture.common_config(session_id, 16),
+            session: capture.session_config(session_id, 16),
+            route: capture.route(),
+            pacing: None,
             receiver_ids: vec![2],
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
@@ -64,17 +68,17 @@ async fn start_sender_with_runtime_config(
 
     runtime
         .start_sender(SenderRequest {
-            common: CommonConfig {
+            session: SessionConfig {
                 session_id,
-                dest_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
                 block_size: 16,
+            },
+            route: TransportRoute {
+                src_ip: cfg.node_id.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                dst_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
                 src_port: 4410,
                 dst_port: 5410,
-                data_bucket: None,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
             },
+            pacing: None,
             receiver_ids: vec![2],
             total_bytes: 64,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),

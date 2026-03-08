@@ -9,7 +9,7 @@ use nextmini::node::config::LocalConfig;
 use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
-use nextmini::node::session::runtime::CommonConfig;
+use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -23,17 +23,22 @@ pub struct PacketCaptureHarness {
 }
 
 impl PacketCaptureHarness {
-    pub fn common_config(&self, session_id: u64, block_size: usize) -> CommonConfig {
-        CommonConfig {
+    pub fn session_config(&self, session_id: u64, block_size: usize) -> SessionConfig {
+        SessionConfig {
             session_id,
-            dest_ip: self.dst_ip,
             block_size,
+        }
+    }
+
+    pub fn route(&self) -> TransportRoute {
+        TransportRoute {
+            src_ip: self
+                .cfg
+                .node_id
+                .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask),
+            dst_ip: self.dst_ip,
             src_port: self.src_port,
             dst_port: self.dst_port,
-            data_bucket: None,
-            local_node_id: self.cfg.node_id,
-            user_space_base_addr: self.cfg.user_space_base_addr,
-            local_netmask: self.cfg.local_netmask,
         }
     }
 }

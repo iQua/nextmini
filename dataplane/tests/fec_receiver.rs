@@ -11,7 +11,7 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::receiver;
-use nextmini::node::session::runtime::{CommonConfig, ReceiverConfig};
+use nextmini::node::session::runtime::{ReceiverConfig, SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
     self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode,
@@ -62,18 +62,17 @@ async fn build_receiver_harness(expected_bytes: u64) -> ReceiverHarness {
 
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        common: CommonConfig {
+        session: SessionConfig {
             session_id: SESSION_ID,
-            dest_ip: dst_ip,
             block_size: 8,
+        },
+        route: TransportRoute {
+            src_ip,
+            dst_ip,
             src_port: SRC_PORT,
             dst_port: DST_PORT,
-            data_bucket: None,
-            local_node_id: RECEIVER_NODE_ID,
-            user_space_base_addr: cfg.user_space_base_addr,
-            local_netmask: cfg.local_netmask,
         },
-        source_node_id: SOURCE_NODE_ID,
+        local_node_id: RECEIVER_NODE_ID,
         expected_bytes,
         sink_buffer: Some(sink.clone()),
         fec_enabled: true,

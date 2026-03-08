@@ -195,7 +195,7 @@ impl FecSender {
             let idx = (self.next_tree_rr + offset) % self.tree_ids.len();
             let tree_id = self.tree_ids[idx];
             let frame = lossless_session::encode_block_symbol(
-                shared.common.session_id,
+                shared.session.session_id,
                 block_id,
                 symbol_id,
                 tree_id,
@@ -204,12 +204,12 @@ impl FecSender {
             let submission = control::try_send_frame(
                 &shared.processors,
                 control::FrameRoute {
-                    session_id: shared.common.session_id,
+                    session_id: shared.session.session_id,
                     tree_id: Some(tree_id),
-                    src_ip: shared.src_ip,
-                    src_port: shared.common.src_port,
-                    dst_ip: shared.common.dest_ip,
-                    dst_port: shared.common.dst_port,
+                    src_ip: shared.route.src_ip,
+                    src_port: shared.route.src_port,
+                    dst_ip: shared.route.dst_ip,
+                    dst_port: shared.route.dst_port,
                 },
                 &frame,
             );
@@ -221,7 +221,7 @@ impl FecSender {
                 SendOutcome::WouldBlock => {}
                 SendOutcome::Closed => {
                     warn!(
-                        session_id = shared.common.session_id,
+                        session_id = shared.session.session_id,
                         tree_id,
                         "Lossless sender observed closed processor ingress while sending FEC symbol"
                     );
@@ -261,7 +261,7 @@ impl FecSender {
             let params = BlockParams::new(
                 usize::from(self.symbols_per_block),
                 self.geometry.symbol_size(),
-                session_fec::block_seed(shared.common.session_id, block_id),
+                session_fec::block_seed(shared.session.session_id, block_id),
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {

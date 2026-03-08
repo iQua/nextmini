@@ -92,7 +92,7 @@ impl FecReceiver {
         let params = BlockParams::new(
             usize::from(fec_mode.symbols_per_block),
             self.geometry.symbol_size(),
-            session_fec::block_seed(shared.cfg.common.session_id, block_id),
+            session_fec::block_seed(shared.session.session_id, block_id),
         );
         let decoder = Decoder::from_block(params);
         let mut received = Vec::with_capacity(block_state.symbols.len());
@@ -153,12 +153,12 @@ impl FecReceiver {
         control::send_control(
             &shared.processors,
             control::FrameRoute {
-                session_id: shared.cfg.common.session_id,
+                session_id: shared.session.session_id,
                 tree_id: None,
-                src_ip: shared.src_ip,
-                src_port: shared.cfg.common.src_port,
-                dst_ip: shared.dst_ip,
-                dst_port: shared.cfg.common.dst_port,
+                src_ip: shared.route.src_ip,
+                src_port: shared.route.src_port,
+                dst_ip: shared.route.dst_ip,
+                dst_port: shared.route.dst_port,
             },
             &LosslessSessionControl::BlockStatus {
                 status: BlockStatus {

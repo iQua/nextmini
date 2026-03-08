@@ -34,7 +34,9 @@ async fn plain_sender_emits_every_block_id_before_completion() {
     )
     .await;
     let sender_cfg = SenderConfig {
-        common: capture.common_config(0xA11C_E101, 8),
+        session: capture.session_config(0xA11C_E101, 8),
+        route: capture.route(),
+        pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
         total_bytes: 24,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),
@@ -112,8 +114,9 @@ async fn plain_receiver_writes_and_acks_every_block() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        common: capture.common_config(0xA11C_E102, 8),
-        source_node_id: SOURCE_NODE_ID,
+        session: capture.session_config(0xA11C_E102, 8),
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
         expected_bytes: 24,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
@@ -195,7 +198,9 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
     )
     .await;
     let sender_cfg = SenderConfig {
-        common: capture.common_config(0xA11C_E103, 8),
+        session: capture.session_config(0xA11C_E103, 8),
+        route: capture.route(),
+        pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
         total_bytes: 18,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqr"),
@@ -273,8 +278,9 @@ async fn fec_receiver_decodes_and_acks_every_block() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        common: capture.common_config(0xA11C_E104, 8),
-        source_node_id: SOURCE_NODE_ID,
+        session: capture.session_config(0xA11C_E104, 8),
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
         expected_bytes: 18,
         sink_buffer: Some(sink.clone()),
         fec_enabled: true,

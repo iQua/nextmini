@@ -13,7 +13,9 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
-use crate::node::session::runtime::{CommonConfig, ReceiverRequest, SenderRequest};
+use crate::node::session::runtime::{
+    ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
+};
 use crate::node::{FlowId, NodeId, NodeIdExt};
 
 /// Manages controller-assigned lossless unicast flows on a dataplane node.
@@ -80,6 +82,8 @@ impl LosslessUnicastFlowManager {
 
         tokio::spawn(async move {
             let runtime_config = cfg.lossless_runtime_config.clone();
+            let src_ip =
+                (cfg.node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let dst_ip =
                 (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
@@ -105,20 +109,21 @@ impl LosslessUnicastFlowManager {
             };
             let source_buffer = Bytes::from(vec![0xAAu8; source_len]);
 
-            let common = CommonConfig {
+            let session = SessionConfig {
                 session_id,
-                dest_ip: dst_ip,
                 block_size: runtime_config.default_block_size,
+            };
+            let route = TransportRoute {
+                src_ip,
+                dst_ip,
                 src_port,
                 dst_port,
-                data_bucket,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
             };
 
             let sender_cfg = SenderRequest {
-                common,
+                session,
+                route,
+                pacing: data_bucket,
                 receiver_ids: vec![flow.dst_node_id],
                 total_bytes,
                 source_buffer,
@@ -192,28 +197,27 @@ impl LosslessUnicastFlowManager {
 
         tokio::spawn(async move {
             let runtime_config = cfg.lossless_runtime_config.clone();
-            let dest_ip =
-                (flow.dst_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+            let src_ip =
+                (cfg.node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
+            let dst_ip =
+                (flow.src_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
             let dst_port = cfg.user_space_server_port;
-            let data_bucket =
-                bucket_from_flow_rate(flow.flow_spec.flow_rate, &runtime_config.data_bucket);
-
-            let common = CommonConfig {
+            let session = SessionConfig {
                 session_id,
-                dest_ip,
                 block_size: runtime_config.default_block_size,
+            };
+            let route = TransportRoute {
+                src_ip,
+                dst_ip,
                 src_port,
                 dst_port,
-                data_bucket,
-                local_node_id: cfg.node_id,
-                user_space_base_addr: cfg.user_space_base_addr,
-                local_netmask: cfg.local_netmask,
             };
 
             let receiver_cfg = ReceiverRequest {
-                common,
-                source_node_id: flow.src_node_id,
+                session,
+                route,
+                local_node_id: cfg.node_id,
                 expected_bytes,
                 sink_buffer: None,
             };

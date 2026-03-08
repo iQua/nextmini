@@ -62,7 +62,7 @@ impl PlainSender {
         };
         let payload = shared.source.block_payload(span);
         let frame = nextmini_messages::lossless_session::encode_block_data(
-            shared.common.session_id,
+            shared.session.session_id,
             block_id,
             &payload,
         );
@@ -70,12 +70,12 @@ impl PlainSender {
         control::send_frame(
             &shared.processors,
             control::FrameRoute {
-                session_id: shared.common.session_id,
+                session_id: shared.session.session_id,
                 tree_id: None,
-                src_ip: shared.src_ip,
-                src_port: shared.common.src_port,
-                dst_ip: shared.common.dest_ip,
-                dst_port: shared.common.dst_port,
+                src_ip: shared.route.src_ip,
+                src_port: shared.route.src_port,
+                dst_ip: shared.route.dst_ip,
+                dst_port: shared.route.dst_port,
             },
             &frame,
         )

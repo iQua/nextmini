@@ -27,7 +27,9 @@ async fn sender_stripes_symbols_across_configured_trees() {
         mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(6, tree_ids.clone())),
     };
     let sender_cfg = SenderConfig {
-        common: harness.common_config(session_id, 24),
+        session: harness.session_config(session_id, 24),
+        route: harness.route(),
+        pacing: None,
         receiver_ids: vec![2],
         total_bytes: 24,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),

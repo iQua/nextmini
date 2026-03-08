@@ -34,8 +34,9 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        common: capture.common_config(SESSION_ID, 16),
-        source_node_id: SOURCE_NODE_ID,
+        session: capture.session_config(SESSION_ID, 16),
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
         expected_bytes: 16,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
@@ -117,8 +118,9 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        common: capture.common_config(SESSION_ID + 2, 16),
-        source_node_id: SOURCE_NODE_ID,
+        session: capture.session_config(SESSION_ID + 2, 16),
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
         expected_bytes: 16,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
@@ -190,7 +192,9 @@ async fn plain_sender_completes_after_block_ack() {
     )
     .await;
     let sender_cfg = SenderConfig {
-        common: capture.common_config(SESSION_ID + 1, 16),
+        session: capture.session_config(SESSION_ID + 1, 16),
+        route: capture.route(),
+        pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
         total_bytes: 16,
         source_buffer: Bytes::from_static(b"qrstuvwxyzabcdef"),

@@ -26,7 +26,9 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
     };
     let sender_cfg = SenderConfig {
-        common: harness.common_config(session_id, 16),
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
         receiver_ids: vec![2],
         total_bytes: 16,
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),

@@ -27,7 +27,9 @@ async fn sender_completes_only_after_every_receiver_acks_every_block() {
 
     let payload = Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456");
     let sender_cfg = SenderConfig {
-        common: harness.common_config(SESSION_ID, 16),
+        session: harness.session_config(SESSION_ID, 16),
+        route: harness.route(),
+        pacing: None,
         receiver_ids: vec![RECEIVER_A, RECEIVER_B],
         total_bytes: payload.len() as u64,
         source_buffer: payload,
