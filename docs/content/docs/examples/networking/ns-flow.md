@@ -110,8 +110,9 @@ Use this path when you want a real end-to-end file transfer test for the lossles
 ### Prerequisites
 
 - Linux host with `iproute2` and `sudo`
-- local Postgres available through `bash utils/start-database.sh`
-- built `controller` and `nextmini` binaries
+- `python3`
+- Postgres bootstrapped with `bash utils/start-database.sh`
+- Rust toolchain unless you already have built `controller` and `nextmini` release binaries
 
 ### Run the default matrix
 
@@ -119,29 +120,37 @@ Use this path when you want a real end-to-end file transfer test for the lossles
 sudo ./examples/ns-flow/run-integration.sh
 ```
 
+The runner builds `controller` and `nextmini --features python-extension` by default, starts Postgres through `utils/start-database.sh` if needed, and then runs the fixed case matrix.
+
 This runs four cases:
 
 1. plain, one receiver, one tree
 2. FEC, one receiver, one tree
-3. FEC, two receivers, two trees, larger block size
+3. FEC, two receivers, two trees, smaller block size
 4. FEC, two receivers, two trees, different `symbols_per_block`
 
 ### Run one case
 
 ```bash
-sudo ./examples/ns-flow/run-integration.sh \
-  --case-name fec-r2-t2-b8192-s32 \
-  --mode fec \
-  --receivers 2 \
-  --trees 2 \
-  --block-size 8192 \
-  --symbols-per-block 32 \
-  --payload-size 32768
+sudo ./examples/ns-flow/run-integration.sh --case fec-2r-symbols
+```
+
+Available case names:
+
+- `plain-1r`
+- `fec-1r`
+- `fec-2r-block`
+- `fec-2r-symbols`
+
+Pass `--no-build` to reuse existing release binaries:
+
+```bash
+sudo ./examples/ns-flow/run-integration.sh --case plain-1r --no-build
 ```
 
 ### Artifacts
 
-Per-case outputs are written under `examples/ns-flow/generated/<case-name>/`:
+Per-case outputs are written under `examples/ns-flow/integration-artifacts/<case-name>/`:
 
 - `payload.bin`
 - `artifacts/source.bin`
@@ -151,6 +160,8 @@ Per-case outputs are written under `examples/ns-flow/generated/<case-name>/`:
 - `artifacts/source-1.status`
 - `artifacts/receiver-<node>.status`
 - `dataplane.log`
-- `controller/controller.log`
+- `controller.log`
+- `controller-config.toml`
+- `dataplane-config.toml`
 
-The verifier compares every receiver artifact against the sender payload and fails on any size or SHA256 mismatch.
+The verifier compares every receiver artifact against `artifacts/source.bin` and fails on any missing file, non-`ok` status, size mismatch, or SHA256 mismatch.

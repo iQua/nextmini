@@ -291,3 +291,7 @@ Per-case pass criteria:
 - `T8` completed on 2026-03-09.
   Work log: documented the new host-local namespace lossless harness, its prerequisites, commands, artifact layout, and default matrix.
   Files touched: `docs/content/docs/examples/networking/ns-flow.md`.
+
+- Follow-up completed on 2026-03-09.
+  Work log: synced the namespace harness docs to the actual `run-integration.sh` CLI and artifact paths, and updated the runner to preserve arguments across `sudo` re-exec while skipping Docker cleanup for the host-local harness.
+  Files touched: `docs/content/docs/examples/networking/ns-flow.md`, `examples/ns-flow/run-integration.sh`.

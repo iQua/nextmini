@@ -8,6 +8,7 @@ controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 case_name=""
 no_build="false"
+original_args=("$@")
 
 usage() {
   cat <<'EOF'
@@ -48,7 +49,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-  exec sudo -E "$0" "$@"
+  exec sudo -E "$0" "${original_args[@]}"
 fi
 
 build_binaries() {
@@ -140,7 +141,7 @@ stop_case() {
     kill "$(cat "${case_dir}/controller.pid")" >/dev/null 2>&1 || true
     wait "$(cat "${case_dir}/controller.pid")" 2>/dev/null || true
   fi
-  bash "${script_dir}/cleanup.sh" --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
+  bash "${script_dir}/cleanup.sh" --skip-docker --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
 }
 
 wait_for_statuses() {
