@@ -181,6 +181,14 @@ impl LosslessUnicastFlowManager {
 
     /// Start the receiver side of one controller-assigned lossless flow.
     fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
+        let Some(_total_bytes) = flow_bytes(&flow) else {
+            return;
+        };
+        if _total_bytes == 0 {
+            warn!("LosslessUnicastFlow: receiver received zero-byte flow; skipping");
+            return;
+        }
+
         let cfg = self.cfg.clone();
         let lossless_runtime = self.lossless_runtime.clone();
 
