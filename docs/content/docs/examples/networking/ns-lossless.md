@@ -3,7 +3,7 @@ title: "Namespace Lossless Example"
 description: "Runs one lossless file transfer per invocation through namespace mode and verifies matching hashes."
 ---
 
-This example is a small Linux-only harness for the lossless session subsystem. It starts the controller locally, runs the dataplane in namespace mode, sends one real file from one source to one or two receivers, and verifies that every receiver wrote the same bytes as the sender.
+This example is a small Linux-only harness for the lossless session subsystem. It starts the controller locally, runs the dataplane in namespace mode, sends a real file from one source to a generated receiver set, and verifies that every receiver wrote the same bytes as the sender.
 
 Unlike [Namespace Flow Example](/docs/examples/networking/ns-flow), this example is dedicated to one end-to-end lossless transfer per run. It does not modify the existing `ns-flow` workload or its Docker-driven workflow.
 
@@ -24,7 +24,7 @@ From the repository root:
 ./examples/ns-lossless/run.sh --case plain-1r
 ```
 
-If `--case` is omitted, `run.sh` defaults to `plain-1r`. Each invocation runs exactly one transfer and writes one sender artifact plus one artifact per receiver.
+If `--case` is omitted, `run.sh` defaults to `plain-1r`. A named case or one-off parameterized run executes one transfer. Sweep options execute many transfers sequentially and write one artifact set per generated case directory.
 
 The script escalates to `sudo` itself for the namespace setup. Running it without `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
 The generated dataplane config also enables host bridge `FORWARD` rules automatically so namespace
@@ -32,12 +32,37 @@ nodes can reach each other on hosts where `bridge-nf-call-iptables=1`.
 
 `run.sh` expects `127.0.0.1:3000` to be free for the local controller. If another controller or container is already listening on that port, stop it before starting a case.
 
-Available case names:
+Legacy named case presets:
 
 - `plain-1r`
 - `fec-1r`
 - `fec-2r-block`
 - `fec-2r-symbols`
+
+Run one custom case without editing the script:
+
+```bash
+./examples/ns-lossless/run.sh --mode fec --trees 3 --receivers 20
+```
+
+For custom runs, `--mode` defaults to `fec` when omitted. `plain` mode is only valid with `--trees 1`.
+
+Run the two sweep families you asked for:
+
+```bash
+./examples/ns-lossless/run.sh --tree-sweep-max 10 --receiver-sweep-max 100
+```
+
+That command runs in `fec` mode and uses the script defaults of `20` receivers for the tree sweep and `3` trees for the receiver sweep. Override them with `--tree-sweep-receivers`, `--receiver-sweep-trees`, `--block-size`, `--symbols-per-block`, `--payload-size`, or `--status-timeout-seconds` if needed.
+
+Run only one sweep family:
+
+```bash
+./examples/ns-lossless/run.sh --tree-sweep-max 10
+./examples/ns-lossless/run.sh --receiver-sweep-max 100
+```
+
+The generated topology uses one source node, two relay nodes per tree, and then a shared receiver fanout. Total namespace nodes per run are `1 + (2 * trees) + receivers`.
 
 Use `--no-build` to reuse existing release binaries:
 
@@ -48,14 +73,14 @@ Use `--no-build` to reuse existing release binaries:
 ## What varies between cases
 
 - plain or FEC mode
-- one or two receivers
-- one or two trees
+- receiver count
+- tree count
 - `block_size`
 - symbol geometry through `symbols_per_block`
 
 ## Artifacts
 
-Per-run outputs are written under `examples/ns-lossless/artifacts/<case-name>/`:
+Per-run outputs are written under `examples/ns-lossless/artifacts/<case-name>/`. Sweep runs create one directory per generated case name:
 
 - `payload.bin`
 - `artifacts/source.bin`

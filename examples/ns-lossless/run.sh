@@ -10,6 +10,17 @@ cargo_bin="${CARGO_BIN:-}"
 database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
 case_name=""
 no_build="false"
+mode=""
+receivers=""
+trees=""
+block_size=""
+symbols_per_block=""
+payload_size=""
+tree_sweep_max=""
+tree_sweep_receivers="20"
+receiver_sweep_max=""
+receiver_sweep_trees="3"
+status_timeout_seconds="300"
 original_args=("$@")
 current_case_dir=""
 
@@ -18,9 +29,20 @@ usage() {
 Usage: run.sh [options]
 
 Options:
-  --case NAME    Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols.
-  --no-build     Skip cargo build and use the existing binaries.
-  -h, --help     Show this help.
+  --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols.
+  --mode MODE                Custom run/sweep mode: plain | fec (default for custom runs: fec).
+  --receivers N              Custom run receiver count.
+  --trees N                  Custom run tree count.
+  --block-size N             Custom run block size (default: 8192).
+  --symbols-per-block N      Custom run symbols_per_block (default: 32).
+  --payload-size N           Custom run payload size bytes (default: 262144).
+  --tree-sweep-max N         Run a sweep from 1..N trees with fixed receivers.
+  --tree-sweep-receivers N   Receiver count for tree sweep (default: 20).
+  --receiver-sweep-max N     Run a sweep from 1..N receivers with fixed trees.
+  --receiver-sweep-trees N   Tree count for receiver sweep (default: 3).
+  --status-timeout-seconds N Seconds to wait for status files per case (default: 300).
+  --no-build                 Skip cargo build and use the existing binaries.
+  -h, --help                 Show this help.
 EOF
 }
 
@@ -33,6 +55,50 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --case)
       case_name="${2:-}"
+      shift 2
+      ;;
+    --mode)
+      mode="${2:-}"
+      shift 2
+      ;;
+    --receivers)
+      receivers="${2:-}"
+      shift 2
+      ;;
+    --trees)
+      trees="${2:-}"
+      shift 2
+      ;;
+    --block-size)
+      block_size="${2:-}"
+      shift 2
+      ;;
+    --symbols-per-block)
+      symbols_per_block="${2:-}"
+      shift 2
+      ;;
+    --payload-size)
+      payload_size="${2:-}"
+      shift 2
+      ;;
+    --tree-sweep-max)
+      tree_sweep_max="${2:-}"
+      shift 2
+      ;;
+    --tree-sweep-receivers)
+      tree_sweep_receivers="${2:-}"
+      shift 2
+      ;;
+    --receiver-sweep-max)
+      receiver_sweep_max="${2:-}"
+      shift 2
+      ;;
+    --receiver-sweep-trees)
+      receiver_sweep_trees="${2:-}"
+      shift 2
+      ;;
+    --status-timeout-seconds)
+      status_timeout_seconds="${2:-}"
       shift 2
       ;;
     --no-build)
@@ -72,6 +138,66 @@ resolve_user_home() {
   fi
 
   printf '%s\n' "$entry" | cut -d: -f6
+}
+
+require_positive_int() {
+  local label="$1"
+  local value="$2"
+
+  if [[ ! "$value" =~ ^[0-9]+$ ]] || (( value <= 0 )); then
+    echo "${label} must be a positive integer." >&2
+    exit 1
+  fi
+}
+
+validate_mode() {
+  local selected_mode="$1"
+
+  case "$selected_mode" in
+    plain|fec) ;;
+    *)
+      echo "--mode must be either plain or fec." >&2
+      exit 1
+      ;;
+  esac
+}
+
+validate_run_request() {
+  local selected_mode="$1"
+  local selected_receivers="$2"
+  local selected_trees="$3"
+  local selected_block_size="$4"
+  local selected_symbols_per_block="$5"
+  local selected_payload_size="$6"
+
+  validate_mode "$selected_mode"
+  require_positive_int "--receivers" "$selected_receivers"
+  require_positive_int "--trees" "$selected_trees"
+  require_positive_int "--block-size" "$selected_block_size"
+  require_positive_int "--symbols-per-block" "$selected_symbols_per_block"
+  require_positive_int "--payload-size" "$selected_payload_size"
+
+  if [[ "$selected_mode" == "plain" ]] && (( selected_trees != 1 )); then
+    echo "plain mode only supports exactly one tree." >&2
+    exit 1
+  fi
+}
+
+make_case_name() {
+  local prefix="$1"
+  local selected_mode="$2"
+  local selected_receivers="$3"
+  local selected_trees="$4"
+  local selected_block_size="$5"
+  local selected_symbols_per_block="$6"
+
+  printf '%s-%s-%st-%sr-b%s-s%s' \
+    "$prefix" \
+    "$selected_mode" \
+    "$selected_trees" \
+    "$selected_receivers" \
+    "$selected_block_size" \
+    "$selected_symbols_per_block"
 }
 
 build_binaries() {
@@ -273,7 +399,7 @@ wait_for_statuses() {
   local artifact_dir="${case_dir}/artifacts"
   local controller_pid=""
   local dataplane_pid=""
-  local deadline=$((SECONDS + 120))
+  local deadline=$((SECONDS + status_timeout_seconds))
 
   if [[ -f "${case_dir}/controller.pid" ]]; then
     controller_pid="$(cat "${case_dir}/controller.pid")"
@@ -365,19 +491,156 @@ run_case() {
   echo "Case ${name} completed successfully."
 }
 
+run_tree_sweep() {
+  local max_trees="$1"
+  local selected_receivers="$2"
+  local selected_mode="$3"
+  local selected_block_size="$4"
+  local selected_symbols_per_block="$5"
+  local selected_payload_size="$6"
+
+  require_positive_int "--tree-sweep-max" "$max_trees"
+  require_positive_int "--tree-sweep-receivers" "$selected_receivers"
+
+  for ((tree_count = 1; tree_count <= max_trees; tree_count++)); do
+    validate_run_request \
+      "$selected_mode" \
+      "$selected_receivers" \
+      "$tree_count" \
+      "$selected_block_size" \
+      "$selected_symbols_per_block" \
+      "$selected_payload_size"
+
+    run_case \
+      "$(make_case_name tree-sweep "$selected_mode" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block")" \
+      "$selected_mode" \
+      "$selected_receivers" \
+      "$tree_count" \
+      "$selected_block_size" \
+      "$selected_symbols_per_block" \
+      "$selected_payload_size"
+  done
+}
+
+run_receiver_sweep() {
+  local max_receivers="$1"
+  local selected_trees="$2"
+  local selected_mode="$3"
+  local selected_block_size="$4"
+  local selected_symbols_per_block="$5"
+  local selected_payload_size="$6"
+
+  require_positive_int "--receiver-sweep-max" "$max_receivers"
+  require_positive_int "--receiver-sweep-trees" "$selected_trees"
+
+  for ((receiver_count = 1; receiver_count <= max_receivers; receiver_count++)); do
+    validate_run_request \
+      "$selected_mode" \
+      "$receiver_count" \
+      "$selected_trees" \
+      "$selected_block_size" \
+      "$selected_symbols_per_block" \
+      "$selected_payload_size"
+
+    run_case \
+      "$(make_case_name receiver-sweep "$selected_mode" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block")" \
+      "$selected_mode" \
+      "$receiver_count" \
+      "$selected_trees" \
+      "$selected_block_size" \
+      "$selected_symbols_per_block" \
+      "$selected_payload_size"
+  done
+}
+
 trap cleanup_on_exit EXIT
+
+require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
+
+if [[ -n "$case_name" ]]; then
+  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+    echo "--case cannot be combined with custom run or sweep options." >&2
+    exit 1
+  fi
+fi
+
+if [[ ( -n "$tree_sweep_max" || -n "$receiver_sweep_max" ) && ( -n "$receivers" || -n "$trees" ) ]]; then
+  echo "--receivers and --trees are only for one-off custom runs." >&2
+  echo "Use --tree-sweep-receivers or --receiver-sweep-trees with sweep options." >&2
+  exit 1
+fi
 
 build_binaries
 ensure_database
 mkdir -p "$artifacts_root"
 
-case "${case_name:-plain-1r}" in
-  plain-1r) run_case plain-1r plain 1 1 8192 32 262144 ;;
-  fec-1r) run_case fec-1r fec 1 1 8192 32 262144 ;;
-  fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 ;;
-  fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 ;;
-  *)
-    echo "Unknown case: ${case_name}" >&2
+if [[ -n "$case_name" ]]; then
+  case "$case_name" in
+    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 ;;
+    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 ;;
+    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 ;;
+    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 ;;
+    *)
+      echo "Unknown case: ${case_name}" >&2
+      exit 1
+      ;;
+  esac
+  exit 0
+fi
+
+selected_mode="${mode:-fec}"
+selected_block_size="${block_size:-8192}"
+selected_symbols_per_block="${symbols_per_block:-32}"
+selected_payload_size="${payload_size:-262144}"
+ran_any="false"
+
+if [[ -n "$tree_sweep_max" ]]; then
+  run_tree_sweep \
+    "$tree_sweep_max" \
+    "$tree_sweep_receivers" \
+    "$selected_mode" \
+    "$selected_block_size" \
+    "$selected_symbols_per_block" \
+    "$selected_payload_size"
+  ran_any="true"
+fi
+
+if [[ -n "$receiver_sweep_max" ]]; then
+  run_receiver_sweep \
+    "$receiver_sweep_max" \
+    "$receiver_sweep_trees" \
+    "$selected_mode" \
+    "$selected_block_size" \
+    "$selected_symbols_per_block" \
+    "$selected_payload_size"
+  ran_any="true"
+fi
+
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" ) ]]; then
+  if [[ -z "$receivers" || -z "$trees" ]]; then
+    echo "Custom runs require both --receivers and --trees." >&2
     exit 1
-    ;;
-esac
+  fi
+
+  validate_run_request \
+    "$selected_mode" \
+    "$receivers" \
+    "$trees" \
+    "$selected_block_size" \
+    "$selected_symbols_per_block" \
+    "$selected_payload_size"
+
+  run_case \
+    "$(make_case_name custom "$selected_mode" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block")" \
+    "$selected_mode" \
+    "$receivers" \
+    "$trees" \
+    "$selected_block_size" \
+    "$selected_symbols_per_block" \
+    "$selected_payload_size"
+  ran_any="true"
+fi
+
+if [[ "$ran_any" == "false" ]]; then
+  run_case plain-1r plain 1 1 8192 32 262144
+fi
