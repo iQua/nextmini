@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use nextmini_messages::lossless_session::{
     self, BlockStatus, LosslessSessionControl, LosslessSessionMode,
 };
+use tracing::warn;
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
@@ -102,6 +103,16 @@ impl FecReceiver {
 
         for (&symbol_id, payload) in &block_state.symbols {
             let mut padded = payload.clone();
+            let additional = self.geometry.symbol_size().saturating_sub(padded.len());
+            if padded.try_reserve_exact(additional).is_err() {
+                warn!(
+                    session_id = shared.session_id,
+                    block_id,
+                    symbol_size = self.geometry.symbol_size(),
+                    "Lossless receiver failed to reserve space for FEC symbol padding"
+                );
+                return false;
+            }
             padded.resize(self.geometry.symbol_size(), 0);
             if symbol_id < u32::from(fec_mode.symbols_per_block) {
                 received.push(decoder.source_symbol(symbol_id, padded));
@@ -117,8 +128,29 @@ impl FecReceiver {
             return false;
         };
 
-        let mut block =
-            Vec::with_capacity(output.source_symbols.len() * self.geometry.symbol_size());
+        let Some(block_capacity) = output
+            .source_symbols
+            .len()
+            .checked_mul(self.geometry.symbol_size())
+        else {
+            warn!(
+                session_id = shared.session_id,
+                block_id,
+                symbol_size = self.geometry.symbol_size(),
+                "Lossless receiver overflowed FEC block allocation geometry"
+            );
+            return false;
+        };
+        let mut block = Vec::new();
+        if block.try_reserve_exact(block_capacity).is_err() {
+            warn!(
+                session_id = shared.session_id,
+                block_id,
+                block_capacity,
+                "Lossless receiver failed to reserve space for decoded FEC block"
+            );
+            return false;
+        }
         for symbol in output.source_symbols {
             block.extend_from_slice(&symbol);
         }

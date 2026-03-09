@@ -194,8 +194,18 @@ impl SessionReceiver {
             }
         };
 
+        let Some(object_len) = plan.total_bytes_usize() else {
+            warn!(
+                session_id = self.shared.session_id,
+                manifest_total_bytes = manifest.total_bytes,
+                "Lossless receiver rejected manifest that did not fit local address space"
+            );
+            return;
+        };
+        if !self.shared.ensure_sink_buffer_len(object_len).await {
+            return;
+        }
         self.shared.plan = Some(plan);
-        self.shared.ensure_sink_buffer().await;
         self.shared.manifest = Some(manifest);
         self.mode = Some(mode);
         self.shared.send_ready().await;
@@ -239,20 +249,23 @@ impl ReceiverShared {
     }
 
     /// Ensure the optional sink buffer is large enough for the full object.
-    async fn ensure_sink_buffer(&self) {
-        let Some(plan) = self.plan else {
-            return;
-        };
+    async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
         let Some(sink) = &self.cfg.sink_buffer else {
-            return;
+            return true;
         };
         let mut guard = sink.lock().await;
-        let Some(object_len) = plan.total_bytes_usize() else {
-            return;
-        };
         if guard.len() < object_len {
+            let additional = object_len - guard.len();
+            if guard.try_reserve_exact(additional).is_err() {
+                warn!(
+                    session_id = self.session_id,
+                    object_len, "Lossless receiver failed to reserve sink buffer for manifest"
+                );
+                return false;
+            }
             guard.resize(object_len, 0);
         }
+        true
     }
 
     /// Send a READY control frame back to the sender.
