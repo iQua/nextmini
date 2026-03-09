@@ -573,8 +573,6 @@ class Trainer:
                     sid = self.dataplane.receive_data(
                         rollout_group_id,
                         worker_node_id,
-                        expected_bytes=size,
-                        block_size=config.CHUNK_SIZE,
                         src_port=worker_port,
                         dst_port=config.TRAINER_PORT,
                     )

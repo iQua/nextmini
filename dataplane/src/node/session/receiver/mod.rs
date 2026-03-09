@@ -19,9 +19,10 @@ use nextmini_messages::lossless_session::{
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::InboundFrame;
+use crate::node::session::api::SessionId;
 use crate::node::session::control;
 use crate::node::session::plan::BlockPlan;
-use crate::node::session::runtime::{ReceiverConfig, SessionConfig, TransportRoute};
+use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
@@ -44,7 +45,7 @@ struct SessionReceiver {
 
 /// Receiver state that is truly common across plain and FEC modes.
 pub(super) struct ReceiverShared {
-    pub(super) session: SessionConfig,
+    pub(super) session_id: SessionId,
     pub(super) route: TransportRoute,
     pub(super) local_node_id: usize,
     pub(super) cfg: ReceiverConfig,
@@ -65,7 +66,7 @@ impl SessionReceiver {
     fn new(cfg: ReceiverConfig, processors: ProcessorHandle) -> Self {
         Self {
             shared: ReceiverShared {
-                session: cfg.session.clone(),
+                session_id: cfg.session_id,
                 route: cfg.route,
                 local_node_id: cfg.local_node_id,
                 cfg,
@@ -81,8 +82,7 @@ impl SessionReceiver {
     /// Execute the receiver loop until the object is complete.
     async fn run(&mut self, rx: &mut mpsc::Receiver<InboundFrame>) {
         info!(
-            session_id = self.shared.session.session_id,
-            expected_bytes = self.shared.cfg.expected_bytes,
+            session_id = self.shared.session_id,
             "Lossless receiver started"
         );
 
@@ -101,7 +101,7 @@ impl SessionReceiver {
         }
 
         debug!(
-            session_id = self.shared.session.session_id,
+            session_id = self.shared.session_id,
             complete = self.is_complete(),
             "Lossless receiver finished"
         );
@@ -148,7 +148,8 @@ impl SessionReceiver {
         let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() else {
             return;
         };
-        mode.handle_block_symbol_frame(&mut self.shared, frame).await;
+        mode.handle_block_symbol_frame(&mut self.shared, frame)
+            .await;
     }
 
     /// Install the first valid manifest and send READY.
@@ -156,32 +157,31 @@ impl SessionReceiver {
         if let Some(existing) = &self.shared.manifest {
             if existing == &manifest {
                 self.shared.send_ready().await;
+            } else {
+                warn!(
+                    session_id = self.shared.session_id,
+                    installed_total_bytes = existing.total_bytes,
+                    installed_block_size = existing.block_size,
+                    received_total_bytes = manifest.total_bytes,
+                    received_block_size = manifest.block_size,
+                    "Lossless receiver ignored conflicting manifest after install"
+                );
             }
             return;
         }
 
-        if manifest.total_bytes != self.shared.cfg.expected_bytes
-            || usize::try_from(manifest.block_size).ok() != Some(self.shared.session.block_size)
-        {
-            warn!(
-                session_id = self.shared.session.session_id,
-                expected_bytes = self.shared.cfg.expected_bytes,
-                manifest_total_bytes = manifest.total_bytes,
-                expected_block_size = self.shared.session.block_size,
-                manifest_block_size = manifest.block_size,
-                "Lossless receiver rejected manifest with mismatched geometry"
-            );
-            return;
-        }
         if manifest.mode.is_fec() && !self.shared.cfg.fec_enabled {
             warn!(
-                session_id = self.shared.session.session_id,
+                session_id = self.shared.session_id,
                 "Lossless receiver rejected FEC manifest because local runtime disabled FEC"
             );
             return;
         }
 
-        let Ok(plan) = BlockPlan::new(manifest.total_bytes, self.shared.session.block_size) else {
+        let Ok(block_size) = usize::try_from(manifest.block_size) else {
+            return;
+        };
+        let Ok(plan) = BlockPlan::new(manifest.total_bytes, block_size) else {
             return;
         };
         let mode = match &manifest.mode {
@@ -194,7 +194,17 @@ impl SessionReceiver {
             }
         };
 
-        self.shared.ensure_sink_buffer().await;
+        let Some(object_len) = plan.total_bytes_usize() else {
+            warn!(
+                session_id = self.shared.session_id,
+                manifest_total_bytes = manifest.total_bytes,
+                "Lossless receiver rejected manifest that did not fit local address space"
+            );
+            return;
+        };
+        if !self.shared.ensure_sink_buffer_len(object_len).await {
+            return;
+        }
         self.shared.plan = Some(plan);
         self.shared.manifest = Some(manifest);
         self.mode = Some(mode);
@@ -224,9 +234,11 @@ impl ReceiverShared {
         };
 
         let mut guard = sink.lock().await;
-        let expected_len = usize::try_from(self.cfg.expected_bytes).unwrap_or(0);
-        if guard.len() < expected_len {
-            guard.resize(expected_len, 0);
+        let Some(object_len) = plan.total_bytes_usize() else {
+            return;
+        };
+        if guard.len() < object_len {
+            guard.resize(object_len, 0);
         }
 
         let start = usize::try_from(span.offset()).unwrap_or(0);
@@ -237,15 +249,23 @@ impl ReceiverShared {
     }
 
     /// Ensure the optional sink buffer is large enough for the full object.
-    async fn ensure_sink_buffer(&self) {
+    async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
         let Some(sink) = &self.cfg.sink_buffer else {
-            return;
+            return true;
         };
         let mut guard = sink.lock().await;
-        let expected_len = usize::try_from(self.cfg.expected_bytes).unwrap_or(0);
-        if guard.len() < expected_len {
-            guard.resize(expected_len, 0);
+        if guard.len() < object_len {
+            let additional = object_len - guard.len();
+            if guard.try_reserve_exact(additional).is_err() {
+                warn!(
+                    session_id = self.session_id,
+                    object_len, "Lossless receiver failed to reserve sink buffer for manifest"
+                );
+                return false;
+            }
+            guard.resize(object_len, 0);
         }
+        true
     }
 
     /// Send a READY control frame back to the sender.
@@ -253,7 +273,7 @@ impl ReceiverShared {
         control::send_control(
             &self.processors,
             control::FrameRoute {
-                session_id: self.session.session_id,
+                session_id: self.session_id,
                 tree_id: None,
                 src_ip: self.route.src_ip,
                 src_port: self.route.src_port,
@@ -272,7 +292,7 @@ impl ReceiverShared {
         control::send_control(
             &self.processors,
             control::FrameRoute {
-                session_id: self.session.session_id,
+                session_id: self.session_id,
                 tree_id: None,
                 src_ip: self.route.src_ip,
                 src_port: self.route.src_port,
@@ -302,10 +322,7 @@ mod tests {
     #[tokio::test]
     async fn block_deficit_requests_missing_source_symbols_first() {
         let shared = ReceiverShared {
-            session: crate::node::session::runtime::SessionConfig {
-                session_id: 7,
-                block_size: 8,
-            },
+            session_id: 7,
             route: crate::node::session::runtime::TransportRoute {
                 src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
                 dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
@@ -314,10 +331,7 @@ mod tests {
             },
             local_node_id: 1,
             cfg: ReceiverConfig {
-                session: crate::node::session::runtime::SessionConfig {
-                    session_id: 7,
-                    block_size: 8,
-                },
+                session_id: 7,
                 route: crate::node::session::runtime::TransportRoute {
                     src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
                     dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
@@ -325,7 +339,6 @@ mod tests {
                     dst_port: 2,
                 },
                 local_node_id: 1,
-                expected_bytes: 16,
                 sink_buffer: None,
                 fec_enabled: true,
             },
@@ -365,10 +378,7 @@ mod tests {
     async fn receiver_completion_does_not_require_eot() {
         let receiver = SessionReceiver {
             shared: ReceiverShared {
-                session: crate::node::session::runtime::SessionConfig {
-                    session_id: 8,
-                    block_size: 8,
-                },
+                session_id: 8,
                 route: crate::node::session::runtime::TransportRoute {
                     src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
                     dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
@@ -377,10 +387,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 cfg: ReceiverConfig {
-                    session: crate::node::session::runtime::SessionConfig {
-                        session_id: 8,
-                        block_size: 8,
-                    },
+                    session_id: 8,
                     route: crate::node::session::runtime::TransportRoute {
                         src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
                         dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
@@ -388,7 +395,6 @@ mod tests {
                         dst_port: 2,
                     },
                     local_node_id: 1,
-                    expected_bytes: 16,
                     sink_buffer: None,
                     fec_enabled: false,
                 },

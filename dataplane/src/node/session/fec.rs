@@ -105,7 +105,6 @@ impl Encoder {
         let packets = self.inner.repair_packets(coded_index, 1);
         packets.into_iter().next().unwrap().data().to_vec()
     }
-
 }
 
 /// Adapter-level decode output.
@@ -262,12 +261,10 @@ mod tests {
             .enumerate()
             .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
             .collect();
-        symbols.extend(
-            (0..(k - half_k)).map(|offset| {
-                let esi = k as u32 + offset as u32;
-                decoder.coded_symbol(esi, encoder.coded_symbol(esi))
-            }),
-        );
+        symbols.extend((0..(k - half_k)).map(|offset| {
+            let esi = k as u32 + offset as u32;
+            decoder.coded_symbol(esi, encoder.coded_symbol(esi))
+        }));
 
         let output = decoder.decode(&symbols).unwrap();
         for (i, (decoded, expected)) in output

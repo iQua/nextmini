@@ -11,7 +11,7 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::receiver;
-use nextmini::node::session::runtime::{ReceiverConfig, SessionConfig, TransportRoute};
+use nextmini::node::session::runtime::{ReceiverConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
     self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode,
@@ -31,7 +31,7 @@ struct ReceiverHarness {
     sink: Arc<Mutex<Vec<u8>>>,
 }
 
-async fn build_receiver_harness(expected_bytes: u64) -> ReceiverHarness {
+async fn build_receiver_harness() -> ReceiverHarness {
     let cfg = LocalConfig {
         node_id: RECEIVER_NODE_ID,
         n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
@@ -62,10 +62,7 @@ async fn build_receiver_harness(expected_bytes: u64) -> ReceiverHarness {
 
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        session: SessionConfig {
-            session_id: SESSION_ID,
-            block_size: 8,
-        },
+        session_id: SESSION_ID,
         route: TransportRoute {
             src_ip,
             dst_ip,
@@ -73,7 +70,6 @@ async fn build_receiver_harness(expected_bytes: u64) -> ReceiverHarness {
             dst_port: DST_PORT,
         },
         local_node_id: RECEIVER_NODE_ID,
-        expected_bytes,
         sink_buffer: Some(sink.clone()),
         fec_enabled: true,
     };
@@ -124,7 +120,7 @@ async fn recv_control(packet_rx: &mut mpsc::Receiver<Packet>) -> (Packet, Lossle
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn receiver_acks_decoded_block_and_writes_sink() {
-    let mut harness = build_receiver_harness(8).await;
+    let mut harness = build_receiver_harness().await;
 
     send_frame(
         &harness.tx,
@@ -176,7 +172,7 @@ async fn receiver_acks_decoded_block_and_writes_sink() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn receiver_requests_missing_symbols_after_eot_for_incomplete_block() {
-    let mut harness = build_receiver_harness(8).await;
+    let mut harness = build_receiver_harness().await;
 
     send_frame(
         &harness.tx,

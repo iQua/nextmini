@@ -14,8 +14,10 @@ impl PlainReceiver {
         let Some(manifest) = shared.manifest.as_ref() else {
             return;
         };
-        if !matches!(manifest.mode, nextmini_messages::lossless_session::LosslessSessionMode::Plain)
-        {
+        if !matches!(
+            manifest.mode,
+            nextmini_messages::lossless_session::LosslessSessionMode::Plain
+        ) {
             return;
         }
 

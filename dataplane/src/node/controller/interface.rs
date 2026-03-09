@@ -21,8 +21,8 @@ use nextmini_messages::{
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
-use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::controller::lossless_unicast::LosslessUnicastFlowManager;
+use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;

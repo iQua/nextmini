@@ -102,8 +102,7 @@ impl LosslessUnicastFlowManager {
             let Ok(source_len) = usize::try_from(total_bytes) else {
                 warn!(
                     flow_id = flow_id,
-                    total_bytes,
-                    "LosslessUnicastFlow: flow too large for explicit source buffer"
+                    total_bytes, "LosslessUnicastFlow: flow too large for explicit source buffer"
                 );
                 return;
             };
@@ -182,13 +181,11 @@ impl LosslessUnicastFlowManager {
 
     /// Start the receiver side of one controller-assigned lossless flow.
     fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
-        // The receiver mirrors the sender's byte budget so the two sides agree
-        // on when to terminate.
-        let Some(expected_bytes) = flow_bytes(&flow) else {
+        let Some(_total_bytes) = flow_bytes(&flow) else {
             return;
         };
-        if expected_bytes == 0 {
-            warn!("LosslessUnicastFlow: receiver expected zero bytes; skipping");
+        if _total_bytes == 0 {
+            warn!("LosslessUnicastFlow: receiver received zero-byte flow; skipping");
             return;
         }
 
@@ -196,17 +193,12 @@ impl LosslessUnicastFlowManager {
         let lossless_runtime = self.lossless_runtime.clone();
 
         tokio::spawn(async move {
-            let runtime_config = cfg.lossless_runtime_config.clone();
             let src_ip =
                 (cfg.node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let dst_ip =
                 (flow.src_node_id as NodeId).ip_addr(cfg.user_space_base_addr, cfg.local_netmask);
             let src_port = client_port;
             let dst_port = cfg.user_space_server_port;
-            let session = SessionConfig {
-                session_id,
-                block_size: runtime_config.default_block_size,
-            };
             let route = TransportRoute {
                 src_ip,
                 dst_ip,
@@ -215,10 +207,9 @@ impl LosslessUnicastFlowManager {
             };
 
             let receiver_cfg = ReceiverRequest {
-                session,
+                session_id,
                 route,
                 local_node_id: cfg.node_id,
-                expected_bytes,
                 sink_buffer: None,
             };
 

@@ -36,7 +36,7 @@ The current harness uses these arguments and environment values:
 - `--tensor-path` (CLI), or implicit `--generate-tensor` on source (the default path is `/workspace/tensors/tensor-auto-1g.pt`).
 - `--sink-path` (CLI) overrides per-receiver payload output file.
 - `--fec` (CLI, also accepts `FEC` env: `off` / `on`) is a runtime hint only; dataplane behavior is controlled by controller/runtime config.
-- `--payload-count`, `--expected-bytes` (CLI) can set expected receive size.
+- `--payload-count`, `--expected-bytes` (CLI) are optional reporting hints for logs and throughput calculations; receiver registration no longer depends on them.
 
 ## Run the harness
 
