@@ -9,12 +9,16 @@ use nextmini_messages::Protocol;
 use crate::node::config::LocalConfig;
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::controller::reporter::ControllerReporterHandle;
+#[cfg(feature = "python-extension")]
+use crate::node::integration_test;
 use crate::node::local::interface::LocalInterfaceHandle;
 use crate::node::network::quic::QuicServer;
 use crate::node::network::tcp::TcpServer;
 use crate::node::network::tcp_max::TcpMaxServer;
 use crate::node::network::udp::UdpServer;
 use crate::node::processor::ProcessorHandle;
+#[cfg(feature = "python-extension")]
+use crate::node::python::interface::PythonInterfaceHandle;
 #[cfg(feature = "python-extension")]
 use crate::node::session::api::LosslessRuntimeHandle;
 
@@ -53,6 +57,22 @@ impl Conductor {
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
         processors.connect_local_interface(local_interface.clone());
+
+        #[cfg(feature = "python-extension")]
+        if config.integration_test.enabled {
+            let py_if =
+                PythonInterfaceHandle::new(config.channel_capacity, config.channel_backpressure);
+            processors.connect_python_interface(py_if.clone());
+            controller_interface
+                .attach_python_interface(py_if.clone())
+                .await;
+            integration_test::spawn(
+                config.clone(),
+                controller_interface.clone(),
+                lossless_runtime.clone(),
+                py_if,
+            );
+        }
 
         Conductor {
             config,

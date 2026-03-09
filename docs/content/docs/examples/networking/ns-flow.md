@@ -94,3 +94,63 @@ sudo ./examples/ns-flow/cleanup.sh
 ```
 
 The cleanup script kills the `nextmini-ns-flow` tmux session, brings down `examples/ns-flow/docker-compose.yml`, deletes `veth*` links for configured nodes, and removes `isobr*` bridge shards.
+
+## Lossless integration harness
+
+The same folder now also contains a smaller namespace-backed lossless session harness that runs host-local processes instead of `docker compose`.
+
+Use this path when you want a real end-to-end file transfer test for the lossless subsystem with:
+
+- plain mode and FEC mode
+- one or two receivers
+- one or two trees
+- varying `block_size`
+- varying symbol geometry via `symbols_per_block`
+
+### Prerequisites
+
+- Linux host with `iproute2` and `sudo`
+- local Postgres available through `bash utils/start-database.sh`
+- built `controller` and `nextmini` binaries
+
+### Run the default matrix
+
+```bash
+sudo ./examples/ns-flow/run-integration.sh
+```
+
+This runs four cases:
+
+1. plain, one receiver, one tree
+2. FEC, one receiver, one tree
+3. FEC, two receivers, two trees, larger block size
+4. FEC, two receivers, two trees, different `symbols_per_block`
+
+### Run one case
+
+```bash
+sudo ./examples/ns-flow/run-integration.sh \
+  --case-name fec-r2-t2-b8192-s32 \
+  --mode fec \
+  --receivers 2 \
+  --trees 2 \
+  --block-size 8192 \
+  --symbols-per-block 32 \
+  --payload-size 32768
+```
+
+### Artifacts
+
+Per-case outputs are written under `examples/ns-flow/generated/<case-name>/`:
+
+- `payload.bin`
+- `artifacts/source.bin`
+- `artifacts/source.bin.sha256`
+- `artifacts/receiver-<node>.bin`
+- `artifacts/receiver-<node>.bin.sha256`
+- `artifacts/source-1.status`
+- `artifacts/receiver-<node>.status`
+- `dataplane.log`
+- `controller/controller.log`
+
+The verifier compares every receiver artifact against the sender payload and fails on any size or SHA256 mismatch.

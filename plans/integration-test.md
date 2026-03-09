@@ -257,3 +257,37 @@ Per-case pass criteria:
 - No new general-purpose namespace orchestration framework.
 - No attempt to make this a cross-platform test.
 - No expansion of controller-managed unicast flow tests to cover multicast/FEC file verification.
+
+## Execution Log
+
+- `T1` completed on 2026-03-09.
+  Work log: froze the implementation shape around the built-in namespace launcher, a single global `[integration_test]` config block, host-local controller startup, and artifact-based sender/receiver verification.
+  Files touched: this plan file.
+
+- `T2` completed on 2026-03-09.
+  Work log: added `IntegrationTestConfig`, `IntegrationTreeConfig`, node-role inference, and tree-edge parsing to the shared dataplane config.
+  Files touched: `dataplane/src/node/config.rs`.
+
+- `T3` completed on 2026-03-09.
+  Work log: added a small controller/event harness that reuses `PythonInterfaceHandle` events for topology/group lifecycle waits instead of inventing a second event path.
+  Files touched: `dataplane/src/node/integration_test/controller_helpers.rs`, `dataplane/src/node/conductor.rs`.
+
+- `T4` completed on 2026-03-09.
+  Work log: implemented namespace-native source and receiver roles that coordinate through artifact files, drive lossless sender/receiver sessions, and emit result status files and artifacts.
+  Files touched: `dataplane/src/node/integration_test/mod.rs`, `dataplane/src/node/integration_test/hash.rs`, `dataplane/src/node/mod.rs`.
+
+- `T5` completed on 2026-03-09.
+  Work log: added a host-local namespace runner that bootstraps Postgres, starts the controller locally, launches `nextmini` in namespace mode, waits for per-case artifacts, and cleans up without Docker orchestration.
+  Files touched: `examples/ns-flow/run-integration.sh`, `examples/ns-flow/cleanup.sh`.
+
+- `T6` completed on 2026-03-09.
+  Work log: added a small verifier that compares every receiver artifact against the sender payload by size and SHA256.
+  Files touched: `examples/ns-flow/verify_hashes.py`.
+
+- `T7` completed on 2026-03-09.
+  Work log: added a dedicated config generator for the namespace lossless harness plus the default four-case matrix in the runner.
+  Files touched: `examples/ns-flow/generate_integration.py`, `examples/ns-flow/run-integration.sh`.
+
+- `T8` completed on 2026-03-09.
+  Work log: documented the new host-local namespace lossless harness, its prerequisites, commands, artifact layout, and default matrix.
+  Files touched: `docs/content/docs/examples/networking/ns-flow.md`.

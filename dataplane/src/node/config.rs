@@ -8,6 +8,7 @@ use clap_serde_derive::clap;
 use clap_serde_derive::clap::Parser;
 use network_interface::{Addr, NetworkInterface, NetworkInterfaceConfig};
 use serde::Deserialize;
+use serde::de::Deserializer;
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
@@ -354,6 +355,11 @@ pub struct LocalConfig {
     #[default(Default::default())]
     #[arg(skip)]
     pub lossless_runtime_config: LosslessConfig,
+
+    /// Optional namespace-backed lossless integration-test harness settings.
+    #[default(Default::default())]
+    #[arg(skip)]
+    pub integration_test: IntegrationTestConfig,
 }
 
 impl LocalConfig {
@@ -741,6 +747,134 @@ fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
 }
 
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct IntegrationTreeConfig {
+    pub tree_id: usize,
+    #[serde(deserialize_with = "deserialize_edge_pairs")]
+    pub edges: Vec<(u32, u32)>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct IntegrationTestConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub case_name: String,
+    #[serde(default)]
+    pub group_label: String,
+    #[serde(default)]
+    pub source_node_id: usize,
+    #[serde(default)]
+    pub receiver_ids: Vec<usize>,
+    #[serde(default)]
+    pub artifact_dir: String,
+    #[serde(default)]
+    pub payload_path: String,
+    #[serde(default = "default_integration_group_timeout_ms")]
+    pub group_timeout_ms: u64,
+    #[serde(default = "default_integration_receive_timeout_ms")]
+    pub receive_timeout_ms: u64,
+    #[serde(default = "default_integration_poll_interval_ms")]
+    #[allow(dead_code)]
+    pub poll_interval_ms: u64,
+    #[serde(default = "default_integration_src_port")]
+    pub src_port: u16,
+    #[serde(default = "default_integration_dst_port")]
+    pub dst_port: u16,
+    #[serde(default)]
+    pub block_size: usize,
+    #[serde(default)]
+    pub trees: Vec<IntegrationTreeConfig>,
+}
+
+impl IntegrationTestConfig {
+    pub fn is_receiver(&self, node_id: usize) -> bool {
+        self.receiver_ids.contains(&node_id)
+    }
+
+    pub fn role_for_node(&self, node_id: usize) -> Option<IntegrationNodeRole> {
+        if !self.enabled {
+            return None;
+        }
+
+        if node_id == self.source_node_id {
+            return Some(IntegrationNodeRole::Source);
+        }
+
+        if self.is_receiver(node_id) {
+            return Some(IntegrationNodeRole::Receiver);
+        }
+
+        Some(IntegrationNodeRole::Router)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntegrationNodeRole {
+    Source,
+    Receiver,
+    Router,
+}
+
+fn default_integration_group_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_integration_receive_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_integration_poll_interval_ms() -> u64 {
+    200
+}
+
+fn default_integration_src_port() -> u16 {
+    45_000
+}
+
+fn default_integration_dst_port() -> u16 {
+    46_000
+}
+
+fn deserialize_edge_pairs<'de, D>(deserializer: D) -> Result<Vec<(u32, u32)>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum EdgeRepr {
+        EdgePairs(Vec<Vec<u32>>),
+        NodeSequence(Vec<u32>),
+    }
+
+    let repr = EdgeRepr::deserialize(deserializer)?;
+    match repr {
+        EdgeRepr::EdgePairs(edge_pairs) => {
+            let mut edges = Vec::with_capacity(edge_pairs.len());
+            for pair in edge_pairs {
+                if pair.len() != 2 {
+                    return Err(serde::de::Error::custom(
+                        "Each edge must have exactly two nodes.",
+                    ));
+                }
+                edges.push((pair[0], pair[1]));
+            }
+            Ok(edges)
+        }
+        EdgeRepr::NodeSequence(nodes) => {
+            if nodes.len() < 2 {
+                return Err(serde::de::Error::custom(
+                    "Route must have at least two nodes.",
+                ));
+            }
+            Ok(nodes
+                .windows(2)
+                .map(|window| (window[0], window[1]))
+                .collect())
+        }
+    }
+}
+
 fn default_local_address() -> Ipv4Addr {
     Ipv4Addr::new(10, 0, 0, 1)
 }
@@ -773,7 +907,11 @@ fn default_netmask() -> Ipv4Addr {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalConfig, LosslessConfig};
+    use super::{
+        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig,
+        deserialize_edge_pairs,
+    };
+    use serde::Deserialize;
     use std::net::Ipv4Addr;
     use std::time::Duration;
 
@@ -893,5 +1031,32 @@ mod tests {
 
         assert_eq!(cfg.fec_default_symbols_per_block, 0);
         assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
+    }
+
+    #[test]
+    fn integration_test_role_infers_source_receiver_and_router() {
+        let cfg = IntegrationTestConfig {
+            enabled: true,
+            source_node_id: 1,
+            receiver_ids: vec![4, 5],
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.role_for_node(1), Some(IntegrationNodeRole::Source));
+        assert_eq!(cfg.role_for_node(4), Some(IntegrationNodeRole::Receiver));
+        assert_eq!(cfg.role_for_node(2), Some(IntegrationNodeRole::Router));
+    }
+
+    #[test]
+    fn integration_tree_edges_accept_edge_pairs() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            #[serde(deserialize_with = "deserialize_edge_pairs")]
+            edges: Vec<(u32, u32)>,
+        }
+
+        let parsed: Wrapper =
+            toml::from_str("edges = [[1, 2], [2, 4], [2, 5]]").expect("tree edges should parse");
+        assert_eq!(parsed.edges, vec![(1, 2), (2, 4), (2, 5)]);
     }
 }

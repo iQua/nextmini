@@ -7,6 +7,7 @@ session_name="${SESSION_NAME:-nextmini-ns-flow}"
 config_path="${CONFIG_PATH:-${script_dir}/config.toml}"
 bridge_name=""
 n_nodes=""
+skip_docker="false"
 
 usage() {
   cat <<'EOF'
@@ -17,6 +18,7 @@ Options:
   --config PATH     Dataplane config to read n_nodes/bridge_name from (default: examples/ns-flow/config.toml).
   --n-nodes N       Override n_nodes used for veth cleanup (default: read from config.toml).
   --bridge-name N   Override bridge_name used for bridge cleanup (default: read from config.toml or isobr0).
+  --skip-docker     Do not run docker compose down during cleanup.
   -h, --help        Show this help.
 EOF
 }
@@ -59,6 +61,10 @@ while [[ $# -gt 0 ]]; do
       fi
       shift 2
       ;;
+    --skip-docker)
+      skip_docker="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -100,7 +106,7 @@ if ! docker compose version >/dev/null 2>&1; then
 fi
 
 # Stop docker containers
-if [[ -n "$compose_bin" && -f "${script_dir}/docker-compose.yml" ]]; then
+if [[ "$skip_docker" != "true" && -n "$compose_bin" && -f "${script_dir}/docker-compose.yml" ]]; then
   echo "Stopping docker containers"
   $compose_bin -f "${script_dir}/docker-compose.yml" down 2>/dev/null || true
 fi
@@ -175,5 +181,10 @@ for ((shard = 0; shard < shards; shard++)); do
   $SUDO ip link set "$br" down 2>/dev/null || true
   $SUDO ip link del "$br" 2>/dev/null || true
 done
+
+integration_root="${script_dir}/integration-artifacts"
+if [[ -d "$integration_root" ]]; then
+  find "$integration_root" -type f \( -name 'controller.pid' -o -name 'dataplane.pid' \) -delete 2>/dev/null || true
+fi
 
 echo "Cleanup complete."
