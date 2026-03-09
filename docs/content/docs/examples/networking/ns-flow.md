@@ -46,8 +46,10 @@ python3 examples/ns-flow/generate.py \
 Start everything with the orchestration script:
 
 ```bash
-sudo ./examples/ns-flow/run.sh
+./examples/ns-flow/run.sh
 ```
+
+The launcher uses `sudo` internally for `sysctl` tuning and dataplane startup. Running it without a top-level `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
 
 `run.sh` orchestration details:
 
@@ -60,7 +62,7 @@ sudo ./examples/ns-flow/run.sh
 If you only want tuning without startup:
 
 ```bash
-sudo ./examples/ns-flow/run.sh --sysctl-only
+./examples/ns-flow/run.sh --sysctl-only
 ```
 
 ## 3. Verify startup and flow completion
@@ -90,7 +92,7 @@ docker exec postgres psql -U pgusr -d nextmini -c "SELECT COUNT(*) AS routes FRO
 Stop tmux/docker and remove created namespace networking artifacts:
 
 ```bash
-sudo ./examples/ns-flow/cleanup.sh
+./examples/ns-flow/cleanup.sh
 ```
 
 The cleanup script kills the `nextmini-ns-flow` tmux session, brings down `examples/ns-flow/docker-compose.yml`, deletes `veth*` links for configured nodes, and removes `isobr*` bridge shards.
