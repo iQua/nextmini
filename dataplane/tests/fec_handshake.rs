@@ -73,7 +73,9 @@ async fn start_sender_with_runtime_config(
                 block_size: 16,
             },
             route: TransportRoute {
-                src_ip: cfg.node_id.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                src_ip: cfg
+                    .node_id
+                    .ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
                 dst_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
                 src_port: 4410,
                 dst_port: 5410,

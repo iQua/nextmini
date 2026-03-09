@@ -63,9 +63,14 @@ def parse_args() -> argparse.Namespace:
         "--payload-count",
         type=int,
         default=None,
-        help="Compatibility shim; when provided, expected-bytes defaults to payload-count * chunk-size.",
+        help="Optional reporting hint; when provided, expected-bytes defaults to payload-count * chunk-size.",
     )
-    parser.add_argument("--expected-bytes", type=int, default=None)
+    parser.add_argument(
+        "--expected-bytes",
+        type=int,
+        default=None,
+        help="Optional reporting hint for logs and throughput calculations.",
+    )
     parser.add_argument(
         "--source-node-id",
         type=int,
@@ -446,8 +451,6 @@ def run_receiver(args: argparse.Namespace) -> None:
     load_tensor_metadata_if_needed(args)
     if args.expected_bytes is None and args.payload_count:
         args.expected_bytes = args.payload_count * args.chunk_size
-    if args.expected_bytes is None or args.expected_bytes <= 0:
-        raise SystemExit("expected-bytes must be known for lossless reception.")
 
     group_id = wait_for_group_info(args, args.group_timeout)
     local_node_id = dataplane.node_id
@@ -463,14 +466,15 @@ def run_receiver(args: argparse.Namespace) -> None:
         suffix = args.node_id if args.node_id is not None else "receiver"
         sink_path = args.artifact_dir / f"receiver-{suffix}.bin"
 
-    log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
+    if args.expected_bytes is not None and args.expected_bytes > 0:
+        log(f"Starting reception of {args.expected_bytes} bytes...", args.quiet)
+    else:
+        log("Starting reception...", args.quiet)
     recv_start_time = time.perf_counter()
 
     sid = dataplane.receive_data(
         group_id,
         args.source_node_id,
-        expected_bytes=args.expected_bytes,
-        block_size=args.chunk_size,
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
@@ -487,14 +491,22 @@ def run_receiver(args: argparse.Namespace) -> None:
     elapsed = recv_end_time - recv_start_time
 
     log(f"Receive completion: {ok}.", args.quiet)
-    log(
-        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(args.expected_bytes, elapsed)}.",
-        args.quiet,
-    )
 
     view = dataplane.get_data_buffer(sid)
     payload_bytes = bytes(view.read())
     log(f"Retrieved {len(payload_bytes)} bytes into PacketView.", args.quiet)
+    if args.expected_bytes is not None and args.expected_bytes > 0:
+        log(
+            f"Expected {args.expected_bytes} bytes from metadata; received {len(payload_bytes)} bytes.",
+            args.quiet,
+        )
+        throughput_bytes = args.expected_bytes
+    else:
+        throughput_bytes = len(payload_bytes)
+    log(
+        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(throughput_bytes, elapsed)}.",
+        args.quiet,
+    )
 
     if payload_bytes is not None and sink_path is not None:
         sink_path.parent.mkdir(parents=True, exist_ok=True)

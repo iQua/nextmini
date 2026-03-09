@@ -94,13 +94,12 @@ class Worker:
         
         return pickle.loads(delivery.payload)
 
-    async def _receive_shard(self, group_id: int, src_node_id: int, expected_bytes: int) -> bytes:
+    async def _receive_shard(self, group_id: int, src_node_id: int) -> bytes:
         """Receive a single shard via lossless multicast.
 
         Args:
             group_id: Multicast group ID
             src_node_id: Source node ID (trainer)
-            expected_bytes: Expected size of this shard in bytes
 
         Returns:
             Raw bytes of the received shard
@@ -108,8 +107,6 @@ class Worker:
         sid = await self.dataplane.receive_data_async(
             group_id,
             src_node_id,
-            expected_bytes=expected_bytes,
-            block_size=config.CHUNK_SIZE,
             src_port=config.TRAINER_PORT,
             dst_port=config.WORKER_BASE_PORT
         )
@@ -162,8 +159,6 @@ class Worker:
                     sid = await self.dataplane.receive_data_async(
                         group_id,
                         src_node_id,
-                        expected_bytes=size,
-                        block_size=config.CHUNK_SIZE,
                         src_port=config.TRAINER_PORT,
                         dst_port=config.WORKER_BASE_PORT
                     )

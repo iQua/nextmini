@@ -34,10 +34,9 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        session: capture.session_config(SESSION_ID, 16),
+        session_id: SESSION_ID,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        expected_bytes: 16,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
     };
@@ -102,7 +101,13 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
         .expect("receiver task should stop")
         .expect("receiver task should exit cleanly");
 
-    assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
+    let sink = sink.lock().await;
+    assert_eq!(&sink[..16], b"abcdefghijklmnop");
+    assert_eq!(
+        sink.len(),
+        16,
+        "receiver sink should size itself from the manifest"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -118,10 +123,9 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        session: capture.session_config(SESSION_ID + 2, 16),
+        session_id: SESSION_ID + 2,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        expected_bytes: 16,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
     };
@@ -156,6 +160,161 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
 
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID + 2, 0, b"abcdefghijklmnop"),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("block data should reach receiver");
+
+    let ack_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let ack_payload = ack_packet
+        .tcp_payload()
+        .expect("ack packet should include payload");
+    let (_, ack_control) =
+        lossless_session::decode_control(ack_payload).expect("ack control should decode");
+    assert_eq!(
+        ack_control,
+        LosslessSessionControl::BlockAck { block_id: 0 }
+    );
+
+    timeout(Duration::from_secs(2), receiver_task)
+        .await
+        .expect("receiver task should stop once all blocks are complete")
+        .expect("receiver task should exit cleanly");
+
+    assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 4,
+        DST_PORT + 4,
+        1,
+        2048,
+    )
+    .await;
+    let receiver_cfg = ReceiverConfig {
+        session_id: SESSION_ID + 4,
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
+        sink_buffer: None,
+        fec_enabled: false,
+    };
+    let (tx, rx) = mpsc::channel::<InboundFrame>(64);
+    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Plain,
+    };
+
+    for _ in 0..2 {
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                SESSION_ID + 4,
+                &LosslessSessionControl::Manifest {
+                    manifest: manifest.clone(),
+                },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("manifest should reach receiver");
+
+        let ready_packet = common::recv_packet(&mut capture.packet_rx).await;
+        let ready_payload = ready_packet
+            .tcp_payload()
+            .expect("ready packet should include payload");
+        assert!(matches!(
+            lossless_session::decode_control(ready_payload),
+            Some((_, LosslessSessionControl::Ready { .. }))
+        ));
+    }
+
+    drop(tx);
+    timeout(Duration::from_secs(2), receiver_task)
+        .await
+        .expect("receiver task should stop")
+        .expect("receiver task should exit cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_receiver_ignores_conflicting_manifest_after_install() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 5,
+        DST_PORT + 5,
+        1,
+        2048,
+    )
+    .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let receiver_cfg = ReceiverConfig {
+        session_id: SESSION_ID + 5,
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
+        sink_buffer: Some(sink.clone()),
+        fec_enabled: false,
+    };
+    let (tx, rx) = mpsc::channel::<InboundFrame>(64);
+    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 5,
+            &LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 16,
+                    total_bytes: 16,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Plain,
+                },
+            },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("manifest should reach receiver");
+
+    let ready_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let ready_payload = ready_packet
+        .tcp_payload()
+        .expect("ready packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(ready_payload),
+        Some((_, LosslessSessionControl::Ready { .. }))
+    ));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 5,
+            &LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 8,
+                    total_bytes: 24,
+                    total_blocks: 3,
+                    mode: LosslessSessionMode::Plain,
+                },
+            },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("conflicting manifest should reach receiver");
+
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "receiver should ignore conflicting manifest replays after install"
+    );
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_block_data(SESSION_ID + 5, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await

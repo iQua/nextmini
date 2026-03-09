@@ -16,9 +16,9 @@ use crate::node::config::LosslessConfig;
 use crate::node::packet::{LosslessTransportMeta, Packet};
 use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
 use crate::node::session::api::{Command, InboundFrame, SessionId};
+pub use crate::node::session::fec_policy::PreflightError;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::{fec_policy, receiver, sender};
-pub use crate::node::session::fec_policy::PreflightError;
 
 /// Settings shared by sender and receiver session tasks.
 #[derive(Clone, Debug)]
@@ -64,14 +64,12 @@ pub struct SenderRequest {
 /// User-facing request used to start a receiver session.
 #[derive(Clone, Debug)]
 pub struct ReceiverRequest {
-    /// Shared per-session settings.
-    pub session: SessionConfig,
+    /// Session identifier used for frame routing.
+    pub session_id: SessionId,
     /// Precomputed transport envelope for receiver control traffic.
     pub route: TransportRoute,
     /// Local node identifier advertised in READY.
     pub local_node_id: usize,
-    /// Expected number of payload bytes for the completed object.
-    pub expected_bytes: u64,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
@@ -102,14 +100,12 @@ pub struct SenderConfig {
 /// Fully derived receiver configuration passed to the receiver task.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
-    /// Shared per-session settings.
-    pub session: SessionConfig,
+    /// Session identifier used for frame routing.
+    pub session_id: SessionId,
     /// Precomputed transport envelope for receiver control traffic.
     pub route: TransportRoute,
     /// Local node identifier advertised in READY.
     pub local_node_id: usize,
-    /// Expected number of payload bytes for the completed object.
-    pub expected_bytes: u64,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     /// Whether FEC manifests are accepted by this runtime.
@@ -373,12 +369,11 @@ impl LosslessRuntime {
 
     /// Allocate an ingress channel and spawn the receiver task.
     fn spawn_receiver(&mut self, req: ReceiverRequest) -> SessionId {
-        let sid = req.session.session_id;
+        let sid = req.session_id;
         let cfg = ReceiverConfig {
-            session: req.session,
+            session_id: req.session_id,
             route: req.route,
             local_node_id: req.local_node_id,
-            expected_bytes: req.expected_bytes,
             sink_buffer: req.sink_buffer,
             fec_enabled: self.config.fec_enabled,
         };

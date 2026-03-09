@@ -252,8 +252,7 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> Option<Vec<u8>> {
-        let need_encoder = fec_block_ref(self, block_id)
-            .map(|block| block.encoder.is_none())?;
+        let need_encoder = fec_block_ref(self, block_id).map(|block| block.encoder.is_none())?;
 
         if need_encoder {
             let span = shared.plan.block_span(block_id)?;
@@ -277,7 +276,12 @@ impl FecSender {
 
 impl super::ModeHooks for FecSender {
     /// Record additional symbol demand for one FEC block.
-    fn on_block_status(&mut self, shared: &super::SenderShared, peer_id: usize, status: BlockStatus) {
+    fn on_block_status(
+        &mut self,
+        shared: &super::SenderShared,
+        peer_id: usize,
+        status: BlockStatus,
+    ) {
         if !shared.receiver_set.contains(&peer_id) {
             return;
         }

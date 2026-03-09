@@ -7,8 +7,8 @@
 mod fec;
 mod plain;
 
-use std::collections::BTreeSet;
 use bytes::Bytes;
+use std::collections::BTreeSet;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
 use tracing::{info, warn};

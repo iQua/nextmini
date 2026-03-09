@@ -62,7 +62,10 @@ impl FecReceiver {
             .insert(symbol.symbol_id, payload.to_vec())
             .is_none();
 
-        if self.try_decode_fec_block(shared, symbol.block_id, &fec_mode).await {
+        if self
+            .try_decode_fec_block(shared, symbol.block_id, &fec_mode)
+            .await
+        {
             shared.send_block_ack(symbol.block_id).await;
             return;
         }
@@ -92,7 +95,7 @@ impl FecReceiver {
         let params = BlockParams::new(
             usize::from(fec_mode.symbols_per_block),
             self.geometry.symbol_size(),
-            session_fec::block_seed(shared.session.session_id, block_id),
+            session_fec::block_seed(shared.session_id, block_id),
         );
         let decoder = Decoder::from_block(params);
         let mut received = Vec::with_capacity(block_state.symbols.len());
@@ -114,7 +117,8 @@ impl FecReceiver {
             return false;
         };
 
-        let mut block = Vec::with_capacity(output.source_symbols.len() * self.geometry.symbol_size());
+        let mut block =
+            Vec::with_capacity(output.source_symbols.len() * self.geometry.symbol_size());
         for symbol in output.source_symbols {
             block.extend_from_slice(&symbol);
         }
@@ -153,7 +157,7 @@ impl FecReceiver {
         control::send_control(
             &shared.processors,
             control::FrameRoute {
-                session_id: shared.session.session_id,
+                session_id: shared.session_id,
                 tree_id: None,
                 src_ip: shared.route.src_ip,
                 src_port: shared.route.src_port,

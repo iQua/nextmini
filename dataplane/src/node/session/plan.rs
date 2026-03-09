@@ -54,6 +54,11 @@ impl BlockPlan {
         self.total_blocks
     }
 
+    /// Return the logical object length in bytes when it fits on this host.
+    pub(crate) fn total_bytes_usize(&self) -> Option<usize> {
+        usize::try_from(self.total_bytes).ok()
+    }
+
     /// Report whether `block_id` lies within the planned transfer range.
     pub fn contains_block(&self, block_id: u64) -> bool {
         block_id < self.total_blocks

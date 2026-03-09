@@ -114,10 +114,9 @@ async fn plain_receiver_writes_and_acks_every_block() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        session: capture.session_config(0xA11C_E102, 8),
+        session_id: 0xA11C_E102,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        expected_bytes: 24,
         sink_buffer: Some(sink.clone()),
         fec_enabled: false,
     };
@@ -278,10 +277,9 @@ async fn fec_receiver_decodes_and_acks_every_block() {
     .await;
     let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
-        session: capture.session_config(0xA11C_E104, 8),
+        session_id: 0xA11C_E104,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        expected_bytes: 18,
         sink_buffer: Some(sink.clone()),
         fec_enabled: true,
     };

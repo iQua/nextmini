@@ -4066,10 +4066,9 @@ pub struct SenderRequest {
 /// Receiver-only request payload accepted at the runtime API boundary.
 #[derive(Clone, Debug)]
 pub struct ReceiverRequest {
-    pub session: SessionConfig,
+    pub session_id: SessionId,
     pub route: TransportRoute,
     pub local_node_id: usize,
-    pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
 }
 
@@ -4090,10 +4089,9 @@ pub struct SenderConfig {
 /// Receiver task configuration after runtime derives internal FEC policy.
 #[derive(Clone, Debug)]
 pub struct ReceiverConfig {
-    pub session: SessionConfig,
+    pub session_id: SessionId,
     pub route: TransportRoute,
     pub local_node_id: usize,
-    pub expected_bytes: u64,
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     pub fec_enabled: bool,
 }
@@ -4623,37 +4621,23 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, source_node_id, *, src_port=None, dst_port=None))]
     fn receive_data(
         &self,
         group_id: u64,
         source_node_id: usize,
-        expected_bytes: u64,
-        block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<u64> {
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-
-        if block_size == 0 {
-            return Err(PyRuntimeError::new_err("block_size must be positive."));
-        }
-
         // Compute deterministic session_id from group_id and source_node_id
         #[allow(unused_variables)]
         let sid = multicast_session_id(group_id, source_node_id);
         #[cfg(feature = "python-extension")]
         {
             if let Some(handle) = &self.lossless_runtime {
-                let cap = usize::try_from(expected_bytes).unwrap_or(0);
-                let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
+                let sink_buf = Arc::new(Mutex::new(Vec::new()));
                 let cfg = session::runtime::ReceiverRequest {
-                    session: session::runtime::SessionConfig {
-                        session_id: sid,
-                        block_size,
-                    },
+                    session_id: sid,
                     route: session::runtime::TransportRoute {
                         src_ip: self.cfg.node_id.user_space_ip(
                             self.cfg.user_space_base_addr,
@@ -4667,8 +4651,6 @@ impl Dataplane {
                         dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
                     },
                     local_node_id: self.cfg.node_id,
-                    source_node_id,
-                    expected_bytes,
                     sink_buffer: Some(sink_buf.clone()),
                 };
                 // Direct registration - both sender and receiver compute same session_id
@@ -4685,24 +4667,15 @@ impl Dataplane {
     }
 
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, source_node_id, expected_bytes, *, block_size=8500, src_port=None, dst_port=None))]
+    #[pyo3(signature = (group_id, source_node_id, *, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(
         &self,
         py: Python<'py>,
         group_id: u64,
         source_node_id: usize,
-        expected_bytes: u64,
-        block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
     ) -> PyResult<Bound<'py, PyAny>> {
-        if expected_bytes == 0 {
-            return Err(PyRuntimeError::new_err("expected_bytes must be positive."));
-        }
-        if block_size == 0 {
-            return Err(PyRuntimeError::new_err("block_size must be positive."));
-        }
-
         // Compute deterministic session_id from group_id and source_node_id
         let sid = multicast_session_id(group_id, source_node_id);
 
@@ -4718,13 +4691,9 @@ impl Dataplane {
                 let netmask = self.cfg.local_netmask;
 
                 return future_into_py(py, async move {
-                    let cap = usize::try_from(expected_bytes).unwrap_or(0);
-                    let sink_buf = Arc::new(Mutex::new(Vec::with_capacity(cap)));
+                    let sink_buf = Arc::new(Mutex::new(Vec::new()));
                     let cfg = session::runtime::ReceiverRequest {
-                        session: session::runtime::SessionConfig {
-                            session_id: sid,
-                            block_size,
-                        },
+                        session_id: sid,
                         route: session::runtime::TransportRoute {
                             src_ip: local_node_id.user_space_ip(base_addr, netmask),
                             dst_ip: source_node_id.user_space_ip(base_addr, netmask),
@@ -4732,8 +4701,6 @@ impl Dataplane {
                             dst_port: dp,
                         },
                         local_node_id,
-                        source_node_id,
-                        expected_bytes,
                         sink_buffer: Some(sink_buf.clone()),
                     };
 
