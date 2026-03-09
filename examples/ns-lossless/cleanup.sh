@@ -81,11 +81,30 @@ if [[ -d "$artifacts_root" ]]; then
   while IFS= read -r pid_file; do
     [[ -z "$pid_file" ]] && continue
     if [[ -s "$pid_file" ]]; then
-      kill "$(cat "$pid_file")" >/dev/null 2>&1 || true
+      if [[ -n "$SUDO" ]]; then
+        $SUDO /bin/kill "$(cat "$pid_file")" >/dev/null 2>&1 || true
+      else
+        kill "$(cat "$pid_file")" >/dev/null 2>&1 || true
+      fi
       wait "$(cat "$pid_file")" 2>/dev/null || true
     fi
     rm -f "$pid_file"
   done < <(find "$artifacts_root" -type f \( -name 'controller.pid' -o -name 'dataplane.pid' \) | sort)
+fi
+
+if [[ -n "$config_path" && -f "$config_path" ]]; then
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    if [[ -n "$SUDO" ]]; then
+      $SUDO /bin/kill "$pid" >/dev/null 2>&1 || true
+    else
+      kill "$pid" >/dev/null 2>&1 || true
+    fi
+  done < <(
+    ps -eo pid=,args= | awk -v cfg="$config_path" '
+      index($0, "--config-path " cfg) { print $1 }
+    '
+  )
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then

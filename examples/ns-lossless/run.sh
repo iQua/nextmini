@@ -7,6 +7,7 @@ artifacts_root="${script_dir}/artifacts"
 controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 cargo_bin="${CARGO_BIN:-}"
+database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
 case_name=""
 no_build="false"
 original_args=("$@")
@@ -124,21 +125,56 @@ build_binaries() {
 wait_for_port() {
   local host="$1"
   local port="$2"
+  local pid="${3:-}"
+  local label="${4:-service}"
   local deadline=$((SECONDS + 30))
   while (( SECONDS < deadline )); do
-    if (echo >"/dev/tcp/${host}/${port}") >/dev/null 2>&1; then
+    if port_is_open "$host" "$port"; then
       return 0
+    fi
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" >/dev/null 2>&1; then
+      echo "${label} exited before ${host}:${port} became reachable." >&2
+      return 1
     fi
     sleep 1
   done
   return 1
 }
 
+port_is_open() {
+  local host="$1"
+  local port="$2"
+  (echo >"/dev/tcp/${host}/${port}") >/dev/null 2>&1
+}
+
+assert_port_available() {
+  local host="$1"
+  local port="$2"
+
+  if port_is_open "$host" "$port"; then
+    echo "Required port ${host}:${port} is already in use." >&2
+    echo "Stop the conflicting service or container before running ns-lossless." >&2
+    return 1
+  fi
+}
+
+report_case_logs() {
+  local case_dir="$1"
+
+  if [[ -f "${case_dir}/controller.log" ]]; then
+    echo "Controller log tail:" >&2
+    tail -n 40 "${case_dir}/controller.log" >&2 || true
+  fi
+
+  if [[ -f "${case_dir}/dataplane.log" ]]; then
+    echo "Dataplane log tail:" >&2
+    tail -n 40 "${case_dir}/dataplane.log" >&2 || true
+  fi
+}
+
 ensure_database() {
-  if command -v pg_isready >/dev/null 2>&1; then
-    if pg_isready -h 127.0.0.1 -p 5432 -U pgusr -d nextmini >/dev/null 2>&1; then
-      return 0
-    fi
+  if port_is_open 127.0.0.1 5432; then
+    return 0
   fi
 
   (
@@ -146,17 +182,22 @@ ensure_database() {
     bash utils/start-database.sh
   )
 
-  if command -v pg_isready >/dev/null 2>&1; then
-    local deadline=$((SECONDS + 30))
-    while (( SECONDS < deadline )); do
-      if pg_isready -h 127.0.0.1 -p 5432 -U pgusr -d nextmini >/dev/null 2>&1; then
-        return 0
-      fi
-      sleep 1
-    done
-    echo "Postgres did not become ready on 127.0.0.1:5432." >&2
-    exit 1
+  if wait_for_port 127.0.0.1 5432 "" "Postgres"; then
+    return 0
   fi
+
+  if command -v docker >/dev/null 2>&1; then
+    if docker ps -a --format '{{.Names}}' | grep -qx "$database_container_name"; then
+      if ! docker port "$database_container_name" 5432 >/dev/null 2>&1; then
+        echo "Database container '$database_container_name' is not publishing host port 5432." >&2
+        echo "Recreate that container so the controller can reach 127.0.0.1:5432." >&2
+        exit 1
+      fi
+    fi
+  fi
+
+  echo "Postgres did not become reachable on 127.0.0.1:5432." >&2
+  exit 1
 }
 
 generate_case() {
@@ -167,22 +208,29 @@ generate_case() {
 
 start_controller() {
   local case_dir="$1"
+  local controller_pid=""
+
+  assert_port_available 127.0.0.1 3000
   mkdir -p "${case_dir}/controller-run"
   cp "${case_dir}/controller-config.toml" "${case_dir}/controller-run/config.toml"
+  echo "Starting controller for case $(basename "$case_dir")."
   (
     cd "${case_dir}/controller-run"
     RUST_LOG=info "$controller_bin" >"${case_dir}/controller.log" 2>&1 &
     echo $! >"${case_dir}/controller.pid"
   )
+  controller_pid="$(cat "${case_dir}/controller.pid")"
 
-  if ! wait_for_port 127.0.0.1 3000; then
+  if ! wait_for_port 127.0.0.1 3000 "$controller_pid" "controller"; then
     echo "Controller failed to bind 127.0.0.1:3000 for case ${case_dir}." >&2
+    report_case_logs "$case_dir"
     exit 1
   fi
 }
 
 start_dataplane() {
   local case_dir="$1"
+  echo "Starting dataplane for case $(basename "$case_dir")."
   RUST_LOG=info "$dataplane_bin" --config-path "${case_dir}/dataplane-config.toml" \
     >"${case_dir}/dataplane.log" 2>&1 &
   echo $! >"${case_dir}/dataplane.pid"
@@ -190,6 +238,7 @@ start_dataplane() {
 
 stop_case() {
   local case_dir="$1"
+  local config_path="${case_dir}/dataplane-config.toml"
   if [[ -f "${case_dir}/dataplane.pid" ]]; then
     kill "$(cat "${case_dir}/dataplane.pid")" >/dev/null 2>&1 || true
     wait "$(cat "${case_dir}/dataplane.pid")" 2>/dev/null || true
@@ -200,6 +249,15 @@ stop_case() {
     wait "$(cat "${case_dir}/controller.pid")" 2>/dev/null || true
     rm -f "${case_dir}/controller.pid"
   fi
+  while IFS= read -r pid; do
+    [[ -z "$pid" ]] && continue
+    kill "$pid" >/dev/null 2>&1 || true
+    wait "$pid" 2>/dev/null || true
+  done < <(
+    ps -eo pid=,args= | awk -v bin="$dataplane_bin" -v cfg="$config_path" '
+      index($0, bin " --config-path " cfg) { print $1 }
+    '
+  )
   bash "${script_dir}/cleanup.sh" --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
 }
 
@@ -213,9 +271,30 @@ wait_for_statuses() {
   local case_dir="$1"
   local expected_receivers="$2"
   local artifact_dir="${case_dir}/artifacts"
+  local controller_pid=""
+  local dataplane_pid=""
   local deadline=$((SECONDS + 120))
 
+  if [[ -f "${case_dir}/controller.pid" ]]; then
+    controller_pid="$(cat "${case_dir}/controller.pid")"
+  fi
+  if [[ -f "${case_dir}/dataplane.pid" ]]; then
+    dataplane_pid="$(cat "${case_dir}/dataplane.pid")"
+  fi
+
+  echo "Waiting for source and ${expected_receivers} receiver status file(s)."
   while (( SECONDS < deadline )); do
+    if [[ -n "$controller_pid" ]] && ! kill -0 "$controller_pid" >/dev/null 2>&1; then
+      echo "Controller exited before the case completed." >&2
+      report_case_logs "$case_dir"
+      return 1
+    fi
+    if [[ -n "$dataplane_pid" ]] && ! kill -0 "$dataplane_pid" >/dev/null 2>&1; then
+      echo "Dataplane exited before the case completed." >&2
+      report_case_logs "$case_dir"
+      return 1
+    fi
+
     if [[ -f "${artifact_dir}/source-1.status" ]]; then
       local ready_count
       ready_count="$(find "$artifact_dir" -maxdepth 1 -name 'receiver-*.status' | wc -l | tr -d '[:space:]')"
@@ -227,6 +306,7 @@ wait_for_statuses() {
   done
 
   echo "Timed out waiting for case status files in ${artifact_dir}." >&2
+  report_case_logs "$case_dir"
   return 1
 }
 
@@ -256,6 +336,7 @@ run_case() {
   current_case_dir="$case_dir"
   rm -rf "$case_dir"
   mkdir -p "$case_dir"
+  echo "Preparing case ${name}."
 
   generate_case \
     "$case_dir" \
@@ -277,9 +358,11 @@ run_case() {
     assert_status_ok "$status_file"
   done < <(find "${case_dir}/artifacts" -maxdepth 1 -name 'receiver-*.status' | sort)
 
+  echo "Verifying hashes for case ${name}."
   python3 "${script_dir}/verify_hashes.py" "${case_dir}/artifacts"
   stop_case "$case_dir"
   current_case_dir=""
+  echo "Case ${name} completed successfully."
 }
 
 trap cleanup_on_exit EXIT

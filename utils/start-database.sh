@@ -11,6 +11,10 @@
 
 DB_CONTAINER_NAME="nextmini-database"
 
+container_publishes_port() {
+  docker port "$DB_CONTAINER_NAME" 5432 >/dev/null 2>&1
+}
+
 if ! [ -x "$(command -v docker)" ]; then
   echo -e "Docker is not installed. Please install Docker Desktop or OrbStack and try again."
   exit 1
@@ -22,11 +26,21 @@ if ! docker info > /dev/null 2>&1; then
 fi
 
 if [ "$(docker ps -q -f name=$DB_CONTAINER_NAME)" ]; then
+  if ! container_publishes_port; then
+    echo "Database container '$DB_CONTAINER_NAME' is already running, but it is not publishing host port 5432." >&2
+    echo "Remove and recreate it so host processes can reach PostgreSQL at 127.0.0.1:5432." >&2
+    exit 1
+  fi
   echo "Database container '$DB_CONTAINER_NAME' is already running."
   exit 0
 fi
 
 if [ "$(docker ps -q -a -f name=$DB_CONTAINER_NAME)" ]; then
+  if ! container_publishes_port; then
+    echo "Existing database container '$DB_CONTAINER_NAME' does not publish host port 5432." >&2
+    echo "Remove and recreate it so host processes can reach PostgreSQL at 127.0.0.1:5432." >&2
+    exit 1
+  fi
   docker start "$DB_CONTAINER_NAME"
   echo "Existing database container '$DB_CONTAINER_NAME' has been started."
   exit 0
