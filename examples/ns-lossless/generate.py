@@ -129,6 +129,7 @@ metrics_collection_interval = 3600
 controller_connect_timeout_ms = 30000
 interval_between_spawn = 1
 child_start_delay_ms = 0
+auto_add_forward_rules = true
 
 [lossless_runtime_config]
 default_block_size = {args.block_size}

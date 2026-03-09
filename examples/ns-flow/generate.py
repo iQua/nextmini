@@ -126,6 +126,7 @@ feature = "concurrent"
 # Disable per-node TUN interface for the namespace flows example.
 enable_local_interface = false
 controller_addr = "{args.controller_addr}"
+auto_add_forward_rules = true
 
 # Faster startup/memory-footprint experiments:
 # stretches metrics reporting interval to reduce timer wakeups

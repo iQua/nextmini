@@ -519,8 +519,48 @@ pub fn ensure_ip_forward_enabled() -> Result<(), NetworkError> {
     }
 }
 
-/// Add iptables FORWARD rules to allow traffic between isobr0 and the outbound interface.
+/// Add iptables FORWARD rules for namespace bridge traffic.
 pub fn ensure_forward_rules(bridge_name: &str, outbound_if: &str) -> Result<(), NetworkError> {
+    // Bridged namespace traffic can traverse the host FORWARD chain when br_netfilter is enabled.
+    // Accept intra-bridge forwarding so namespace nodes can reach each other on hosts with a
+    // default DROP policy.
+    let check_bridge = Command::new("iptables")
+        .args([
+            "-C",
+            "FORWARD",
+            "-i",
+            bridge_name,
+            "-o",
+            bridge_name,
+            "-j",
+            "ACCEPT",
+        ])
+        .stderr(Stdio::null())
+        .status()
+        .map_err(NetworkError::Other)?;
+    if !check_bridge.success() {
+        let add_bridge = Command::new("iptables")
+            .args([
+                "-I",
+                "FORWARD",
+                "1",
+                "-i",
+                bridge_name,
+                "-o",
+                bridge_name,
+                "-j",
+                "ACCEPT",
+            ])
+            .status()
+            .map_err(NetworkError::Other)?;
+        if !add_bridge.success() {
+            error!(
+                "Failed to apply iptables FORWARD rule: -i {} -o {} -j ACCEPT.",
+                bridge_name, bridge_name
+            );
+        }
+    }
+
     // First rule: isobr0 -> outbound: ACCEPT
     let check1 = Command::new("iptables")
         .args([

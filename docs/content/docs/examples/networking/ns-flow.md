@@ -7,7 +7,7 @@ This example runs a single-host namespace workload where the controller and Post
 
 ## Linux prerequisites
 
-- Linux host with `iproute2` (`ip` command), `sudo`, and `tmux`.
+- Linux host with `iproute2` (`ip` command), `iptables`, `sudo`, and `tmux`.
 - Docker Engine with `docker compose` (or `docker-compose` fallback).
 - `python3` (used by `examples/ns-flow/generate.py`).
 - Rust toolchain (`cargo`) unless you already have a built `nextmini` binary.
@@ -17,6 +17,7 @@ Namespace-specific behavior from this example:
 - `examples/ns-flow/run.sh` applies Linux `sysctl` tuning for large namespace/veth churn.
 - `examples/ns-flow/generate.py` writes `examples/ns-flow/controller-config.toml` and `examples/ns-flow/config.toml`.
 - Generated dataplane config sets `enable_local_interface = false` for namespace flow runs.
+- Generated dataplane config enables host bridge `FORWARD` rules automatically so namespace peers can reach each other on hosts where `bridge-nf-call-iptables=1`.
 
 ## 1. Generate config files
 

@@ -112,7 +112,7 @@ These fields are maintained at runtime and should not be treated as user tuning 
 | Field | Type | Default | CLI Flag | Description |
 |-------|------|---------|----------|-------------|
 | `auto_enable_ip_forward` | `bool` | `false` | `--auto-enable-ip-forward` | Automatically enable IPv4 forwarding. |
-| `auto_add_forward_rules` | `bool` | `false` | `--auto-add-forward-rules` | Add FORWARD rules between namespace bridge and outbound interface. |
+| `auto_add_forward_rules` | `bool` | `false` | `--auto-add-forward-rules` | Add FORWARD rules for namespace traffic, including bridge-internal peer traffic and bridge-to-outbound traffic. |
 | `auto_add_nat` | `bool` | `false` | `--auto-add-nat` | Add MASQUERADE rule for namespace subnet. |
 
 ## Namespace Mode Configuration

@@ -9,7 +9,7 @@ Unlike [Namespace Flow Example](/docs/examples/networking/ns-flow), this example
 
 ## Linux prerequisites
 
-- Linux host with `iproute2` and `sudo`
+- Linux host with `iproute2`, `iptables`, and `sudo`
 - `python3`
 - local Postgres bootstrapped with `bash utils/start-database.sh`
 - Rust toolchain unless you already have built `controller` and `nextmini` release binaries
@@ -27,6 +27,8 @@ From the repository root:
 If `--case` is omitted, `run.sh` defaults to `plain-1r`. Each invocation runs exactly one transfer and writes one sender artifact plus one artifact per receiver.
 
 The script escalates to `sudo` itself for the namespace setup. Running it without `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
+The generated dataplane config also enables host bridge `FORWARD` rules automatically so namespace
+nodes can reach each other on hosts where `bridge-nf-call-iptables=1`.
 
 `run.sh` expects `127.0.0.1:3000` to be free for the local controller. If another controller or container is already listening on that port, stop it before starting a case.
 
