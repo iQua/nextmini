@@ -122,6 +122,8 @@ The controller reuses the stored DAG edges, rebuilds per-node routes (dropping l
 The `nextmini_py` bindings expose helpers for create/join/leave and receiver registration, so applications do not need a
 separate CLI:
 
+Receiver registration follows the intentionally simplified Python receive API: applications register by `(group_id, source_node_id)` and optional ports, while the first sender manifest supplies the receive geometry.
+
 ```python
 import nextmini_py as nm
 

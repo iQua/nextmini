@@ -144,6 +144,8 @@ payload_bytes = bytes(payload.read())
 print(len(payload_bytes), payload_bytes)
 ```
 
+This is an intentional breaking change in the Python receive API: `receive_data(...)` and `receive_data_async(...)` no longer accept `expected_bytes` or a receiver-side `block_size`.
+
 The sender fixes `total_bytes` and `block_size` in the first manifest for a session. Receivers only register by `(group_id, source_node_id)` plus optional port overrides, then read the reconstructed bytes from `get_data_buffer(...)`.
 
 The core methods are `send_data`, `receive_data`, `receive_data_async`, `lossless_wait`, `lossless_wait_async`, and `get_data_buffer`.

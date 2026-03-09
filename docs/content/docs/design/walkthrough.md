@@ -4666,6 +4666,10 @@ impl Dataplane {
         Ok(sid)
     }
 
+    // This was an intentional breaking change in the Python receive API:
+    // receivers no longer pass expected_bytes or receiver-local block_size.
+    // The first sender manifest is now authoritative for receive geometry.
+
     #[allow(clippy::too_many_arguments)]
     #[pyo3(signature = (group_id, source_node_id, *, src_port=None, dst_port=None))]
     fn receive_data_async<'py>(

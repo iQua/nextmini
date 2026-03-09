@@ -48,7 +48,7 @@ Lossless methods also run inside existing runtime state. `Dataplane` captures th
 `send_data` validates the request (`receiver_ids`, `block_size`, non-empty buffer) and starts a sender session.
 `send_data` and `receive_data` compute the same session id format from `(group_id, source_node_id)`; the sender uses its local node id as source, while the receiver passes explicit `source_node_id`.
 
-`receive_data` and `receive_data_async` register receive requests keyed by `(group_id, source_node_id)`, allocate an empty sink buffer, and keep that buffer in a local registry keyed by session id until explicitly consumed. Session geometry comes from the first manifest emitted by the sender, so receivers do not pass `expected_bytes` or a receiver-local `block_size`.
+`receive_data` and `receive_data_async` register receive requests keyed by `(group_id, source_node_id)`, allocate an empty sink buffer, and keep that buffer in a local registry keyed by session id until explicitly consumed. This was an intentional breaking change to the Python receive API: session geometry now comes from the first manifest emitted by the sender, so receivers do not pass `expected_bytes` or a receiver-local `block_size`.
 
 `lossless_wait` and `lossless_wait_async` poll runtime completion and then stop the session so handle state is cleaned up.
 
