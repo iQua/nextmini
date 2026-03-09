@@ -9,6 +9,7 @@ compose_file="${script_dir}/docker-compose.yml"
 session_name="nextmini-ns-flow"
 log_level="${RUST_LOG:-info}"
 binary_path="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
+cargo_bin="${CARGO_BIN:-}"
 no_build="false"
 sysctl_only="false"
 apply_sysctl_tuning="true"
@@ -22,6 +23,8 @@ dst=""
 flow_bytes=""
 flow_rate=""
 flow_weight=""
+cargo_available="false"
+cargo_build_cmd=""
 
 usage() {
   cat <<'EOF'
@@ -44,6 +47,79 @@ Options:
   --no-sysctl       Skip sysctl tuning.
   -h, --help        Show this help.
 EOF
+}
+
+resolve_user_home() {
+  local user="$1"
+  local entry=""
+
+  if [[ -z "$user" ]]; then
+    return 1
+  fi
+
+  if command -v getent >/dev/null 2>&1; then
+    entry="$(getent passwd "$user" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$entry" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$entry" | cut -d: -f6
+}
+
+shell_quote() {
+  printf '%q' "$1"
+}
+
+configure_cargo_build() {
+  local resolved_cargo_bin="$cargo_bin"
+
+  cargo_available="false"
+  cargo_build_cmd=""
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    local invoking_home=""
+    local invoking_cargo_home=""
+    local invoking_rustup_home=""
+    local path_prefix=""
+
+    invoking_home="$(resolve_user_home "$SUDO_USER" || true)"
+    if [[ -z "$invoking_home" ]]; then
+      return 0
+    fi
+
+    invoking_cargo_home="${CARGO_HOME:-${invoking_home}/.cargo}"
+    invoking_rustup_home="${RUSTUP_HOME:-${invoking_home}/.rustup}"
+    resolved_cargo_bin="${resolved_cargo_bin:-${invoking_cargo_home}/bin/cargo}"
+    if [[ ! -x "$resolved_cargo_bin" ]]; then
+      return 0
+    fi
+
+    path_prefix="${invoking_cargo_home}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    cargo_build_cmd="$(
+      printf 'sudo -u %s env HOME=%s CARGO_HOME=%s RUSTUP_HOME=%s PATH=%s %s build -p nextmini --release' \
+        "$(shell_quote "$SUDO_USER")" \
+        "$(shell_quote "$invoking_home")" \
+        "$(shell_quote "$invoking_cargo_home")" \
+        "$(shell_quote "$invoking_rustup_home")" \
+        "$(shell_quote "$path_prefix")" \
+        "$(shell_quote "$resolved_cargo_bin")"
+    )"
+    cargo_available="true"
+    return 0
+  fi
+
+  if [[ -z "$resolved_cargo_bin" ]]; then
+    resolved_cargo_bin="$(command -v cargo 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$resolved_cargo_bin" || ! -x "$resolved_cargo_bin" ]]; then
+    return 0
+  fi
+
+  cargo_build_cmd="$(printf '%s build -p nextmini --release' "$(shell_quote "$resolved_cargo_bin")")"
+  cargo_available="true"
 }
 
 apply_sysctl() {
@@ -108,6 +184,8 @@ if [[ "$apply_sysctl_tuning" == "true" ]]; then
   apply_sysctl
 fi
 
+configure_cargo_build
+
 if [[ "$skip_generate" != "true" ]]; then
   gen_cmd=(python3 "${script_dir}/generate.py")
   [[ -n "$n_nodes" ]] && gen_cmd+=(--n-nodes "$n_nodes")
@@ -129,7 +207,7 @@ if [[ "$binary_path" != /* ]]; then
   binary_path="${root_dir}/${binary_path}"
 fi
 
-if [[ "$no_build" == "true" ]] || ! command -v cargo >/dev/null 2>&1; then
+if [[ "$no_build" == "true" ]] || [[ "$cargo_available" != "true" ]]; then
   if [[ ! -x "$binary_path" ]]; then
     echo "nextmini binary not found/executable at: $binary_path" >&2
     if [[ "$no_build" != "true" ]]; then
@@ -198,8 +276,8 @@ fi
 compose_cmd="cd \"$script_dir\" && $compose_bin -f \"$compose_file\" up --build"
 dataplane_cmd="cd \"$root_dir\" && (ulimit -u 20000 2>/dev/null || true) && (ulimit -n 200000 2>/dev/null || true)"
 if [[ "$no_build" != "true" ]]; then
-  if command -v cargo >/dev/null 2>&1; then
-    dataplane_cmd+=" && cargo build -p nextmini --release"
+  if [[ "$cargo_available" == "true" ]]; then
+    dataplane_cmd+=" && ${cargo_build_cmd}"
   fi
 fi
 

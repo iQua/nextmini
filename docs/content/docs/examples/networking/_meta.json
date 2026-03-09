@@ -3,6 +3,7 @@
   "pages": [
     "namespace",
     "ns-flow",
+    "ns-lossless",
     "ns-public",
     "multicast-flow",
     "multicast-docker"

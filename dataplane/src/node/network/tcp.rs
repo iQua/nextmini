@@ -6,6 +6,7 @@ use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::node::RECEIVE_BUF_SIZE;
@@ -118,10 +119,11 @@ impl TcpClient {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);
+        let connect_timeout = Duration::from_secs(1);
 
         loop {
-            match TcpStream::connect(remote_addr).await {
-                Ok(mut stream) => {
+            match timeout(connect_timeout, TcpStream::connect(remote_addr)).await {
+                Ok(Ok(mut stream)) => {
                     // disables Nagle's algorithm to reduce extra latency in the outer TCP
                     if let Err(e) = stream.set_nodelay(true) {
                         warn!("Failed to set TCP_NODELAY on client stream: {}", e);
@@ -137,26 +139,35 @@ impl TcpClient {
                     info!("Connected to node {} with TCP.", remote_node_id);
                     return stream;
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     warn!(
                         "Failed to connect to node address {} with error: {}, retrying in {} seconds.",
                         remote_addr,
                         e,
                         delay.as_secs()
                     );
-                    tokio::time::sleep(delay).await;
-                    retry_count += 1;
-
-                    if retry_count >= MAX_RETRY {
-                        error!(
-                            "Maximum retry reached for establishing a TCP connection to {}.",
-                            remote_addr
-                        );
-                    }
-
-                    delay = delay.mul_f32(1.5); // Exponential backoff
+                }
+                Err(_) => {
+                    warn!(
+                        "Timed out connecting to node address {} after {:?}; retrying in {} seconds.",
+                        remote_addr,
+                        connect_timeout,
+                        delay.as_secs()
+                    );
                 }
             }
+
+            tokio::time::sleep(delay).await;
+            retry_count += 1;
+
+            if retry_count >= MAX_RETRY {
+                error!(
+                    "Maximum retry reached for establishing a TCP connection to {}.",
+                    remote_addr
+                );
+            }
+
+            delay = delay.mul_f32(1.5); // Exponential backoff
         }
     }
 }

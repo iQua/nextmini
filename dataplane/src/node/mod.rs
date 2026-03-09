@@ -3,6 +3,8 @@ pub mod config;
 pub mod connector;
 pub mod controller;
 pub mod flow;
+#[cfg(feature = "python-extension")]
+pub mod integration_test;
 pub mod local;
 #[cfg(target_os = "linux")]
 pub mod namespace;

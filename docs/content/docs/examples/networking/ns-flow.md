@@ -7,7 +7,7 @@ This example runs a single-host namespace workload where the controller and Post
 
 ## Linux prerequisites
 
-- Linux host with `iproute2` (`ip` command), `sudo`, and `tmux`.
+- Linux host with `iproute2` (`ip` command), `iptables`, `sudo`, and `tmux`.
 - Docker Engine with `docker compose` (or `docker-compose` fallback).
 - `python3` (used by `examples/ns-flow/generate.py`).
 - Rust toolchain (`cargo`) unless you already have a built `nextmini` binary.
@@ -17,6 +17,7 @@ Namespace-specific behavior from this example:
 - `examples/ns-flow/run.sh` applies Linux `sysctl` tuning for large namespace/veth churn.
 - `examples/ns-flow/generate.py` writes `examples/ns-flow/controller-config.toml` and `examples/ns-flow/config.toml`.
 - Generated dataplane config sets `enable_local_interface = false` for namespace flow runs.
+- Generated dataplane config enables host bridge `FORWARD` rules automatically so namespace peers can reach each other on hosts where `bridge-nf-call-iptables=1`.
 
 ## 1. Generate config files
 
@@ -46,8 +47,10 @@ python3 examples/ns-flow/generate.py \
 Start everything with the orchestration script:
 
 ```bash
-sudo ./examples/ns-flow/run.sh
+./examples/ns-flow/run.sh
 ```
+
+The launcher uses `sudo` internally for `sysctl` tuning and dataplane startup. Running it without a top-level `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
 
 `run.sh` orchestration details:
 
@@ -60,7 +63,7 @@ sudo ./examples/ns-flow/run.sh
 If you only want tuning without startup:
 
 ```bash
-sudo ./examples/ns-flow/run.sh --sysctl-only
+./examples/ns-flow/run.sh --sysctl-only
 ```
 
 ## 3. Verify startup and flow completion
@@ -90,7 +93,7 @@ docker exec postgres psql -U pgusr -d nextmini -c "SELECT COUNT(*) AS routes FRO
 Stop tmux/docker and remove created namespace networking artifacts:
 
 ```bash
-sudo ./examples/ns-flow/cleanup.sh
+./examples/ns-flow/cleanup.sh
 ```
 
 The cleanup script kills the `nextmini-ns-flow` tmux session, brings down `examples/ns-flow/docker-compose.yml`, deletes `veth*` links for configured nodes, and removes `isobr*` bridge shards.
