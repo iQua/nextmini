@@ -6,6 +6,7 @@ root_dir="$(cd "${script_dir}/../.." && pwd)"
 artifacts_root="${script_dir}/artifacts"
 controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
+cargo_bin="${CARGO_BIN:-}"
 case_name=""
 no_build="false"
 original_args=("$@")
@@ -53,15 +54,70 @@ if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exec sudo -E "$0" "${original_args[@]}"
 fi
 
+resolve_user_home() {
+  local user="$1"
+  local entry=""
+
+  if [[ -z "$user" ]]; then
+    return 1
+  fi
+
+  if command -v getent >/dev/null 2>&1; then
+    entry="$(getent passwd "$user" 2>/dev/null || true)"
+  fi
+
+  if [[ -z "$entry" ]]; then
+    return 1
+  fi
+
+  printf '%s\n' "$entry" | cut -d: -f6
+}
+
 build_binaries() {
   if [[ "$no_build" == "true" ]]; then
     return
   fi
 
+  local cargo_prefix=()
+  local resolved_cargo_bin="$cargo_bin"
+
+  if [[ "${EUID:-$(id -u)}" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != "root" ]]; then
+    local invoking_home=""
+    local invoking_cargo_home=""
+    local invoking_rustup_home=""
+
+    invoking_home="$(resolve_user_home "$SUDO_USER" || true)"
+    if [[ -z "$invoking_home" ]]; then
+      echo "Could not determine the home directory for sudo user ${SUDO_USER}." >&2
+      echo "Build the binaries manually, then rerun with --no-build." >&2
+      exit 1
+    fi
+
+    invoking_cargo_home="${CARGO_HOME:-${invoking_home}/.cargo}"
+    invoking_rustup_home="${RUSTUP_HOME:-${invoking_home}/.rustup}"
+    resolved_cargo_bin="${resolved_cargo_bin:-${invoking_cargo_home}/bin/cargo}"
+    cargo_prefix=(
+      sudo -u "$SUDO_USER"
+      env
+      "HOME=${invoking_home}"
+      "CARGO_HOME=${invoking_cargo_home}"
+      "RUSTUP_HOME=${invoking_rustup_home}"
+      "PATH=${invoking_cargo_home}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    )
+  else
+    resolved_cargo_bin="${resolved_cargo_bin:-$(command -v cargo 2>/dev/null || true)}"
+  fi
+
+  if [[ -z "$resolved_cargo_bin" || ! -x "$resolved_cargo_bin" ]]; then
+    echo "cargo was not found for the current build context." >&2
+    echo "Run this script without sudo so it can re-exec itself after building, or build manually and rerun with --no-build." >&2
+    exit 1
+  fi
+
   (
     cd "$root_dir"
-    cargo build -p controller --release
-    cargo build -p nextmini --release --features python-extension
+    "${cargo_prefix[@]}" "$resolved_cargo_bin" build -p controller --release
+    "${cargo_prefix[@]}" "$resolved_cargo_bin" build -p nextmini --release --features python-extension
   )
 }
 

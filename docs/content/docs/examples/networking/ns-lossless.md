@@ -19,10 +19,12 @@ Unlike [Namespace Flow Example](/docs/examples/networking/ns-flow), this example
 From the repository root:
 
 ```bash
-sudo ./examples/ns-lossless/run.sh --case plain-1r
+./examples/ns-lossless/run.sh --case plain-1r
 ```
 
 If `--case` is omitted, `run.sh` defaults to `plain-1r`. Each invocation runs exactly one transfer and writes one sender artifact plus one artifact per receiver.
+
+The script escalates to `sudo` itself for the namespace setup. Running it without `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
 
 Available case names:
 
@@ -34,7 +36,7 @@ Available case names:
 Use `--no-build` to reuse existing release binaries:
 
 ```bash
-sudo ./examples/ns-lossless/run.sh --case fec-2r-symbols --no-build
+./examples/ns-lossless/run.sh --case fec-2r-symbols --no-build
 ```
 
 ## What varies between cases
