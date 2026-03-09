@@ -32,7 +32,7 @@ The harness should stay small. It should not become a second test framework, and
    Source and receiver behavior should run in-process on top of the child node's existing `Conductor`, `ControllerInterfaceHandle`, and `LosslessRuntimeHandle`, rather than through `nextmini_py`.
 
 3. Keep the test harness explicit.
-   The test should run through a dedicated script and generated config under `examples/ns-flow/`, not through the default unit/integration test path.
+   The test should run through a dedicated script and generated config under `examples/ns-lossless/`, not through the default unit/integration test path.
 
 4. Verify hashes on disk.
    The sender writes one source artifact plus SHA256, and every receiver writes one sink artifact plus SHA256. The verifier compares receiver files directly against the sender artifact.
@@ -107,22 +107,22 @@ Core runtime:
   Small SHA256 helper and artifact writer.
 
 Namespace harness:
-- [examples/ns-flow/generate.py](/Users/bli/Playground/nextmini/examples/ns-flow/generate.py)
-  Extend or add a sibling generator for the small e2e topology and case matrix.
-- `examples/ns-flow/run-integration.sh`
-  New explicit runner for the namespace lossless matrix.
-- [examples/ns-flow/cleanup.sh](/Users/bli/Playground/nextmini/examples/ns-flow/cleanup.sh)
-  Extend cleanup to remove generated e2e artifacts and any new pid/log files.
-- `examples/ns-flow/verify_hashes.py`
+- [examples/ns-lossless/generate.py](/Users/bli/Playground/nextmini/examples/ns-lossless/generate.py)
+  Generate the small e2e topology and per-case config.
+- `examples/ns-lossless/run.sh`
+  Explicit runner for one namespace lossless transfer per invocation.
+- [examples/ns-lossless/cleanup.sh](/Users/bli/Playground/nextmini/examples/ns-lossless/cleanup.sh)
+  Cleanup for generated e2e artifacts, pid files, and namespace network state.
+- `examples/ns-lossless/verify_hashes.py`
   New verifier that compares sender and receiver artifacts.
-- `examples/ns-flow/artifacts/`
+- `examples/ns-lossless/artifacts/`
   Generated runtime output only.
 
 Docs:
 - `plans/integration-test.md`
   This implementation plan.
-- [docs/content/docs/examples/networking/ns-flow.md](/Users/bli/Playground/nextmini/docs/content/docs/examples/networking/ns-flow.md)
-  Add a short section for the lossless namespace harness.
+- [docs/content/docs/examples/networking/ns-lossless.md](/Users/bli/Playground/nextmini/docs/content/docs/examples/networking/ns-lossless.md)
+  Add a short page for the lossless namespace harness.
 
 ## Dependency Graph
 
@@ -180,7 +180,7 @@ T7 -> T8
   - write the received file and SHA256
 
 - `T5` `depends_on: [T3]`
-  Add the namespace integration runner under `examples/ns-flow/`.
+  Add the namespace integration runner under `examples/ns-lossless/`.
   It should:
   - ensure Linux and `sudo`
   - start local Postgres via [utils/start-database.sh](/Users/bli/Playground/nextmini/utils/start-database.sh) if needed
@@ -198,8 +198,8 @@ T7 -> T8
   and fail fast on any mismatch or missing artifact.
 
 - `T7` `depends_on: [T4, T5, T6]`
-  Define the default case matrix and generated configs.
-  Keep the matrix short:
+  Define the named case set and generated configs.
+  Keep the case set short:
   1. plain, 1 receiver, 1 tree, moderate block size
   2. fec, 1 receiver, 1 tree, same payload
   3. fec, 2 receivers, 2 trees, different block size
@@ -207,12 +207,11 @@ T7 -> T8
   The generator should translate each case into controller config, dataplane config, and artifact paths.
 
 - `T8` `depends_on: [T7]`
-  Document the harness in [ns-flow.md](/Users/bli/Playground/nextmini/docs/content/docs/examples/networking/ns-flow.md).
+  Document the harness in [ns-lossless.md](/Users/bli/Playground/nextmini/docs/content/docs/examples/networking/ns-lossless.md).
   Include:
   - prerequisites
   - how to start local Postgres
   - how to run one case
-  - how to run the default matrix
   - where artifacts land
   - what the harness proves
   - that symbol geometry is varied through `symbols_per_block`
@@ -227,7 +226,6 @@ Harness validation:
 - run one plain case end-to-end
 - run one one-tree FEC case end-to-end
 - run one two-tree FEC case end-to-end
-- run the default matrix
 
 Per-case pass criteria:
 - controller starts and accepts all namespace child connections
@@ -278,20 +276,20 @@ Per-case pass criteria:
 
 - `T5` completed on 2026-03-09.
   Work log: added a host-local namespace runner that bootstraps Postgres, starts the controller locally, launches `nextmini` in namespace mode, waits for per-case artifacts, and cleans up without Docker orchestration.
-  Files touched: `examples/ns-flow/run-integration.sh`, `examples/ns-flow/cleanup.sh`.
+  Files touched: `examples/ns-lossless/run.sh`, `examples/ns-lossless/cleanup.sh`.
 
 - `T6` completed on 2026-03-09.
   Work log: added a small verifier that compares every receiver artifact against the sender payload by size and SHA256.
-  Files touched: `examples/ns-flow/verify_hashes.py`.
+  Files touched: `examples/ns-lossless/verify_hashes.py`.
 
 - `T7` completed on 2026-03-09.
-  Work log: added a dedicated config generator for the namespace lossless harness plus the default four-case matrix in the runner.
-  Files touched: `examples/ns-flow/generate_integration.py`, `examples/ns-flow/run-integration.sh`.
+  Work log: added a dedicated config generator for the namespace lossless harness plus four named cases covering varying receiver counts, tree counts, block sizes, and symbol geometry.
+  Files touched: `examples/ns-lossless/generate.py`, `examples/ns-lossless/run.sh`.
 
 - `T8` completed on 2026-03-09.
-  Work log: documented the new host-local namespace lossless harness, its prerequisites, commands, artifact layout, and default matrix.
-  Files touched: `docs/content/docs/examples/networking/ns-flow.md`.
+  Work log: documented the new host-local namespace lossless harness, its prerequisites, commands, artifact layout, and named cases.
+  Files touched: `docs/content/docs/examples/networking/ns-lossless.md`.
 
 - Follow-up completed on 2026-03-09.
-  Work log: synced the namespace harness docs to the actual `run-integration.sh` CLI and artifact paths, and updated the runner to preserve arguments across `sudo` re-exec while skipping Docker cleanup for the host-local harness.
-  Files touched: `docs/content/docs/examples/networking/ns-flow.md`, `examples/ns-flow/run-integration.sh`.
+  Work log: migrated the namespace lossless harness into `examples/ns-lossless/`, restored the original `examples/ns-flow` example, synced the new docs page to the actual runner CLI and artifact paths, and updated the runner to clean up on shell exit.
+  Files touched: `docs/content/docs/examples/networking/ns-lossless.md`, `docs/content/docs/examples/networking/ns-flow.md`, `examples/ns-lossless/run.sh`, `examples/ns-lossless/cleanup.sh`.

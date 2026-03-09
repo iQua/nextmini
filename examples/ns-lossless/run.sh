@@ -3,16 +3,17 @@ set -euo pipefail
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root_dir="$(cd "${script_dir}/../.." && pwd)"
-artifacts_root="${script_dir}/integration-artifacts"
+artifacts_root="${script_dir}/artifacts"
 controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 case_name=""
 no_build="false"
 original_args=("$@")
+current_case_dir=""
 
 usage() {
   cat <<'EOF'
-Usage: run-integration.sh [options]
+Usage: run.sh [options]
 
 Options:
   --case NAME    Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols.
@@ -22,7 +23,7 @@ EOF
 }
 
 if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "run-integration.sh requires Linux network namespaces." >&2
+  echo "run.sh requires Linux network namespaces." >&2
   exit 1
 fi
 
@@ -105,7 +106,7 @@ ensure_database() {
 generate_case() {
   local case_dir="$1"
   shift
-  python3 "${script_dir}/generate_integration.py" --out-dir "$case_dir" "$@"
+  python3 "${script_dir}/generate.py" --out-dir "$case_dir" "$@"
 }
 
 start_controller() {
@@ -136,12 +137,20 @@ stop_case() {
   if [[ -f "${case_dir}/dataplane.pid" ]]; then
     kill "$(cat "${case_dir}/dataplane.pid")" >/dev/null 2>&1 || true
     wait "$(cat "${case_dir}/dataplane.pid")" 2>/dev/null || true
+    rm -f "${case_dir}/dataplane.pid"
   fi
   if [[ -f "${case_dir}/controller.pid" ]]; then
     kill "$(cat "${case_dir}/controller.pid")" >/dev/null 2>&1 || true
     wait "$(cat "${case_dir}/controller.pid")" 2>/dev/null || true
+    rm -f "${case_dir}/controller.pid"
   fi
-  bash "${script_dir}/cleanup.sh" --skip-docker --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
+  bash "${script_dir}/cleanup.sh" --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
+}
+
+cleanup_on_exit() {
+  if [[ -n "$current_case_dir" ]]; then
+    stop_case "$current_case_dir"
+  fi
 }
 
 wait_for_statuses() {
@@ -187,10 +196,8 @@ run_case() {
   local symbols_per_block="$6"
   local payload_size="$7"
   local case_dir="${artifacts_root}/${name}"
-  local ok="false"
 
-  trap 'stop_case "$case_dir"' RETURN
-
+  current_case_dir="$case_dir"
   rm -rf "$case_dir"
   mkdir -p "$case_dir"
 
@@ -206,45 +213,32 @@ run_case() {
 
   start_controller "$case_dir"
   start_dataplane "$case_dir"
+  wait_for_statuses "$case_dir" "$receivers"
 
-  if wait_for_statuses "$case_dir" "$receivers"; then
-    assert_status_ok "${case_dir}/artifacts/source-1.status"
-    while IFS= read -r status_file; do
-      [[ -z "$status_file" ]] && continue
-      assert_status_ok "$status_file"
-    done < <(find "${case_dir}/artifacts" -maxdepth 1 -name 'receiver-*.status' | sort)
-    python3 "${script_dir}/verify_hashes.py" "${case_dir}/artifacts"
-    ok="true"
-  fi
+  assert_status_ok "${case_dir}/artifacts/source-1.status"
+  while IFS= read -r status_file; do
+    [[ -z "$status_file" ]] && continue
+    assert_status_ok "$status_file"
+  done < <(find "${case_dir}/artifacts" -maxdepth 1 -name 'receiver-*.status' | sort)
 
-  if [[ "$ok" != "true" ]]; then
-    echo "Case ${name} failed. See ${case_dir}/controller.log and ${case_dir}/dataplane.log." >&2
-    exit 1
-  fi
-
-  trap - RETURN
+  python3 "${script_dir}/verify_hashes.py" "${case_dir}/artifacts"
   stop_case "$case_dir"
+  current_case_dir=""
 }
+
+trap cleanup_on_exit EXIT
 
 build_binaries
 ensure_database
 mkdir -p "$artifacts_root"
 
-if [[ -n "$case_name" ]]; then
-  case "$case_name" in
-    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 ;;
-    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 ;;
-    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 ;;
-    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 ;;
-    *)
-      echo "Unknown case: ${case_name}" >&2
-      exit 1
-      ;;
-  esac
-  exit 0
-fi
-
-run_case plain-1r plain 1 1 8192 32 262144
-run_case fec-1r fec 1 1 8192 32 262144
-run_case fec-2r-block fec 2 2 4096 32 393216
-run_case fec-2r-symbols fec 2 2 8192 16 393216
+case "${case_name:-plain-1r}" in
+  plain-1r) run_case plain-1r plain 1 1 8192 32 262144 ;;
+  fec-1r) run_case fec-1r fec 1 1 8192 32 262144 ;;
+  fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 ;;
+  fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 ;;
+  *)
+    echo "Unknown case: ${case_name}" >&2
+    exit 1
+    ;;
+esac

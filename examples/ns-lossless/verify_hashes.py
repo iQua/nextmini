@@ -8,7 +8,7 @@ from pathlib import Path
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Verify namespace lossless integration artifacts."
+        description="Verify namespace lossless example artifacts."
     )
     parser.add_argument("artifact_dir", type=Path)
     return parser.parse_args()
