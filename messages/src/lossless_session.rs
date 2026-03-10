@@ -587,9 +587,6 @@ pub fn encode_control_into<'a>(
 
     let ctrl_kind = match control {
         LosslessSessionControl::Manifest { manifest } => {
-            manifest
-                .validate()
-                .expect("manifest must validate before encoding");
             let body_start = LosslessSessionHeader::LEN;
             let (scheme, symbols_per_block, tree_ids) = match &manifest.mode {
                 LosslessSessionMode::Plain => (0u8, 0u16, &[][..]),

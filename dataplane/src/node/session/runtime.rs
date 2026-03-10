@@ -85,8 +85,6 @@ pub struct SenderConfig {
     pub pacing: Option<TokenBucketSpec>,
     /// Receiver node IDs expected to acknowledge each block.
     pub receiver_ids: Vec<usize>,
-    /// Total logical object length in bytes.
-    pub total_bytes: u64,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
@@ -301,9 +299,6 @@ impl LosslessRuntime {
             total_blocks: plan.total_blocks(),
             mode: policy.mode,
         };
-        manifest
-            .validate()
-            .expect("runtime-derived manifest must validate");
         self.validate_sender_ingress_contract(&req.route, &req.session, &manifest)?;
 
         let mut cfg = SenderConfig {
@@ -311,7 +306,6 @@ impl LosslessRuntime {
             route: req.route,
             pacing: req.pacing,
             receiver_ids: req.receiver_ids,
-            total_bytes: req.total_bytes,
             source_buffer: req.source_buffer,
             manifest,
             ready_grace_ms: req.ready_grace_ms,

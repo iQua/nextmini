@@ -4079,7 +4079,6 @@ pub struct SenderConfig {
     pub route: TransportRoute,
     pub pacing: Option<TokenBucketSpec>,
     pub receiver_ids: Vec<usize>,
-    pub total_bytes: u64,
     pub source_buffer: Bytes,
     pub manifest: LosslessSessionManifest,
     pub ready_grace_ms: u64,

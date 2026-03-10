@@ -355,7 +355,6 @@ async fn plain_sender_completes_after_block_ack() {
         route: capture.route(),
         pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
-        total_bytes: 16,
         source_buffer: Bytes::from_static(b"qrstuvwxyzabcdef"),
         manifest: LosslessSessionManifest {
             block_size: 16,

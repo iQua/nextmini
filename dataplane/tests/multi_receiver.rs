@@ -31,7 +31,6 @@ async fn sender_completes_only_after_every_receiver_acks_every_block() {
         route: harness.route(),
         pacing: None,
         receiver_ids: vec![RECEIVER_A, RECEIVER_B],
-        total_bytes: payload.len() as u64,
         source_buffer: payload,
         manifest: LosslessSessionManifest {
             block_size: 16,

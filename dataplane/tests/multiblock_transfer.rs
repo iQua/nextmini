@@ -38,7 +38,6 @@ async fn plain_sender_emits_every_block_id_before_completion() {
         route: capture.route(),
         pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
-        total_bytes: 24,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),
         manifest: LosslessSessionManifest {
             block_size: 8,
@@ -201,7 +200,6 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
         route: capture.route(),
         pacing: None,
         receiver_ids: vec![RECEIVER_NODE_ID],
-        total_bytes: 18,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqr"),
         manifest: LosslessSessionManifest {
             block_size: 8,
