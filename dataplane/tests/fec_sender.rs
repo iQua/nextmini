@@ -30,7 +30,6 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         route: harness.route(),
         pacing: None,
         receiver_ids: vec![2],
-        total_bytes: 16,
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest: manifest.clone(),
         ready_grace_ms: 200,

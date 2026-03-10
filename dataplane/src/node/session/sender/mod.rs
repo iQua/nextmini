@@ -133,7 +133,10 @@ impl BlockSource {
 impl SessionSender {
     /// Build sender state from the validated runtime configuration.
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
-        let plan = BlockPlan::new(cfg.total_bytes, cfg.session.block_size)
+        let manifest = cfg.manifest.clone();
+        let block_size =
+            usize::try_from(manifest.block_size).map_err(|_| "invalid block size in manifest")?;
+        let plan = BlockPlan::new(manifest.total_bytes, block_size)
             .map_err(|_| "invalid block plan for sender")?;
         let ledger = SessionLedger::new(plan.total_blocks(), cfg.receiver_ids.iter().copied())
             .map_err(|_| "unable to allocate sender ledger")?;
@@ -141,7 +144,6 @@ impl SessionSender {
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer.clone());
         let receiver_set = cfg.receiver_ids.iter().copied().collect::<BTreeSet<_>>();
-        let manifest = cfg.manifest.clone();
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
             LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),

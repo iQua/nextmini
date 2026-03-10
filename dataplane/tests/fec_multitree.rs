@@ -31,7 +31,6 @@ async fn sender_stripes_symbols_across_configured_trees() {
         route: harness.route(),
         pacing: None,
         receiver_ids: vec![2],
-        total_bytes: 24,
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),
         manifest,
         ready_grace_ms: 200,
