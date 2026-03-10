@@ -9,7 +9,9 @@ use tokio::time::timeout;
 use nextmini::node::NodeIdExt;
 use nextmini::node::config::LocalConfig;
 use nextmini::node::processor::ProcessorHandle;
-use nextmini::node::session::api::LosslessRuntimeHandle;
+use nextmini::node::session::api::{
+    LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome, StartError,
+};
 use nextmini::node::session::runtime::{
     PreflightError, SenderRequest, SessionConfig, TransportRoute,
 };
@@ -18,6 +20,7 @@ use nextmini_messages::lossless_session::{self, LosslessSessionControl, Lossless
 
 struct RuntimeHarness {
     runtime: LosslessRuntimeHandle,
+    session: LosslessSessionHandle,
     session_id: u64,
     capture: common::PacketCaptureHarness,
 }
@@ -37,7 +40,7 @@ async fn start_runtime_sender(
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     runtime.set_topology_ready(true);
 
-    let started_sid = runtime
+    let session = runtime
         .start_sender(SenderRequest {
             session: capture.session_config(session_id, 16),
             route: capture.route(),
@@ -49,10 +52,11 @@ async fn start_runtime_sender(
         })
         .await
         .expect("sender should start");
-    assert_eq!(started_sid, session_id);
+    assert_eq!(session.id(), session_id);
 
     RuntimeHarness {
         runtime,
+        session,
         session_id,
         capture,
     }
@@ -62,7 +66,7 @@ async fn start_sender_with_runtime_config(
     cfg: LocalConfig,
     runtime_cfg: nextmini::node::config::LosslessConfig,
     session_id: u64,
-) -> Result<u64, PreflightError> {
+) -> Result<u64, StartError> {
     let processors = ProcessorHandle::new(cfg.clone());
     let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
 
@@ -87,6 +91,7 @@ async fn start_sender_with_runtime_config(
             ready_grace_ms: 1,
         })
         .await
+        .map(|session| session.id())
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -107,7 +112,7 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
     let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2001).await;
 
     assert!(
-        matches!(started, Err(PreflightError::MissingTreeIds)),
+        matches!(started, Err(StartError::Preflight(PreflightError::MissingTreeIds))),
         "caller should get a typed preflight error"
     );
 }
@@ -131,7 +136,10 @@ async fn start_sender_rejects_zero_symbols_per_block_without_clamping() {
     let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2002).await;
 
     assert!(
-        matches!(started, Err(PreflightError::ZeroSymbolsPerBlock)),
+        matches!(
+            started,
+            Err(StartError::Preflight(PreflightError::ZeroSymbolsPerBlock))
+        ),
         "zero configured symbols_per_block should be rejected directly"
     );
 }
@@ -157,7 +165,9 @@ async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
     assert!(
         matches!(
             started,
-            Err(PreflightError::TreeIdsMustBeSortedUnique { .. })
+            Err(StartError::Preflight(
+                PreflightError::TreeIdsMustBeSortedUnique { .. }
+            ))
         ),
         "tree ids should be validated, not canonicalized"
     );
@@ -187,7 +197,9 @@ async fn start_sender_rejects_multitree_fec_when_ingress_contract_is_shared_queu
     assert!(
         matches!(
             started,
-            Err(PreflightError::MultiTreeRequiresTreeVisibleIngress)
+            Err(StartError::Preflight(
+                PreflightError::MultiTreeRequiresTreeVisibleIngress
+            ))
         ),
         "multi-tree FEC should be rejected when processor ingress collapses onto a shared queue"
     );
@@ -254,13 +266,10 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         harness.session_id,
         common::block_ack_frame(harness.session_id, 2, 0),
     );
-    let completed = timeout(
-        Duration::from_secs(5),
-        harness.runtime.wait_completion(harness.session_id),
-    )
+    let completed = timeout(Duration::from_secs(5), harness.session.wait())
     .await
     .expect("sender runtime wait should not time out");
-    assert!(completed, "sender task should report completion");
+    assert_eq!(completed, SessionOutcome::Completed);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -288,5 +297,6 @@ async fn runtime_sender_derives_fec_manifest_from_runtime_config() {
         other => panic!("unexpected control frame: {other:?}"),
     }
 
-    harness.runtime.stop(harness.session_id);
+    harness.session.abort();
+    assert_eq!(harness.session.wait().await, SessionOutcome::Aborted);
 }

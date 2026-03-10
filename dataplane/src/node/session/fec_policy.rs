@@ -11,7 +11,6 @@ use crate::node::config::LosslessConfig;
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightError {
-    RuntimeChannelClosed,
     InvalidBlockSize { value: usize },
     BlockSizeTooLarge { value: usize },
     ZeroSymbolsPerBlock,
@@ -88,12 +87,6 @@ fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, P
 impl Display for PreflightError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::RuntimeChannelClosed => {
-                write!(
-                    f,
-                    "lossless runtime channel closed before session start completed"
-                )
-            }
             Self::InvalidBlockSize { value } => {
                 write!(f, "block_size must be >= 1 (got {value})")
             }

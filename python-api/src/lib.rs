@@ -35,7 +35,9 @@ use nextmini::node::python::interface::{
 #[cfg(feature = "python-extension")]
 use nextmini::node::session;
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::api::LosslessRuntimeHandle;
+use nextmini::node::session::api::{
+    LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome,
+};
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
@@ -47,6 +49,38 @@ static TRACING: OnceCell<()> = OnceCell::new();
 
 #[cfg(feature = "python-extension")]
 type BufferRegistry = Arc<Mutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
+#[cfg(feature = "python-extension")]
+type SessionRegistry = Arc<Mutex<HashMap<u64, LosslessSessionHandle>>>;
+
+#[cfg(feature = "python-extension")]
+async fn store_session_handle(
+    session_registry: &SessionRegistry,
+    session: LosslessSessionHandle,
+) -> u64 {
+    let session_id = session.id();
+    let mut guard = session_registry.lock().await;
+    guard.insert(session_id, session);
+    session_id
+}
+
+#[cfg(feature = "python-extension")]
+async fn wait_for_session_handle(
+    mut session: LosslessSessionHandle,
+    timeout_ms: Option<u64>,
+) -> bool {
+    if let Some(ms) = timeout_ms {
+        match tokio::time::timeout(Duration::from_millis(ms), session.wait()).await {
+            Ok(outcome) => outcome == SessionOutcome::Completed,
+            Err(_) => {
+                session.abort();
+                let _ = session.wait().await;
+                false
+            }
+        }
+    } else {
+        session.wait().await == SessionOutcome::Completed
+    }
+}
 
 fn rt() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
@@ -211,6 +245,8 @@ struct Dataplane {
     #[cfg(feature = "python-extension")]
     lossless_runtime: Option<LosslessRuntimeHandle>,
     #[cfg(feature = "python-extension")]
+    session_registry: SessionRegistry,
+    #[cfg(feature = "python-extension")]
     buffer_registry: BufferRegistry,
     event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
 }
@@ -220,6 +256,11 @@ impl Dataplane {
     fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
         let mut guard = rt().block_on(self.buffer_registry.lock());
         guard.insert(session_id, buf);
+    }
+
+    #[cfg(feature = "python-extension")]
+    fn remember_session(&self, session: LosslessSessionHandle) -> u64 {
+        rt().block_on(store_session_handle(&self.session_registry, session))
     }
 }
 
@@ -287,12 +328,12 @@ impl Dataplane {
                     source_buffer: buffer.inner.clone(),
                     ready_grace_ms: runtime_config.ready_grace_ms,
                 };
-                let started_sid = rt().block_on(handle.start_sender(cfg)).map_err(|err| {
+                let session = rt().block_on(handle.start_sender(cfg)).map_err(|err| {
                     PyRuntimeError::new_err(format!(
                         "lossless sender preflight rejected session {sid}: {err}"
                     ))
                 })?;
-                return Ok(started_sid);
+                return Ok(self.remember_session(session));
             }
         }
 
@@ -335,9 +376,15 @@ impl Dataplane {
                     sink_buffer: Some(sink_buf.clone()),
                 };
                 // Direct registration - both sender and receiver compute same session_id
-                let started_sid = rt().block_on(handle.start_receiver(cfg));
-                self.remember_buffer_sink(started_sid, sink_buf);
-                return Ok(started_sid);
+                let session = rt().block_on(handle.start_receiver(cfg)).map_err(|err| {
+                    PyRuntimeError::new_err(format!(
+                        "lossless receiver start rejected session {sid}: {err}"
+                    ))
+                })?;
+                let session_id = session.id();
+                self.remember_buffer_sink(session_id, sink_buf);
+                self.remember_session(session);
+                return Ok(session_id);
             }
         }
 
@@ -364,6 +411,7 @@ impl Dataplane {
         {
             if let Some(handle) = &self.lossless_runtime {
                 let handle = handle.clone();
+                let session_registry = self.session_registry.clone();
                 let buffer_registry = self.buffer_registry.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
@@ -387,14 +435,21 @@ impl Dataplane {
                     };
 
                     // Direct registration - both sender and receiver compute same session_id
-                    let started_sid = handle.start_receiver(cfg).await;
+                    let session = handle.start_receiver(cfg).await.map_err(|err| {
+                        PyRuntimeError::new_err(format!(
+                            "lossless receiver start rejected session {sid}: {err}"
+                        ))
+                    })?;
+                    let session_id = session.id();
 
                     {
                         let mut guard = buffer_registry.lock().await;
-                        guard.insert(started_sid, sink_buf);
+                        guard.insert(session_id, sink_buf);
                     }
 
-                    Ok(started_sid)
+                    let _ = store_session_handle(&session_registry, session).await;
+
+                    Ok(session_id)
                 });
             }
         }
@@ -413,24 +468,12 @@ impl Dataplane {
     fn lossless_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.lossless_runtime {
-                let fut = handle.wait_completion(session_id);
-                let ok = if let Some(ms) = timeout_ms {
-                    rt().block_on(async move {
-                        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
-                            .await
-                            .unwrap_or(false)
-                    })
-                } else {
-                    rt().block_on(fut)
-                };
-
-                // Proactively stop the session to clean up runtime state (tasks, inputs).
-                // This prevents stale senders/receivers from holding onto session IDs that
-                // may be reused by subsequent lossless transfers (e.g., RL rollouts).
-                handle.stop(session_id);
-
-                return Ok(ok);
+            let session = rt().block_on(async {
+                let mut guard = self.session_registry.lock().await;
+                guard.remove(&session_id)
+            });
+            if let Some(session) = session {
+                return Ok(rt().block_on(wait_for_session_handle(session, timeout_ms)));
             }
         }
         // feature disabled ⇒ nothing to wait for
@@ -447,21 +490,17 @@ impl Dataplane {
     ) -> PyResult<Bound<'py, PyAny>> {
         #[cfg(feature = "python-extension")]
         {
-            if let Some(handle) = &self.lossless_runtime {
-                let handle = handle.clone();
+            if self.lossless_runtime.is_some() {
+                let session_registry = self.session_registry.clone();
                 return future_into_py(py, async move {
-                    let fut = handle.wait_completion(session_id);
-                    let ok = if let Some(ms) = timeout_ms {
-                        tokio::time::timeout(std::time::Duration::from_millis(ms), fut)
-                            .await
-                            .unwrap_or(false)
-                    } else {
-                        fut.await
+                    let session = {
+                        let mut guard = session_registry.lock().await;
+                        guard.remove(&session_id)
                     };
-
-                    // After completion, stop the session to drop its task and inputs.
-                    // Safe to call even if the session was already cleaned up.
-                    handle.stop(session_id);
+                    let ok = match session {
+                        Some(session) => wait_for_session_handle(session, timeout_ms).await,
+                        None => false,
+                    };
 
                     Ok(ok)
                 });
@@ -536,6 +575,7 @@ impl Dataplane {
         });
 
         #[cfg(feature = "python-extension")]
+        let session_registry = Arc::new(Mutex::new(HashMap::new()));
         let buffer_registry = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
@@ -546,6 +586,8 @@ impl Dataplane {
             _join: join,
             #[cfg(feature = "python-extension")]
             lossless_runtime: Some(lossless_runtime),
+            #[cfg(feature = "python-extension")]
+            session_registry,
             #[cfg(feature = "python-extension")]
             buffer_registry,
             event_stash: Arc::new(Mutex::new(VecDeque::new())),
