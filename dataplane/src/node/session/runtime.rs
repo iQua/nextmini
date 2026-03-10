@@ -301,9 +301,6 @@ impl LosslessRuntime {
             total_blocks: plan.total_blocks(),
             mode: policy.mode,
         };
-        manifest
-            .validate()
-            .expect("runtime-derived manifest must validate");
         self.validate_sender_ingress_contract(&req.route, &req.session, &manifest)?;
 
         let mut cfg = SenderConfig {
