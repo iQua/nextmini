@@ -185,7 +185,7 @@ impl SessionReceiver {
             return;
         };
         let mode = match &manifest.mode {
-            LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver::default()),
+            LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver),
             LosslessSessionMode::Fec(fec) => {
                 let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
                     return;
