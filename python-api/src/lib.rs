@@ -241,7 +241,7 @@ struct Dataplane {
     py_if: PythonInterfaceHandle,
     processor: ProcessorHandle,
     controller: ControllerInterfaceHandle,
-    _join: tokio::task::JoinHandle<()>,
+    _conductor_task: tokio::task::JoinHandle<()>,
     #[cfg(feature = "python-extension")]
     lossless_runtime: Option<LosslessRuntimeHandle>,
     #[cfg(feature = "python-extension")]
@@ -570,7 +570,7 @@ impl Dataplane {
         processor.connect_python_interface(py_if.clone());
         rt().block_on(controller.attach_python_interface(py_if.clone()));
 
-        let join = rt().spawn(async move {
+        let conductor_task = rt().spawn(async move {
             conductor.run().await;
         });
 
@@ -583,7 +583,7 @@ impl Dataplane {
             py_if,
             processor,
             controller,
-            _join: join,
+            _conductor_task: conductor_task,
             #[cfg(feature = "python-extension")]
             lossless_runtime: Some(lossless_runtime),
             #[cfg(feature = "python-extension")]

@@ -53,16 +53,16 @@ impl LosslessUnicastFlowManager {
 
             // Spin up whichever side matches the local node.
             if flow.src_node_id == self.cfg.node_id {
-                self.spawn_sender(flow.clone(), session_id, client_port);
+                self.run_sender_flow(flow.clone(), session_id, client_port);
             }
             if flow.dst_node_id == self.cfg.node_id {
-                self.spawn_receiver(flow.clone(), session_id, client_port);
+                self.run_receiver_flow(flow.clone(), session_id, client_port);
             }
         }
     }
 
     /// Start the sender side of one controller-assigned lossless flow.
-    fn spawn_sender(&self, flow: Flow, session_id: SessionId, client_port: u16) {
+    fn run_sender_flow(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The controller might hand us duration-based flows that do not resolve
         // to a byte count; we skip those early so we do not start half-baked
         // sessions.
@@ -177,7 +177,7 @@ impl LosslessUnicastFlowManager {
     }
 
     /// Start the receiver side of one controller-assigned lossless flow.
-    fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
+    fn run_receiver_flow(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         let Some(_total_bytes) = flow_bytes(&flow) else {
             return;
         };
