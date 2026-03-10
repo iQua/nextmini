@@ -40,7 +40,7 @@ impl PacketBuilder {
 }
 
 /// Read-only, reference-counted view of packet data.
-#[pyclass]
+#[pyclass(from_py_object)]
 #[derive(Clone, Debug)]
 pub struct PacketView {
     pub(crate) inner: Bytes,
