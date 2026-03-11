@@ -2,8 +2,7 @@
 
 use std::fmt::{Display, Formatter};
 
-use tokio::sync::oneshot;
-use tokio::sync::watch;
+use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::node::session::runtime::{PreflightError, ReceiverRequest, SenderRequest};
 
@@ -34,13 +33,69 @@ pub(crate) enum SessionState {
     Finished(SessionOutcome),
 }
 
+/// abort() needs LosslessSessionHandle to talk back to the runtime. 
+/// Here we simply wrap the abort sender.
+#[derive(Debug)]
+struct SessionAbortHandle {
+    sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
+}
+
+impl SessionAbortHandle {
+    fn new(sender: mpsc::UnboundedSender<LosslessRuntimeMessage>) -> Self {
+        Self { sender }
+    }
+
+    fn abort(&self, session_id: SessionId) {
+        let _ = self
+            .sender
+            .send(LosslessRuntimeMessage::Abort { session_id });
+    }
+}
+
 /// Public handle for one started lossless session.
 #[derive(Debug)]
 pub struct LosslessSessionHandle {
-    pub(crate) session_id: SessionId,
-    #[cfg_attr(not(any(test, feature = "python-extension")), allow(dead_code))]
-    pub(crate) runtime: crate::node::session::runtime::LosslessRuntimeHandle,
-    pub(crate) state_receiver: watch::Receiver<SessionState>,
+    session_id: SessionId,
+    state_receiver: watch::Receiver<SessionState>,
+    // abort remains part of the public session API can be called
+    #[allow(dead_code)]
+    abort_handle: SessionAbortHandle,
+}
+
+impl LosslessSessionHandle {
+    pub(super) fn new(
+        session_id: SessionId,
+        state_receiver: watch::Receiver<SessionState>,
+        abort_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
+    ) -> Self {
+        Self {
+            session_id,
+            state_receiver,
+            abort_handle: SessionAbortHandle::new(abort_sender),
+        }
+    }
+
+    pub fn id(&self) -> SessionId {
+        self.session_id
+    }
+
+    pub async fn wait(&mut self) -> SessionOutcome {
+        loop {
+            match &*self.state_receiver.borrow() {
+                SessionState::Running => {}
+                SessionState::Finished(outcome) => return outcome.clone(),
+            }
+
+            if self.state_receiver.changed().await.is_err() {
+                return SessionOutcome::Aborted;
+            }
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn abort(&self) {
+        self.abort_handle.abort(self.session_id);
+    }
 }
 
 /// Errors returned when starting a sender or receiver session.
@@ -61,7 +116,10 @@ impl Display for StartError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::RuntimeChannelClosed => {
-                write!(f, "lossless runtime channel closed before session start completed")
+                write!(
+                    f,
+                    "lossless runtime channel closed before session start completed"
+                )
             }
             Self::SessionAlreadyActive { session_id } => {
                 write!(f, "session {session_id} is already active")
@@ -84,7 +142,7 @@ pub(super) enum LosslessRuntimeMessage {
         reply: oneshot::Sender<Result<LosslessSessionHandle, StartError>>,
     },
     /// Abort and remove a running session task.
-    #[cfg_attr(not(any(test, feature = "python-extension")), allow(dead_code))]
+    #[allow(dead_code)]
     Abort { session_id: SessionId },
     /// Deliver one decoded session frame to the matching task.
     Deliver {

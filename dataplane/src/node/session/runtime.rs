@@ -128,12 +128,8 @@ impl LosslessRuntimeHandle {
     /// Spawn a new runtime actor bound to the provided processor handle.
     pub fn new(processors: ProcessorHandle, config: LosslessConfig) -> Self {
         let (message_sender, message_receiver) = mpsc::unbounded_channel();
-        let runtime = LosslessRuntime::new(
-            processors,
-            config,
-            message_sender.clone(),
-            message_receiver,
-        );
+        let runtime =
+            LosslessRuntime::new(processors, config, message_sender.clone(), message_receiver);
 
         tokio::spawn(async move {
             let mut runtime = runtime;
@@ -161,7 +157,9 @@ impl LosslessRuntimeHandle {
             return Err(StartError::RuntimeChannelClosed);
         }
 
-        reply_rx.await.unwrap_or(Err(StartError::RuntimeChannelClosed))
+        reply_rx
+            .await
+            .unwrap_or(Err(StartError::RuntimeChannelClosed))
     }
 
     /// Start a receiver task for a precomputed session identifier.
@@ -170,11 +168,15 @@ impl LosslessRuntimeHandle {
         cfg: ReceiverRequest,
     ) -> Result<LosslessSessionHandle, StartError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self.message_sender.send(LosslessRuntimeMessage::StartReceiver {
-            cfg,
-            reply: reply_tx,
-        });
-        reply_rx.await.unwrap_or(Err(StartError::RuntimeChannelClosed))
+        let _ = self
+            .message_sender
+            .send(LosslessRuntimeMessage::StartReceiver {
+                cfg,
+                reply: reply_tx,
+            });
+        reply_rx
+            .await
+            .unwrap_or(Err(StartError::RuntimeChannelClosed))
     }
 
     /// Deliver one already-decoded frame to a running session task.
@@ -189,37 +191,6 @@ impl LosslessRuntimeHandle {
         let _ = self
             .message_sender
             .send(LosslessRuntimeMessage::SetTopologyReady { ready });
-    }
-
-    #[cfg_attr(not(any(test, feature = "python-extension")), allow(dead_code))]
-    pub(crate) fn abort_session(&self, session_id: SessionId) {
-        let _ = self
-            .message_sender
-            .send(LosslessRuntimeMessage::Abort { session_id });
-    }
-}
-
-impl LosslessSessionHandle {
-    pub fn id(&self) -> SessionId {
-        self.session_id
-    }
-
-    pub async fn wait(&mut self) -> SessionOutcome {
-        loop {
-            match &*self.state_receiver.borrow() {
-                SessionState::Running => {}
-                SessionState::Finished(outcome) => return outcome.clone(),
-            }
-
-            if self.state_receiver.changed().await.is_err() {
-                return SessionOutcome::Aborted;
-            }
-        }
-    }
-
-    #[cfg_attr(not(any(test, feature = "python-extension")), allow(dead_code))]
-    pub fn abort(&self) {
-        self.runtime.abort_session(self.session_id);
     }
 }
 
@@ -384,13 +355,11 @@ impl LosslessRuntime {
             },
         );
 
-        Ok(LosslessSessionHandle {
-            session_id: sid,
-            runtime: LosslessRuntimeHandle {
-                message_sender: self.message_sender.clone(),
-            },
+        Ok(LosslessSessionHandle::new(
+            sid,
             state_receiver,
-        })
+            self.message_sender.clone(),
+        ))
     }
 
     /// Reject multi-tree FEC sessions unless processor ingress exposes
@@ -474,13 +443,11 @@ impl LosslessRuntime {
             },
         );
 
-        Ok(LosslessSessionHandle {
-            session_id: sid,
-            runtime: LosslessRuntimeHandle {
-                message_sender: self.message_sender.clone(),
-            },
+        Ok(LosslessSessionHandle::new(
+            sid,
             state_receiver,
-        })
+            self.message_sender.clone(),
+        ))
     }
 
     /// Publish the current topology-ready state to newly waiting senders.
