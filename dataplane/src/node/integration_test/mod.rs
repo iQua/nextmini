@@ -19,7 +19,7 @@ use crate::node::NodeIdExt;
 use crate::node::config::{IntegrationNodeRole, IntegrationTestConfig, LocalConfig};
 use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::python::interface::PythonInterfaceHandle;
-use crate::node::session::api::LosslessRuntimeHandle;
+use crate::node::session::api::{LosslessRuntimeHandle, SessionOutcome};
 use crate::node::session::runtime::{
     ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
 };
@@ -172,22 +172,22 @@ async fn run_source(
         ready_grace_ms: config.lossless_runtime_config.ready_grace_ms,
     };
 
-    let started_sid = lossless_runtime
+    let mut session = lossless_runtime
         .start_sender(sender_cfg)
         .await
         .map_err(|err| format!("lossless sender preflight rejected session {sid}: {err}"))?;
+    let session_id = session.id();
 
-    let ok = tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         Duration::from_millis(harness_cfg.receive_timeout_ms),
-        lossless_runtime.wait_completion(started_sid),
+        session.wait(),
     )
     .await
-    .unwrap_or(false);
-    lossless_runtime.stop(started_sid);
+    .map_err(|_| format!("sender session {session_id} timed out waiting for completion"))?;
 
-    if !ok {
+    if outcome != SessionOutcome::Completed {
         return Err(format!(
-            "sender session {started_sid} did not complete successfully"
+            "sender session {session_id} did not complete successfully"
         ));
     }
 
@@ -200,7 +200,7 @@ async fn run_source(
     info!(
         case = %harness_cfg.case_name,
         node_id = config.node_id,
-        session_id = started_sid,
+        session_id,
         "Integration test source finished successfully."
     );
     Ok(())
@@ -225,7 +225,7 @@ async fn run_receiver(
 
     let sink = Arc::new(Mutex::new(Vec::new()));
     let sid = multicast_session_id(group_id as u64, harness_cfg.source_node_id);
-    let started_sid = lossless_runtime
+    let mut session = lossless_runtime
         .start_receiver(ReceiverRequest {
             session_id: sid,
             route: TransportRoute {
@@ -239,21 +239,22 @@ async fn run_receiver(
             local_node_id: config.node_id,
             sink_buffer: Some(sink.clone()),
         })
-        .await;
+        .await
+        .map_err(|err| format!("lossless receiver start rejected session {sid}: {err}"))?;
+    let session_id = session.id();
 
     write_ready_marker(harness_cfg, config.node_id)?;
 
-    let ok = tokio::time::timeout(
+    let outcome = tokio::time::timeout(
         Duration::from_millis(harness_cfg.receive_timeout_ms),
-        lossless_runtime.wait_completion(started_sid),
+        session.wait(),
     )
     .await
-    .unwrap_or(false);
-    lossless_runtime.stop(started_sid);
+    .map_err(|_| format!("receiver session {session_id} timed out waiting for completion"))?;
 
-    if !ok {
+    if outcome != SessionOutcome::Completed {
         return Err(format!(
-            "receiver session {started_sid} did not complete successfully"
+            "receiver session {session_id} did not complete successfully"
         ));
     }
 
@@ -274,7 +275,7 @@ async fn run_receiver(
     info!(
         case = %harness_cfg.case_name,
         node_id = config.node_id,
-        session_id = started_sid,
+        session_id,
         "Integration test receiver finished successfully."
     );
     Ok(())

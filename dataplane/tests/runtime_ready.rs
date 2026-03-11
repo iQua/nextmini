@@ -5,7 +5,10 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::time::timeout;
 
-use nextmini::node::session::api::LosslessRuntimeHandle;
+use nextmini::node::session::api::{
+    LosslessRuntimeHandle, SessionOutcome, StartError,
+};
+use nextmini::node::session::runtime::ReceiverRequest;
 use nextmini::node::session::runtime::SenderRequest;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl};
 
@@ -31,7 +34,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
 
     let session_id = 0xA11C_E301;
-    runtime
+    let mut session = runtime
         .start_sender(SenderRequest {
             session: capture.session_config(session_id, 16),
             route: capture.route(),
@@ -87,10 +90,11 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
         session_id,
         common::block_ack_frame(session_id, RECEIVER_NODE_ID, 0),
     );
-    assert!(
-        timeout(Duration::from_secs(5), runtime.wait_completion(session_id))
+    assert_eq!(
+        timeout(Duration::from_secs(5), session.wait())
             .await
-            .expect("sender wait_completion should not time out"),
+            .expect("sender wait should not time out"),
+        SessionOutcome::Completed,
         "sender should complete once topology is ready and the block is acknowledged"
     );
 }
@@ -113,7 +117,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
     runtime.set_topology_ready(true);
 
     let session_id = 0xA11C_E302;
-    runtime
+    let mut session = runtime
         .start_sender(SenderRequest {
             session: capture.session_config(session_id, 16),
             route: capture.route(),
@@ -169,10 +173,61 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
         session_id,
         common::block_ack_frame(session_id, RECEIVER_NODE_ID, 0),
     );
-    assert!(
-        timeout(Duration::from_secs(5), runtime.wait_completion(session_id))
+    assert_eq!(
+        timeout(Duration::from_secs(5), session.wait())
             .await
-            .expect("sender wait_completion should not time out"),
+            .expect("sender wait should not time out"),
+        SessionOutcome::Completed,
         "sender should still complete once the block is acknowledged after grace expiry"
     );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_receiver_rejects_duplicate_active_session_ids() {
+    let capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 2,
+        DST_PORT + 2,
+        1,
+        2048,
+    )
+    .await;
+    let runtime = LosslessRuntimeHandle::new(
+        capture.processors.clone(),
+        capture.cfg.lossless_runtime_config.clone(),
+    );
+    let session_id = 0xA11C_E303;
+
+    let mut first = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+        })
+        .await
+        .expect("first receiver should start");
+
+    let second = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+        })
+        .await;
+
+    assert!(
+        matches!(
+            second,
+            Err(StartError::SessionAlreadyActive {
+                session_id: duplicate_sid
+            }) if duplicate_sid == session_id
+        ),
+        "runtime should reject duplicate active session IDs instead of overwriting them"
+    );
+
+    first.abort();
+    assert_eq!(first.wait().await, SessionOutcome::Aborted);
 }

@@ -12,7 +12,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
-use crate::node::session::api::{LosslessRuntimeHandle, SessionId};
+use crate::node::session::api::{LosslessRuntimeHandle, SessionId, SessionOutcome};
 use crate::node::session::runtime::{
     ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
 };
@@ -51,19 +51,18 @@ impl LosslessUnicastFlowManager {
             let session_id = session_id_for_flow(&flow);
             let client_port = client_port_for_flow(&flow, self.cfg.user_space_client_port);
 
-            // Flows can involve the local node as the sender, receiver, or both
-            // (loopback). Spin up whichever side matches.
+            // Spin up whichever side matches the local node.
             if flow.src_node_id == self.cfg.node_id {
-                self.spawn_sender(flow.clone(), session_id, client_port);
+                self.run_sender_flow(flow.clone(), session_id, client_port);
             }
             if flow.dst_node_id == self.cfg.node_id {
-                self.spawn_receiver(flow.clone(), session_id, client_port);
+                self.run_receiver_flow(flow.clone(), session_id, client_port);
             }
         }
     }
 
     /// Start the sender side of one controller-assigned lossless flow.
-    fn spawn_sender(&self, flow: Flow, session_id: SessionId, client_port: u16) {
+    fn run_sender_flow(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         // The controller might hand us duration-based flows that do not resolve
         // to a byte count; we skip those early so we do not start half-baked
         // sessions.
@@ -136,19 +135,8 @@ impl LosslessUnicastFlowManager {
                 processors.set_flow_weight(flow_id, weight);
             }
 
-            if let Some(controller_id) = flow.controller_id {
-                // Report flow start once we know the flow ID so the controller
-                // can track successes as soon as the sender is live.
-                flowstats.report_user_flow_start(flow_id, controller_id);
-            } else {
-                warn!(
-                    "LosslessUnicastFlow: flow {:?}->{:?} missing controller_id; start not reported",
-                    flow.src_node_id, flow.dst_node_id
-                );
-            }
-
-            let started_sid = match lossless_runtime.start_sender(sender_cfg).await {
-                Ok(sid) => sid,
+            let mut session = match lossless_runtime.start_sender(sender_cfg).await {
+                Ok(session) => session,
                 Err(err) => {
                     warn!(
                         flow_id = flow_id,
@@ -159,28 +147,37 @@ impl LosslessUnicastFlowManager {
                     return;
                 }
             };
-            let ok = lossless_runtime.wait_completion(started_sid).await;
+            let session_id = session.id();
 
-            flowstats.report_flow_finished(flow_id, flow.controller_id);
-
-            if !ok {
-                warn!(
-                    session_id = started_sid,
-                    "LosslessUnicastFlow: sender completion reported failure"
-                );
+            if let Some(controller_id) = flow.controller_id {
+                flowstats.report_user_flow_start(flow_id, controller_id);
             } else {
-                debug!(
-                    session_id = started_sid,
-                    "LosslessUnicastFlow: sender finished"
+                warn!(
+                    "LosslessUnicastFlow: flow {:?}->{:?} missing controller_id; start not reported",
+                    flow.src_node_id, flow.dst_node_id
                 );
             }
 
-            lossless_runtime.stop(started_sid);
+            let outcome = session.wait().await;
+
+            flowstats.report_flow_finished(flow_id, flow.controller_id);
+
+            match outcome {
+                SessionOutcome::Completed => {
+                    debug!(session_id, "LosslessUnicastFlow: sender finished");
+                }
+                SessionOutcome::Aborted => {
+                    warn!(
+                        session_id,
+                        "LosslessUnicastFlow: sender completion reported failure"
+                    );
+                }
+            }
         });
     }
 
     /// Start the receiver side of one controller-assigned lossless flow.
-    fn spawn_receiver(&self, flow: Flow, session_id: SessionId, client_port: u16) {
+    fn run_receiver_flow(&self, flow: Flow, session_id: SessionId, client_port: u16) {
         let Some(_total_bytes) = flow_bytes(&flow) else {
             return;
         };
@@ -216,9 +213,18 @@ impl LosslessUnicastFlowManager {
             // Register receiver directly with the pre-computed session_id.
             // Both sender and receiver compute the same session_id from Flow fields,
             // so packets will be routed correctly.
-            let started_sid = lossless_runtime.start_receiver(receiver_cfg).await;
-            let _ = lossless_runtime.wait_completion(started_sid).await;
-            lossless_runtime.stop(started_sid);
+            let mut session = match lossless_runtime.start_receiver(receiver_cfg).await {
+                Ok(session) => session,
+                Err(err) => {
+                    warn!(
+                        session_id,
+                        reason = %err,
+                        "LosslessUnicastFlow: receiver start rejected by runtime"
+                    );
+                    return;
+                }
+            };
+            let _ = session.wait().await;
         });
     }
 }
