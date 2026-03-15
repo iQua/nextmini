@@ -307,7 +307,7 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn fec_receiver_decodes_and_acks_every_block() {
+async fn fec_receiver_decodes_and_reports_complete_after_eot() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,

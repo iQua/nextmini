@@ -2,9 +2,9 @@
 //!
 //! The receiver accepts a manifest, records completed plain blocks locally, and
 //! optionally accumulates FEC symbols until a block can be decoded. After
-//! `Eot`, plain mode emits end-of-round status feedback while incomplete FEC
-//! blocks trigger deficit feedback so the sender can emit additional fountain
-//! symbols.
+//! `Eot`, plain mode emits end-of-round status feedback while FEC mode emits
+//! one aggregate round status describing either completion or the remaining
+//! per-block deficits for the next retransmit round.
 
 mod fec;
 mod plain;
