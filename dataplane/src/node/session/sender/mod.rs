@@ -1,8 +1,9 @@
 //! Sender task for block-first lossless sessions.
 //!
-//! Plain mode sends complete blocks on the default tree. FEC mode sends source
-//! symbols first, emits `Eot` after the source sweep, and only then responds to
-//! per-block deficit feedback with extra fountain symbols.
+//! Plain mode sends complete blocks on the default tree and converges with
+//! end-of-round status feedback. FEC mode sends source symbols first, emits
+//! `Eot` after the source sweep, and only then responds to per-block deficit
+//! feedback with extra fountain symbols.
 
 mod fec;
 mod plain;
@@ -322,6 +323,9 @@ impl SenderShared {
                 }
             }
             LosslessSessionControl::BlockAck { block_id } => {
+                if !self.manifest.mode.is_fec() {
+                    return;
+                }
                 let Some(peer_id) = frame.peer_id else {
                     return;
                 };

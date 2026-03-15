@@ -1,4 +1,4 @@
-//! Shared per-block acknowledgement bookkeeping for sender sessions.
+//! Shared per-block acknowledgement bookkeeping for FEC sender sessions.
 
 use std::collections::BTreeMap;
 use std::error::Error;
@@ -65,9 +65,9 @@ struct BlockLedger {
     acked_receivers: usize,
 }
 
-/// Mode-agnostic shared acknowledgement ledger.
+/// Shared per-block acknowledgement ledger used by FEC sender feedback.
 ///
-/// The canonical completion rule is: the session is complete when every
+/// The canonical completion rule is: the FEC send sweep is complete when every
 /// registered receiver has acknowledged every block.
 #[derive(Debug, Clone)]
 pub struct SessionLedger {

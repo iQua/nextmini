@@ -354,8 +354,8 @@ impl ReceiverShared {
         .await;
     }
 
-    /// Acknowledge completion of one logical block.
-    pub(super) async fn send_block_ack(&self, block_id: u64) {
+    /// Acknowledge completion of one logical FEC block.
+    pub(super) async fn send_fec_block_ack(&self, block_id: u64) {
         control::send_control(
             &self.processors,
             control::FrameRoute {

@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nextmini_messages::lossless_session::{MissingBlockRange, PlainStatus};
 use tokio::sync::mpsc;
+use tracing::debug;
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
@@ -53,6 +54,11 @@ impl super::ModeHooks for PlainSender {
         self.cursor = 0;
         self.round_eot_sent = false;
         self.round_reports.clear();
+        debug!(
+            complete = self.complete,
+            retransmit_blocks = self.pending_blocks.len(),
+            "Lossless plain sender processed round feedback"
+        );
     }
 }
 

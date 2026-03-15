@@ -10,9 +10,7 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tracing::warn;
 
 use nextmini_messages::TokenBucketSpec;
-use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest,
-};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
 
 use crate::node::config::LosslessConfig;
 use crate::node::packet::{LosslessTransportMeta, Packet};
@@ -56,7 +54,7 @@ pub struct SenderRequest {
     pub route: TransportRoute,
     /// Optional pacing configuration applied to outbound data.
     pub pacing: Option<TokenBucketSpec>,
-    /// Receiver node IDs expected to acknowledge each block.
+    /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
     pub total_bytes: u64,
@@ -108,7 +106,7 @@ pub struct SenderConfig {
     pub route: TransportRoute,
     /// Optional pacing configuration applied to outbound data.
     pub pacing: Option<TokenBucketSpec>,
-    /// Receiver node IDs expected to acknowledge each block.
+    /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
