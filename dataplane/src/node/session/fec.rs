@@ -76,26 +76,20 @@ pub struct Encoder {
 }
 
 impl Encoder {
-    /// Constructs an encoder from already partitioned source symbols.
+    /// Constructs an encoder from one padded block image.
     #[must_use]
-    pub fn new(source_symbols: &[Vec<u8>], symbol_size: usize, _seed: u64) -> Option<Self> {
-        let k = source_symbols.len();
-        if k == 0 {
+    pub fn from_block(params: BlockParams, source_block: &[u8]) -> Option<Self> {
+        if params.source_symbols == 0 {
             return None;
         }
-        let params = BlockParams::new(k, symbol_size, _seed);
-        let flat = flatten_symbols(source_symbols, symbol_size);
-        let inner = SourceBlockEncoder::new(0, &params.oti(), &flat);
-        Some(Self { inner, k })
-    }
-
-    /// Constructs an encoder from shared block parameters.
-    #[must_use]
-    pub fn from_block(params: BlockParams, source_symbols: &[Vec<u8>]) -> Option<Self> {
-        if source_symbols.len() != params.source_symbols {
+        if source_block.len() != params.source_symbols * params.symbol_size {
             return None;
         }
-        Self::new(source_symbols, params.symbol_size, params.seed)
+        let inner = SourceBlockEncoder::new(0, &params.oti(), source_block);
+        Some(Self {
+            inner,
+            k: params.source_symbols,
+        })
     }
 
     /// Generates a deterministic coded symbol payload for the provided ESI (ESI >= K).
@@ -187,17 +181,6 @@ impl Decoder {
     }
 }
 
-/// Flatten per-symbol `Vec<Vec<u8>>` into a single contiguous `Vec<u8>`, padding
-/// each symbol to exactly `symbol_size`.
-fn flatten_symbols(symbols: &[Vec<u8>], symbol_size: usize) -> Vec<u8> {
-    let mut flat = vec![0u8; symbols.len() * symbol_size];
-    for (i, sym) in symbols.iter().enumerate() {
-        let len = sym.len().min(symbol_size);
-        flat[i * symbol_size..i * symbol_size + len].copy_from_slice(&sym[..len]);
-    }
-    flat
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -251,7 +234,11 @@ mod tests {
             .collect();
 
         let params = BlockParams::new(k, symbol_size, 0);
-        let encoder = Encoder::from_block(params, &source_data).unwrap();
+        let flat: Vec<u8> = source_data
+            .iter()
+            .flat_map(|symbol| symbol.iter().copied())
+            .collect();
+        let encoder = Encoder::from_block(params, &flat).unwrap();
         let decoder = Decoder::from_block(params);
 
         let half_k = k / 2;

@@ -145,11 +145,16 @@ async fn receiver_reports_complete_after_eot_and_writes_sink() {
     let payload = [1u8, 2, 3, 4, 5, 6, 7, 8];
     for (symbol_id, chunk) in payload.chunks(2).enumerate() {
         let tree_id = if symbol_id % 2 == 0 { 0 } else { 1 };
-        send_frame(
-            &harness.tx,
-            lossless_session::encode_block_symbol(SESSION_ID, 0, symbol_id as u32, tree_id, chunk),
-        )
-        .await;
+        let mut frame = Vec::new();
+        lossless_session::encode_block_symbol_into(
+            &mut frame,
+            SESSION_ID,
+            0,
+            symbol_id as u32,
+            tree_id,
+            chunk,
+        );
+        send_frame(&harness.tx, frame).await;
     }
 
     assert!(
@@ -204,11 +209,9 @@ async fn receiver_reports_missing_blocks_after_eot_for_incomplete_block() {
     let (_, ready) = recv_control(&mut harness.packet_rx).await;
     assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
 
-    send_frame(
-        &harness.tx,
-        lossless_session::encode_block_symbol(SESSION_ID, 0, 0, 0, &[1u8, 2]),
-    )
-    .await;
+    let mut frame = Vec::new();
+    lossless_session::encode_block_symbol_into(&mut frame, SESSION_ID, 0, 0, 0, &[1u8, 2]);
+    send_frame(&harness.tx, frame).await;
     send_frame(
         &harness.tx,
         lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
