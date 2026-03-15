@@ -290,20 +290,19 @@ impl LosslessRuntime {
 
     /// Forward one inbound frame to the matching session task.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
+        if self.replay_completed_receiver(session, frame.clone()).await {
+            return;
+        }
+
         let inbox = self.sessions.get(&session).map(|entry| entry.inbox.clone());
 
         if let Some(inbox) = inbox {
             if inbox.send(frame.clone()).await.is_err() {
-                if self.replay_completed_receiver(session, frame).await {
-                    return;
-                }
                 warn!(
                     session_id = session,
                     "Lossless runtime: session dropped inbound frame."
                 );
             }
-        } else if self.replay_completed_receiver(session, frame).await {
-            return;
         } else {
             warn!(
                 session_id = session,
@@ -664,6 +663,86 @@ mod tests {
                 },
             )
             .await;
+        assert_fec_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_prefers_completed_plain_replay_over_live_inbox_during_handoff() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E403;
+        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Plain {
+                route,
+                status: PlainStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert_plain_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_prefers_completed_fec_replay_over_live_inbox_during_handoff() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E404;
+        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Fec {
+                route,
+                status: FecStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
         assert_fec_complete(&mut packet_rx).await;
     }
 
