@@ -15,6 +15,7 @@ use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
     self, BlockStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -55,6 +56,9 @@ pub(super) trait ModeHooks {
 
     /// Observe per-block FEC deficit feedback from a receiver.
     fn on_block_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: BlockStatus) {}
+
+    /// Observe plain-mode end-of-round feedback from a receiver.
+    fn on_plain_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: PlainStatus) {}
 }
 
 /// Shared sender shell that owns session-level transport and ledger state.
@@ -194,10 +198,13 @@ impl SessionSender {
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         }
 
+        let complete = match &self.mode {
+            SenderMode::Plain(mode) => mode.is_complete(),
+            SenderMode::Fec(_) => self.shared.ledger.is_complete(),
+        };
         info!(
             session_id = self.shared.session.session_id,
-            complete = self.shared.ledger.is_complete(),
-            "Lossless sender finished"
+            complete, "Lossless sender finished"
         );
     }
 }
@@ -333,7 +340,15 @@ impl SenderShared {
                 };
                 mode.on_block_status(self, peer_id, status);
             }
-            LosslessSessionControl::PlainStatus { .. } => {}
+            LosslessSessionControl::PlainStatus { status } => {
+                let Some(peer_id) = frame.peer_id else {
+                    return;
+                };
+                if !self.receiver_set.contains(&peer_id) {
+                    return;
+                }
+                mode.on_plain_status(self, peer_id, status);
+            }
         }
     }
 

@@ -10,7 +10,8 @@ use tokio::time::timeout;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+    PlainStatus,
 };
 
 const SOURCE_NODE_ID: usize = 31;
@@ -21,7 +22,7 @@ const SRC_PORT: u16 = 4720;
 const DST_PORT: u16 = 5720;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_completes_only_after_every_receiver_acks_every_block() {
+async fn sender_completes_only_after_every_receiver_reports_complete() {
     let mut harness =
         common::packet_capture(SOURCE_NODE_ID, RECEIVER_A, SRC_PORT, DST_PORT, 1, 2048).await;
 
@@ -83,28 +84,91 @@ async fn sender_completes_only_after_every_receiver_acks_every_block() {
     assert_eq!(block_ids, BTreeSet::from([0, 1]));
 
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID, RECEIVER_A, 0))
+        .send(common::plain_status_frame(
+            SESSION_ID,
+            RECEIVER_A,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
         .await
-        .expect("receiver A block 0 ack should enqueue");
+        .expect("receiver A missing report should enqueue");
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID, RECEIVER_A, 1))
+        .send(common::plain_status_frame(
+            SESSION_ID,
+            RECEIVER_A,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
         .await
-        .expect("receiver A block 1 ack should enqueue");
+        .expect("duplicate receiver A missing report should enqueue");
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID, RECEIVER_B, 0))
+        .send(common::plain_status_frame(
+            SESSION_ID,
+            RECEIVER_B,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 0,
+                    end_block_id: 1,
+                }],
+            },
+        ))
         .await
-        .expect("receiver B block 0 ack should enqueue");
+        .expect("receiver B missing report should enqueue");
+
+    let mut retransmit_block_ids = BTreeSet::new();
+    let mut saw_second_eot = false;
+    while retransmit_block_ids.len() < 2 || !saw_second_eot {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include a TCP payload");
+
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            match control {
+                LosslessSessionControl::Eot => saw_second_eot = true,
+                other => panic!("unexpected control frame during retransmit round: {other:?}"),
+            }
+            continue;
+        }
+
+        let (_, data, _) =
+            lossless_session::decode_block_data(payload).expect("expected retransmitted block");
+        retransmit_block_ids.insert(data.block_id);
+    }
+
+    assert_eq!(retransmit_block_ids, BTreeSet::from([0, 1]));
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            SESSION_ID,
+            RECEIVER_A,
+            PlainStatus::Complete,
+        ))
+        .await
+        .expect("receiver A complete report should enqueue");
 
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(
         !sender_task.is_finished(),
-        "sender must remain active until every receiver has acknowledged every block"
+        "sender must remain active until every receiver reports complete"
     );
 
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID, RECEIVER_B, 1))
+        .send(common::plain_status_frame(
+            SESSION_ID,
+            RECEIVER_B,
+            PlainStatus::Complete,
+        ))
         .await
-        .expect("receiver B block 1 ack should enqueue");
+        .expect("receiver B complete report should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
         .await

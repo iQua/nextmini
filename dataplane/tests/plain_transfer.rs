@@ -383,7 +383,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_sender_completes_after_block_ack() {
+async fn plain_sender_completes_after_complete_status() {
     let mut capture = common::packet_capture(
         SOURCE_NODE_ID,
         RECEIVER_NODE_ID,
@@ -445,9 +445,13 @@ async fn plain_sender_completes_after_block_ack() {
     }
 
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID + 1, RECEIVER_NODE_ID, 0))
+        .send(common::plain_status_frame(
+            SESSION_ID + 1,
+            RECEIVER_NODE_ID,
+            PlainStatus::Complete,
+        ))
         .await
-        .expect("block ack should enqueue");
+        .expect("plain complete status should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
         .await

@@ -10,7 +10,7 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
-use nextmini_messages::lossless_session::{self, LosslessSessionControl};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl, PlainStatus};
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
 pub struct PacketCaptureHarness {
@@ -114,6 +114,14 @@ pub fn block_ack_frame(session_id: u64, peer_id: usize, block_id: u64) -> Inboun
         session_id,
         peer_id,
         LosslessSessionControl::BlockAck { block_id },
+    )
+}
+
+pub fn plain_status_frame(session_id: u64, peer_id: usize, status: PlainStatus) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::PlainStatus { status },
     )
 }
 
