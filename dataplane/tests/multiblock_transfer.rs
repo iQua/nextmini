@@ -289,16 +289,14 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
     }
 
     assert_eq!(block_ids, BTreeSet::from([0, 1, 2]));
-    for block_id in 0..3 {
-        ctrl_tx
-            .send(common::block_ack_frame(
-                0xA11C_E103,
-                RECEIVER_NODE_ID,
-                block_id,
-            ))
-            .await
-            .expect("block ack should enqueue");
-    }
+    ctrl_tx
+        .send(common::fec_status_frame(
+            0xA11C_E103,
+            RECEIVER_NODE_ID,
+            FecStatus::Complete,
+        ))
+        .await
+        .expect("completion status should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
         .await

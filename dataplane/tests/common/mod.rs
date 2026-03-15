@@ -11,7 +11,8 @@ use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, PlainStatus,
+    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    PlainStatus,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -157,6 +158,14 @@ pub fn plain_status_frame(session_id: u64, peer_id: usize, status: PlainStatus) 
         session_id,
         peer_id,
         LosslessSessionControl::PlainStatus { status },
+    )
+}
+
+pub fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::FecStatus { status },
     )
 }
 
