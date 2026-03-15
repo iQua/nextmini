@@ -576,6 +576,40 @@ struct ChildProcessArgs {
     bridge_ip: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ChildRuntimeFlavor {
+    CurrentThread,
+    MultiThread { worker_threads: usize },
+}
+
+fn child_runtime_flavor(num_packet_processors: usize) -> ChildRuntimeFlavor {
+    if num_packet_processors > 1 {
+        ChildRuntimeFlavor::MultiThread {
+            worker_threads: num_packet_processors,
+        }
+    } else {
+        ChildRuntimeFlavor::CurrentThread
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChildRuntimeFlavor, child_runtime_flavor};
+
+    #[test]
+    fn child_runtime_uses_current_thread_for_single_processor() {
+        assert_eq!(child_runtime_flavor(1), ChildRuntimeFlavor::CurrentThread);
+    }
+
+    #[test]
+    fn child_runtime_uses_multi_thread_for_multiple_processors() {
+        assert_eq!(
+            child_runtime_flavor(4),
+            ChildRuntimeFlavor::MultiThread { worker_threads: 4 }
+        );
+    }
+}
+
 /// The child process that runs in its own isolated network namespace.
 fn child_process(args: ChildProcessArgs) -> isize {
     let ChildProcessArgs {
@@ -593,10 +627,20 @@ fn child_process(args: ChildProcessArgs) -> isize {
     unistd::sethostname(&ns_hostname).expect("Failed to set hostname.");
 
     // creates and runs the Tokio runtime
-    let rt = runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .expect("Failed to create the Tokio runtime.");
+    let rt = match child_runtime_flavor(config.num_packet_processors) {
+        ChildRuntimeFlavor::CurrentThread => runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create the Tokio runtime."),
+        ChildRuntimeFlavor::MultiThread { worker_threads } => {
+            let mut builder = runtime::Builder::new_multi_thread();
+            builder
+                .worker_threads(worker_threads)
+                .enable_all()
+                .build()
+                .expect("Failed to create the Tokio runtime.")
+        }
+    };
 
     let process = rt.block_on(async {
         // sets up veth interface (this brings up the peer side)
