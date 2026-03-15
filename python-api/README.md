@@ -11,5 +11,3 @@ That means plain workspace test commands now work:
 ```bash
 cargo nextest run
 ```
-
-`dev-tests` still exists as a small helper feature that only enables `pyo3/auto-initialize`, so targeted Python-only test runs such as `cargo nextest run -p nextmini_py --no-default-features --features dev-tests` remain available when needed.

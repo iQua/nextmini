@@ -84,7 +84,7 @@ cargo test --workspace
 For the full development suite used in this repo, run:
 
 ```bash
-cargo nextest run --no-default-features --features python-extension --features dev-tests
+cargo nextest run
 ```
 
 If the Python extension is required for your environment, set `PYO3_PYTHON` to a Python 3.13 binary before running test commands. On macOS, a common example is:

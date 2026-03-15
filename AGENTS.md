@@ -30,7 +30,7 @@
 - Co-locate tests in the owning module with `#[cfg(test)] mod tests` and use `#[tokio::test]` for async paths such as controller I/O.
 - Name tests after the behavior under test (e.g., `reports_flow_finished_for_user_space`) and mirror the crate path when adding files in `tests/`.
 - Keep fast-running unit tests in-tree; integration tests that require Postgres or network setup should document prerequisites in comments or the `docs/` tree.
-- The command to run all tests is: `cargo nextest run --no-default-features --features python-extension --features dev-tests`
+- The command to run all tests is: `cargo nextest run`
 
 ## Python Bindings & Tooling
 
