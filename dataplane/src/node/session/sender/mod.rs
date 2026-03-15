@@ -15,8 +15,8 @@ use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    PlainStatus,
+    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionManifest,
+    LosslessSessionMode, PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -55,8 +55,16 @@ pub(super) trait ModeHooks {
     /// Observe a newly completed block after a peer ACK updates the ledger.
     fn on_block_completed(&mut self, _block_id: u64) {}
 
+    /// Report whether legacy FEC `BlockAck`/`BlockStatus` should still drive this mode.
+    fn accepts_legacy_fec_feedback(&self) -> bool {
+        true
+    }
+
     /// Observe per-block FEC deficit feedback from a receiver.
     fn on_block_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: BlockStatus) {}
+
+    /// Observe FEC-mode end-of-round feedback from a receiver.
+    fn on_fec_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: FecStatus) {}
 
     /// Observe plain-mode end-of-round feedback from a receiver.
     fn on_plain_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: PlainStatus) {}
@@ -201,7 +209,7 @@ impl SessionSender {
 
         let complete = match &self.mode {
             SenderMode::Plain(mode) => mode.is_complete(),
-            SenderMode::Fec(_) => self.shared.ledger.is_complete(),
+            SenderMode::Fec(mode) => mode.is_complete(&self.shared),
         };
         info!(
             session_id = self.shared.session.session_id,
@@ -314,9 +322,7 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. }
-            | LosslessSessionControl::Eot
-            | LosslessSessionControl::FecStatus { .. } => {}
+            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot => {}
             LosslessSessionControl::Ready { node_id } => {
                 if let Ok(node_id) = usize::try_from(node_id)
                     && self.receiver_set.contains(&node_id)
@@ -326,6 +332,9 @@ impl SenderShared {
             }
             LosslessSessionControl::BlockAck { block_id } => {
                 if !self.manifest.mode.is_fec() {
+                    return;
+                }
+                if !mode.accepts_legacy_fec_feedback() {
                     return;
                 }
                 let Some(peer_id) = frame.peer_id else {
@@ -341,10 +350,22 @@ impl SenderShared {
                 }
             }
             LosslessSessionControl::BlockStatus { status } => {
+                if !mode.accepts_legacy_fec_feedback() {
+                    return;
+                }
                 let Some(peer_id) = frame.peer_id else {
                     return;
                 };
                 mode.on_block_status(self, peer_id, status);
+            }
+            LosslessSessionControl::FecStatus { status } => {
+                let Some(peer_id) = frame.peer_id else {
+                    return;
+                };
+                if !self.receiver_set.contains(&peer_id) {
+                    return;
+                }
+                mode.on_fec_status(self, peer_id, status);
             }
             LosslessSessionControl::PlainStatus { status } => {
                 let Some(peer_id) = frame.peer_id else {
