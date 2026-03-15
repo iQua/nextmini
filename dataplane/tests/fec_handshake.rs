@@ -16,7 +16,9 @@ use nextmini::node::session::runtime::{
     PreflightError, SenderRequest, SessionConfig, TransportRoute,
 };
 use nextmini_messages::OperatingMode;
-use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionMode};
+use nextmini_messages::lossless_session::{
+    self, LosslessSessionControl, LosslessSessionMode, PlainStatus,
+};
 
 struct RuntimeHarness {
     runtime: LosslessRuntimeHandle,
@@ -267,7 +269,7 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
 
     harness.runtime.deliver(
         harness.session_id,
-        common::block_ack_frame(harness.session_id, 2, 0),
+        common::plain_status_frame(harness.session_id, 2, PlainStatus::Complete),
     );
     let completed = timeout(Duration::from_secs(5), harness.session.wait())
         .await

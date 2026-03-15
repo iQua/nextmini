@@ -10,8 +10,8 @@ use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionFecMode,
+    LosslessSessionManifest, LosslessSessionMode,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -48,7 +48,6 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
     let mut saw_eot = false;
     let mut all_symbol_ids = Vec::new();
     let mut extra_symbol_ids = Vec::new();
-    let mut status_sent = false;
 
     while extra_symbol_ids.len() < 2 {
         let packet = common::recv_packet(&mut harness.packet_rx).await;
@@ -66,7 +65,22 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
                     assert_eq!(observed_manifest, manifest);
                     saw_manifest = true;
                 }
-                LosslessSessionControl::Eot => saw_eot = true,
+                LosslessSessionControl::Eot => {
+                    saw_eot = true;
+                    ctrl_tx
+                        .send(fec_status_frame(
+                            session_id,
+                            2,
+                            FecStatus::MissingBlocks {
+                                blocks: vec![BlockStatus {
+                                    block_id: 0,
+                                    deficit_symbols: 2,
+                                }],
+                            },
+                        ))
+                        .await
+                        .expect("round status should enqueue");
+                }
                 other => panic!("unexpected control frame: {other:?}"),
             }
             continue;
@@ -82,13 +96,6 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         );
 
         all_symbol_ids.push(symbol.symbol_id);
-        if symbol.symbol_id == 0 && !status_sent {
-            ctrl_tx
-                .send(block_status_frame(session_id, 2, 0, 2))
-                .await
-                .expect("block status should enqueue");
-            status_sent = true;
-        }
         if symbol.symbol_id >= 4 {
             assert!(saw_eot, "extra symbols must not appear before EOT");
             extra_symbol_ids.push(symbol.symbol_id);
@@ -108,11 +115,257 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
     );
 
     ctrl_tx
-        .send(common::block_ack_frame(session_id, 2, 0))
+        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
         .await
-        .expect("block ack should enqueue");
+        .expect("completion status should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_ignores_legacy_fec_feedback_frames() {
+    let mut harness = common::packet_capture(1, 2, 4101, 5201, 1, 2048).await;
+
+    let session_id = 0xFEC5_0004;
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest: LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+        },
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .expect("ready frame should enqueue");
+
+    let mut sender_task =
+        tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_eot(&mut harness.packet_rx).await;
+
+    ctrl_tx
+        .send(block_status_frame(session_id, 2, 0, 2))
+        .await
+        .expect("legacy block status should enqueue");
+    assert!(
+        timeout(Duration::from_millis(150), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "legacy BlockStatus must not advance FEC convergence"
+    );
+
+    ctrl_tx
+        .send(common::block_ack_frame(session_id, 2, 0))
+        .await
+        .expect("legacy block ack should enqueue");
+    assert!(
+        timeout(Duration::from_millis(150), &mut sender_task)
+            .await
+            .is_err(),
+        "legacy BlockAck must not complete FEC convergence"
+    );
+
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .await
+        .expect("round status should enqueue");
+
+    timeout(Duration::from_secs(5), &mut sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbols() {
+    let mut harness = common::packet_capture(1, 2, 4102, 5202, 1, 2048).await;
+    let session_id = 0xFEC5_0002;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2, 3],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest,
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(common::ready_frame(session_id, 3))
+        .await
+        .unwrap();
+
+    let mut sender_task =
+        tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_eot(&mut harness.packet_rx).await;
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            2,
+            FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+
+    assert!(
+        timeout(Duration::from_millis(150), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "sender should wait for every receiver report before sending extra symbols"
+    );
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            3,
+            FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+
+    let symbol = recv_symbol(&mut harness.packet_rx).await;
+    assert_eq!(symbol.symbol_id, 4);
+    wait_for_eot(&mut harness.packet_rx).await;
+
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(fec_status_frame(session_id, 3, FecStatus::Complete))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_secs(5), &mut sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
+    let mut harness = common::packet_capture(1, 2, 4103, 5203, 1, 2048).await;
+    let session_id = 0xFEC5_0003;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2, 3],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest,
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(common::ready_frame(session_id, 3))
+        .await
+        .unwrap();
+
+    let mut sender_task =
+        tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_eot(&mut harness.packet_rx).await;
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            2,
+            FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            3,
+            FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 3,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+
+    let mut extra_symbol_ids = Vec::new();
+    while extra_symbol_ids.len() < 3 {
+        extra_symbol_ids.push(recv_symbol(&mut harness.packet_rx).await.symbol_id);
+    }
+    assert_eq!(extra_symbol_ids, vec![4, 5, 6]);
+    wait_for_eot(&mut harness.packet_rx).await;
+
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .await
+        .unwrap();
+    assert!(
+        timeout(Duration::from_millis(150), &mut sender_task)
+            .await
+            .is_err(),
+        "sender should not complete until every receiver reports complete"
+    );
+    ctrl_tx
+        .send(fec_status_frame(session_id, 3, FecStatus::Complete))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_secs(5), &mut sender_task)
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
@@ -135,5 +388,41 @@ fn block_status_frame(
             },
         ),
         peer_id: Some(peer_id),
+    }
+}
+
+fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+    InboundFrame {
+        bytes: lossless_session::encode_control(
+            session_id,
+            &LosslessSessionControl::FecStatus { status },
+        ),
+        peer_id: Some(peer_id),
+    }
+}
+
+async fn wait_for_eot(packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>) {
+    loop {
+        let packet = common::recv_packet(packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include TCP payload");
+        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+            return;
+        }
+    }
+}
+
+async fn recv_symbol(
+    packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>,
+) -> nextmini_messages::lossless_session::LosslessSessionBlockSymbol {
+    loop {
+        let packet = common::recv_packet(packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include TCP payload");
+        if let Some((_, symbol, _)) = lossless_session::decode_block_symbol(payload) {
+            return symbol;
+        }
     }
 }

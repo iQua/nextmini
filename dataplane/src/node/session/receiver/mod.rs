@@ -2,9 +2,9 @@
 //!
 //! The receiver accepts a manifest, records completed plain blocks locally, and
 //! optionally accumulates FEC symbols until a block can be decoded. After
-//! `Eot`, plain mode emits end-of-round status feedback while incomplete FEC
-//! blocks trigger deficit feedback so the sender can emit additional fountain
-//! symbols.
+//! `Eot`, plain mode emits end-of-round status feedback while FEC mode emits
+//! one aggregate round status describing either completion or the remaining
+//! per-block deficits for the next retransmit round.
 
 mod fec;
 mod plain;
@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
-    PlainStatus,
+    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    MissingBlockRange, PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -31,6 +31,7 @@ use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
 
 /// Run one receiver session until the transfer is complete or the channel closes.
+#[allow(dead_code)]
 pub async fn run(
     cfg: ReceiverConfig,
     rx: mpsc::Receiver<InboundFrame>,
@@ -131,7 +132,7 @@ impl SessionReceiver {
     fn is_complete(&self) -> bool {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
-            Some(ReceiverMode::Fec(_)) => self.shared.has_all_blocks(),
+            Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
             None => false,
         }
     }
@@ -149,14 +150,14 @@ impl SessionReceiver {
             LosslessSessionControl::Ready { .. }
             | LosslessSessionControl::BlockAck { .. }
             | LosslessSessionControl::PlainStatus { .. }
-            | LosslessSessionControl::BlockStatus { .. } => {}
+            | LosslessSessionControl::BlockStatus { .. }
+            | LosslessSessionControl::FecStatus { .. } => {}
             LosslessSessionControl::Eot => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_eot(&self.shared).await;
                 }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
-                    mode.eot_seen = true;
-                    mode.send_status_for_incomplete_blocks(&self.shared).await;
+                    mode.handle_eot(&self.shared).await;
                 }
             }
         }
@@ -270,6 +271,12 @@ impl SessionReceiver {
                     status: PlainStatus::Complete,
                 })
             }
+            Some(ReceiverMode::Fec(_)) if self.is_complete() => {
+                Some(CompletedReceiverReplay::Fec {
+                    route: self.shared.route,
+                    status: FecStatus::Complete,
+                })
+            }
             _ => None,
         }
     }
@@ -354,8 +361,7 @@ impl ReceiverShared {
         .await;
     }
 
-    /// Acknowledge completion of one logical FEC block.
-    pub(super) async fn send_fec_block_ack(&self, block_id: u64) {
+    async fn send_fec_status(&self, status: &FecStatus) {
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -366,7 +372,9 @@ impl ReceiverShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::BlockAck { block_id },
+            &LosslessSessionControl::FecStatus {
+                status: status.clone(),
+            },
         )
         .await;
     }
@@ -485,19 +493,19 @@ mod tests {
             plan: BlockPlan::new(16, 8).ok(),
             complete_blocks: BTreeSet::new(),
         };
-        let receiver = FecReceiver {
-            geometry: BlockPlan::new(16, 8)
+        let mut receiver = FecReceiver::new(
+            BlockPlan::new(16, 8)
                 .ok()
                 .and_then(|plan| plan.symbol_geometry(4).ok())
                 .expect("valid geometry"),
-            blocks: BTreeMap::from([(
-                0,
-                FecBlockState {
-                    symbols: BTreeMap::from([(0, vec![1, 2])]),
-                },
-            )]),
-            eot_seen: true,
-        };
+        );
+        receiver.blocks = BTreeMap::from([(
+            0,
+            FecBlockState {
+                symbols: BTreeMap::from([(0, vec![1, 2])]),
+            },
+        )]);
+        receiver.eot_seen = true;
 
         assert_eq!(receiver.block_deficit(&shared, 0), 3);
     }
@@ -715,6 +723,123 @@ mod tests {
         assert!(progress.first_completed_block_at().is_some());
     }
 
+    #[tokio::test]
+    async fn completed_fec_receiver_registers_complete_replay_before_teardown() {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4751,
+            dst_port: 5751,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, mut packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let geometry = BlockPlan::new(8, 8)
+            .ok()
+            .and_then(|plan| plan.symbol_geometry(4).ok())
+            .expect("valid geometry");
+        let mut receiver = SessionReceiver {
+            shared: ReceiverShared {
+                session_id: 9,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                cfg: ReceiverConfig {
+                    session_id: 9,
+                    route,
+                    local_node_id: RECEIVER_NODE_ID,
+                    sink_buffer: None,
+                    progress: None,
+                    fec_enabled: true,
+                },
+                processors,
+                manifest: Some(LosslessSessionManifest {
+                    block_size: 8,
+                    total_bytes: 8,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Fec(
+                        nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
+                            4,
+                            vec![0, 1],
+                        ),
+                    ),
+                }),
+                plan: BlockPlan::new(8, 8).ok(),
+                complete_blocks: BTreeSet::from([0]),
+            },
+            mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
+        };
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::Eot,
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert_eq!(
+            recv_fec_status(&mut packet_rx).await,
+            FecStatus::Complete,
+            "completed FEC receivers should report complete at the round boundary"
+        );
+        assert!(receiver.is_complete());
+
+        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let register_task = tokio::spawn(async move {
+            receiver.register_completed_replay(Some(runtime_tx)).await;
+        });
+
+        let LosslessRuntimeMessage::ReceiverCompleted {
+            session_id,
+            replay,
+            ack,
+        } = timeout(Duration::from_secs(2), runtime_rx.recv())
+            .await
+            .expect("timed out waiting for replay registration")
+            .expect("runtime channel closed unexpectedly")
+        else {
+            panic!("unexpected runtime message");
+        };
+        assert_eq!(session_id, 9);
+        assert_eq!(
+            replay,
+            CompletedReceiverReplay::Fec {
+                route,
+                status: FecStatus::Complete,
+            }
+        );
+        ack.send(())
+            .expect("replay registration should still await ack");
+
+        register_task
+            .await
+            .expect("replay registration task should exit cleanly");
+    }
+
     async fn plain_test_receiver(
         total_blocks: u64,
         complete_blocks: BTreeSet<u64>,
@@ -792,6 +917,22 @@ mod tests {
         let (_, control) =
             lossless_session::decode_control(payload).expect("plain status should decode");
         let LosslessSessionControl::PlainStatus { status } = control else {
+            panic!("unexpected control frame: {control:?}");
+        };
+        status
+    }
+
+    async fn recv_fec_status(packet_rx: &mut mpsc::Receiver<Packet>) -> FecStatus {
+        let packet = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for fec status")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("fec status packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("fec status should decode");
+        let LosslessSessionControl::FecStatus { status } = control else {
             panic!("unexpected control frame: {control:?}");
         };
         status

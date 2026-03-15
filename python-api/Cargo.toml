@@ -20,8 +20,10 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 nextmini = { path = "../dataplane", package = "nextmini" }
 nextmini-messages = { path = "../messages", package = "nextmini-messages" }
 
+[build-dependencies]
+pyo3-build-config = { version = "0.28", features = ["resolve-config"] }
+
 [features]
-default = ["python-extension", "python-tests"]
+default = ["python-extension", "dev-tests"]
 python-extension = ["nextmini/python-extension"]
-python-tests = ["pyo3/extension-module"]
 dev-tests = ["pyo3/auto-initialize"]

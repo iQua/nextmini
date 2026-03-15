@@ -4,13 +4,12 @@ This crate builds the `nextmini_py` PyO3 extension that embeds the dataplane. By
 
 ### Running the Rust unit tests
 
-The PyO3 `extension-module` feature asks the Apple linker to leave all Python symbols unresolved until the interpreter loads the cdylib. That is exactly what we want for the wheel, but it breaks `cargo test` because the harness links an executable and therefore **must** link against `libpython`.
+PyO3 0.28 deprecates the old `extension-module` Cargo feature. The supported path is to link `libpython` by default so binaries and tests work, then let `maturin >= 1.9.4` set `PYO3_BUILD_EXTENSION_MODULE` when producing the wheel.
 
-To run the tests, disable the default `python-extension` feature and opt into the small `dev-tests` helper feature:
+That means plain workspace test commands now work:
 
 ```bash
-PYO3_PYTHON=/opt/homebrew/opt/python@3.13/bin/python3.13 \
-cargo nextest run --no-default-features --features dev-tests
+cargo nextest run
 ```
 
-`dev-tests` only enables `pyo3/auto-initialize` so each test case gets a ready-to-use interpreter without manual `Python::with_gil` boilerplate.
+`dev-tests` still exists as a small helper feature that only enables `pyo3/auto-initialize`, so targeted Python-only test runs such as `cargo nextest run -p nextmini_py --no-default-features --features dev-tests` remain available when needed.
