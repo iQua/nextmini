@@ -1256,6 +1256,41 @@ mod tests {
     }
 
     #[test]
+    fn decode_control_rejects_invalid_plain_status_payloads() {
+        let mut bad_kind = encode_control(
+            12,
+            &LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            },
+        );
+        bad_kind[LosslessSessionHeader::LEN] = 9;
+        assert!(
+            decode_control(&bad_kind).is_none(),
+            "plain-status decode must reject unsupported report kinds"
+        );
+
+        let mut malformed_ranges = encode_control(
+            13,
+            &LosslessSessionControl::PlainStatus {
+                status: PlainStatus::MissingBlocks {
+                    ranges: vec![MissingBlockRange {
+                        start_block_id: 1,
+                        end_block_id: 2,
+                    }],
+                },
+            },
+        );
+        let body_start = LosslessSessionHeader::LEN;
+        malformed_ranges[body_start + PLAIN_STATUS_FIXED_BODY_LEN + 8
+            ..body_start + PLAIN_STATUS_FIXED_BODY_LEN + 16]
+            .copy_from_slice(&1u64.to_be_bytes());
+        assert!(
+            decode_control(&malformed_ranges).is_none(),
+            "plain-status decode must reject malformed missing ranges"
+        );
+    }
+
+    #[test]
     fn decode_control_rejects_plain_manifest_with_fec_fields() {
         let mut encoded = encode_control(
             11,
