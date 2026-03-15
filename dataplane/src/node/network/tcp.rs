@@ -9,11 +9,10 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
 use tracing::{error, info, warn};
 
-use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::{Packet, PacketBuf};
+use crate::node::packet::{MAX_FRAMED_PACKET_SIZE, Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -200,7 +199,7 @@ impl TcpReader {
 
         let header = buf.as_slice();
         let msg_len = header[2] as usize * 256 + header[3] as usize;
-        if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
+        if !(20..=MAX_FRAMED_PACKET_SIZE).contains(&msg_len) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid IPv4 total length: {}", msg_len),
@@ -253,5 +252,62 @@ impl TcpWriter {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+
+    use super::*;
+    use crate::node::packet::LosslessTransportMeta;
+
+    #[tokio::test]
+    async fn tcp_reader_accepts_large_lossless_packet() {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should expose addr");
+        let payload = vec![0x5Au8; 16 * 1024];
+        let packet = Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            Ipv4Addr::new(10, 0, 0, 1),
+            45000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            46000,
+            Some(LosslessTransportMeta {
+                session_id: 0xA55A_A55A,
+                tree_id: Some(7),
+            }),
+            &payload,
+        );
+
+        let writer = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.expect("accept should succeed");
+            stream
+                .write_all(packet.bytes())
+                .await
+                .expect("write should succeed");
+        });
+
+        let stream = TcpStream::connect(addr)
+            .await
+            .expect("client should connect");
+        let (read_half, _) = tokio::io::split(stream);
+        let processors = ProcessorHandle::new(LocalConfig {
+            num_packet_processors: 1,
+            ..Default::default()
+        });
+        let mut reader = TcpReader::new(read_half, processors);
+
+        let packet = reader
+            .read_packet()
+            .await
+            .expect("reader should accept a large lossless packet");
+        assert_eq!(
+            packet.tcp_payload().expect("packet should carry payload"),
+            payload.as_slice()
+        );
+
+        writer.await.expect("writer task should finish");
     }
 }

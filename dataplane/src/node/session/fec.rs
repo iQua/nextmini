@@ -263,4 +263,47 @@ mod tests {
             assert_eq!(decoded, expected, "symbol {i} mismatch");
         }
     }
+
+    #[test]
+    fn decode_with_coded_large_symbols() {
+        let k = 8usize;
+        let symbol_size = 16 * 1024;
+        let source_data: Vec<Vec<u8>> = (0..k)
+            .map(|i| {
+                (0..symbol_size)
+                    .map(|j| ((i * 31 + j) % 251) as u8)
+                    .collect()
+            })
+            .collect();
+
+        let params = BlockParams::new(k, symbol_size, 0);
+        let flat: Vec<u8> = source_data
+            .iter()
+            .flat_map(|symbol| symbol.iter().copied())
+            .collect();
+        let encoder = Encoder::from_block(params, &flat).unwrap();
+        let decoder = Decoder::from_block(params);
+
+        let half_k = k / 2;
+
+        let mut symbols: Vec<ReceivedSymbol> = source_data[..half_k]
+            .iter()
+            .enumerate()
+            .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
+            .collect();
+        symbols.extend((0..(k - half_k)).map(|offset| {
+            let esi = k as u32 + offset as u32;
+            decoder.coded_symbol(esi, encoder.coded_symbol(esi))
+        }));
+
+        let output = decoder.decode(&symbols).unwrap();
+        for (i, (decoded, expected)) in output
+            .source_symbols
+            .iter()
+            .zip(source_data.iter())
+            .enumerate()
+        {
+            assert_eq!(decoded, expected, "symbol {i} mismatch");
+        }
+    }
 }

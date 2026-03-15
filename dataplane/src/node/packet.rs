@@ -11,6 +11,9 @@ use crate::node::{FlowId, RECEIVE_BUF_SIZE};
 
 static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
+/// Maximum serialized IPv4 packet size supported by the packet envelope.
+pub(crate) const MAX_FRAMED_PACKET_SIZE: usize = u16::MAX as usize;
+
 /// A reusable packet buffer backed by a global pool.
 #[derive(Debug)]
 pub struct PacketBuf {
@@ -61,7 +64,9 @@ impl PacketBuf {
     pub fn prepare_uninit(&mut self, len: usize) -> &mut [u8] {
         let buf = self.buf.as_mut().expect("packet buffer already released");
         if buf.capacity() < len {
-            buf.reserve(len - buf.capacity());
+            // BytesMut::reserve() grows relative to the current length, not the
+            // current capacity.
+            buf.reserve(len.saturating_sub(buf.len()));
         }
         let current_len = buf.len();
         if len > current_len {

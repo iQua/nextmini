@@ -13,12 +13,11 @@ use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
 use tracing::{error, info};
 
-use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::{Packet, PacketBuf};
+use crate::node::packet::{MAX_FRAMED_PACKET_SIZE, Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -213,7 +212,7 @@ impl QuicReader {
 
         let header = buf.as_slice();
         let msg_len = header[2] as usize * 256 + header[3] as usize;
-        if !(20..=RECEIVE_BUF_SIZE).contains(&msg_len) {
+        if !(20..=MAX_FRAMED_PACKET_SIZE).contains(&msg_len) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("invalid IPv4 total length: {}", msg_len),
