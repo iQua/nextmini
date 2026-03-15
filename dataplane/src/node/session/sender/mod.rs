@@ -116,16 +116,25 @@ impl BlockSource {
         out
     }
 
-    /// Partition one logical block into fixed-size source symbols.
-    fn source_symbols(&self, span: BlockSpan, geometry: SymbolGeometry) -> Vec<Vec<u8>> {
+    /// Materialize one padded block image sized for fixed-width source symbols.
+    fn padded_symbol_bytes(&self, span: BlockSpan, geometry: SymbolGeometry) -> Bytes {
         let block = self.block_payload(span);
         let total_symbol_bytes = geometry.source_symbols() * geometry.symbol_size();
         let mut padded = vec![0u8; total_symbol_bytes];
         let copy_len = block.len().min(total_symbol_bytes);
         padded[..copy_len].copy_from_slice(&block[..copy_len]);
-        padded
-            .chunks(geometry.symbol_size())
-            .map(|chunk| chunk.to_vec())
+        Bytes::from(padded)
+    }
+
+    /// Partition one logical block into reusable fixed-size source symbols.
+    fn source_symbols(&self, span: BlockSpan, geometry: SymbolGeometry) -> Vec<Bytes> {
+        let padded = self.padded_symbol_bytes(span, geometry);
+        let symbol_size = geometry.symbol_size();
+        (0..geometry.source_symbols())
+            .map(|idx| {
+                let start = idx * symbol_size;
+                padded.slice(start..start + symbol_size)
+            })
             .collect()
     }
 }
@@ -400,9 +409,9 @@ mod tests {
         let symbols = source.source_symbols(plan.block_span(0).expect("first block"), geometry);
 
         assert_eq!(symbols.len(), 4);
-        assert_eq!(symbols[0], b"ab");
-        assert_eq!(symbols[1], b"cd");
-        assert_eq!(symbols[2], b"ef");
-        assert_eq!(symbols[3], b"\0\0");
+        assert_eq!(symbols[0].as_ref(), b"ab");
+        assert_eq!(symbols[1].as_ref(), b"cd");
+        assert_eq!(symbols[2].as_ref(), b"ef");
+        assert_eq!(symbols[3].as_ref(), b"\0\0");
     }
 }

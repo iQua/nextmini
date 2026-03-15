@@ -326,14 +326,17 @@ async fn fec_receiver_decodes_and_acks_every_block() {
             bytes
         };
         for (symbol_id, symbol) in padded.chunks(2).enumerate() {
+            let mut bytes = Vec::new();
+            lossless_session::encode_block_symbol_into(
+                &mut bytes,
+                0xA11C_E104,
+                block_id as u64,
+                symbol_id as u32,
+                if symbol_id % 2 == 0 { 1 } else { 3 },
+                symbol,
+            );
             tx.send(InboundFrame {
-                bytes: lossless_session::encode_block_symbol(
-                    0xA11C_E104,
-                    block_id as u64,
-                    symbol_id as u32,
-                    if symbol_id % 2 == 0 { 1 } else { 3 },
-                    symbol,
-                ),
+                bytes,
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await

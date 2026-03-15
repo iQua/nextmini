@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use tokio::sync::mpsc;
 use tracing::warn;
 
@@ -20,7 +21,8 @@ pub(super) struct FecSender {
     tree_ids: Vec<u16>,
     geometry: SymbolGeometry,
     next_tree_rr: usize,
-    current_source_cache: Option<(u64, Vec<Vec<u8>>)>,
+    current_source_cache: Option<(u64, Vec<Bytes>)>,
+    frame_scratch: Vec<u8>,
     round_eot_sent: bool,
 }
 
@@ -61,6 +63,7 @@ impl FecSender {
             geometry,
             next_tree_rr: 0,
             current_source_cache: None,
+            frame_scratch: Vec::new(),
             round_eot_sent: false,
         })
     }
@@ -151,7 +154,7 @@ impl FecSender {
             return false;
         };
         shared.pace(payload.len()).await;
-        if !self.try_send_symbol(shared, block_id, symbol_id, &payload) {
+        if !self.try_send_symbol(shared, block_id, symbol_id, payload.as_ref()) {
             return false;
         }
 
@@ -191,16 +194,29 @@ impl FecSender {
         symbol_id: u32,
         payload: &[u8],
     ) -> bool {
-        for offset in 0..self.tree_ids.len() {
-            let idx = (self.next_tree_rr + offset) % self.tree_ids.len();
+        if self.tree_ids.is_empty() {
+            return false;
+        }
+
+        let tree_count = self.tree_ids.len();
+        let start_idx = self.next_tree_rr;
+        let initial_tree_id = self.tree_ids[start_idx];
+        lossless_session::encode_block_symbol_into(
+            &mut self.frame_scratch,
+            shared.session.session_id,
+            block_id,
+            symbol_id,
+            initial_tree_id,
+            payload,
+        );
+
+        for offset in 0..tree_count {
+            let idx = (start_idx + offset) % tree_count;
             let tree_id = self.tree_ids[idx];
-            let frame = lossless_session::encode_block_symbol(
-                shared.session.session_id,
-                block_id,
-                symbol_id,
-                tree_id,
-                payload,
-            );
+            if offset > 0 {
+                lossless_session::set_block_symbol_tree_id(&mut self.frame_scratch, tree_id)
+                    .expect("encoded block symbol should accept tree-id patch");
+            }
             let submission = control::try_send_frame(
                 &shared.processors,
                 control::FrameRoute {
@@ -211,11 +227,11 @@ impl FecSender {
                     dst_ip: shared.route.dst_ip,
                     dst_port: shared.route.dst_port,
                 },
-                &frame,
+                &self.frame_scratch,
             );
             match submission.outcome {
                 SendOutcome::Queued => {
-                    self.next_tree_rr = (idx + 1) % self.tree_ids.len();
+                    self.next_tree_rr = (idx + 1) % tree_count;
                     return true;
                 }
                 SendOutcome::WouldBlock => {}
@@ -238,7 +254,7 @@ impl FecSender {
         shared: &super::SenderShared,
         block_id: u64,
         symbol_id: u32,
-    ) -> Option<Vec<u8>> {
+    ) -> Option<Bytes> {
         ensure_source_symbol_cache(&shared.source, shared.plan, self, block_id)?;
         let (_, symbols) = self.current_source_cache.as_ref()?;
         let idx = usize::try_from(symbol_id).ok()?;
@@ -256,7 +272,7 @@ impl FecSender {
 
         if need_encoder {
             let span = shared.plan.block_span(block_id)?;
-            let source_symbols = shared.source.source_symbols(span, self.geometry);
+            let source_block = shared.source.padded_symbol_bytes(span, self.geometry);
             let params = BlockParams::new(
                 usize::from(self.symbols_per_block),
                 self.geometry.symbol_size(),
@@ -264,7 +280,7 @@ impl FecSender {
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {
-                block.encoder = Encoder::from_block(params, &source_symbols);
+                block.encoder = Encoder::from_block(params, source_block.as_ref());
             }
         }
 
@@ -331,8 +347,7 @@ fn ensure_source_symbol_cache(
     }
 
     let span = plan.block_span(block_id)?;
-    let symbols = source.source_symbols(span, fec.geometry);
-    fec.current_source_cache = Some((block_id, symbols));
+    fec.current_source_cache = Some((block_id, source.source_symbols(span, fec.geometry)));
     Some(())
 }
 

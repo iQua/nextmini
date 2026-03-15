@@ -430,39 +430,60 @@ pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<
     out
 }
 
-/// Encode a `BlockSymbol` frame into a fresh `Vec<u8>`.
-pub fn encode_block_symbol(
+const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2 + 4;
+const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
+
+/// Encode a `BlockSymbol` frame into the provided reusable buffer.
+pub fn encode_block_symbol_into<'a>(
+    buf: &'a mut Vec<u8>,
     session_id: u64,
     block_id: u64,
     symbol_id: u32,
     tree_id: u16,
     payload: &[u8],
-) -> Vec<u8> {
-    let body_len = 8 + 4 + 2 + 2 + 4 + payload.len() as u32;
-    let mut out = vec![0u8; LosslessSessionHeader::LEN + body_len as usize];
+) -> &'a [u8] {
+    let body_len = BLOCK_SYMBOL_FIXED_BODY_LEN + payload.len();
+    let frame_len = LosslessSessionHeader::LEN + body_len;
+    buf.resize(frame_len, 0);
     LosslessSessionHeader {
         magic: LOSSLESS_SESSION_MAGIC,
         version: LOSSLESS_SESSION_VERSION,
         kind: LosslessSessionKind::BlockSymbol,
         ctrl_kind: 0,
         session_id,
-        body_len,
+        body_len: body_len as u32,
     }
-    .encode_into(&mut out[..LosslessSessionHeader::LEN]);
+    .encode_into(&mut buf[..LosslessSessionHeader::LEN]);
 
     let mut pos = LosslessSessionHeader::LEN;
-    out[pos..pos + 8].copy_from_slice(&block_id.to_be_bytes());
+    buf[pos..pos + 8].copy_from_slice(&block_id.to_be_bytes());
     pos += 8;
-    out[pos..pos + 4].copy_from_slice(&symbol_id.to_be_bytes());
+    buf[pos..pos + 4].copy_from_slice(&symbol_id.to_be_bytes());
     pos += 4;
-    out[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+    buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
     pos += 2;
-    out[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes());
+    buf[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes());
     pos += 2;
-    out[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+    buf[pos..pos + 4].copy_from_slice(&(payload.len() as u32).to_be_bytes());
     pos += 4;
-    out[pos..pos + payload.len()].copy_from_slice(payload);
-    out
+    buf[pos..pos + payload.len()].copy_from_slice(payload);
+    &buf[..frame_len]
+}
+
+/// Update the tree id for an already-encoded `BlockSymbol` frame.
+pub fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
+    let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
+    if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
+        return None;
+    }
+    if hdr.body_len < BLOCK_SYMBOL_FIXED_BODY_LEN as u32 || buf.len() < off + hdr.body_len as usize
+    {
+        return None;
+    }
+
+    let pos = off + (BLOCK_SYMBOL_TREE_ID_OFFSET - LosslessSessionHeader::LEN);
+    buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+    Some(())
 }
 
 /// Try to decode a `BlockData` frame; returns (header, block metadata, payload slice).
@@ -792,7 +813,8 @@ mod tests {
     #[test]
     fn roundtrip_block_symbol() {
         let payload = b"fec symbol";
-        let buf = encode_block_symbol(42, 9, 3, 5, payload);
+        let mut buf = Vec::new();
+        encode_block_symbol_into(&mut buf, 42, 9, 3, 5, payload);
         let (hdr, data, body) = decode_block_symbol(&buf).expect("decode block symbol");
         assert_eq!(hdr.session_id, 42);
         assert_eq!(hdr.kind, LosslessSessionKind::BlockSymbol);
@@ -868,6 +890,22 @@ mod tests {
             assert_eq!(decoded_heap, ctrl);
             assert_eq!(decoded_stack, ctrl);
         }
+    }
+
+    #[test]
+    fn encode_block_symbol_into_supports_tree_id_patch() {
+        let mut frame = Vec::new();
+        let encoded = encode_block_symbol_into(&mut frame, 42, 7, 3, 5, b"payload");
+        let (_, symbol, body) = decode_block_symbol(encoded).expect("decode symbol");
+        assert_eq!(symbol.block_id, 7);
+        assert_eq!(symbol.symbol_id, 3);
+        assert_eq!(symbol.tree_id, 5);
+        assert_eq!(body, b"payload");
+
+        set_block_symbol_tree_id(&mut frame, 9).expect("patch tree id");
+        let (_, patched, patched_body) = decode_block_symbol(&frame).expect("decode patched");
+        assert_eq!(patched.tree_id, 9);
+        assert_eq!(patched_body, b"payload");
     }
 
     #[test]
@@ -1055,7 +1093,8 @@ mod tests {
         buf[0] = 0;
         assert!(decode_block_data(&buf).is_none());
 
-        let symbol = encode_block_symbol(1, 0, 0, 1, b"y");
+        let mut symbol = Vec::new();
+        encode_block_symbol_into(&mut symbol, 1, 0, 0, 1, b"y");
         assert!(decode_block_data(&symbol).is_none());
     }
 
