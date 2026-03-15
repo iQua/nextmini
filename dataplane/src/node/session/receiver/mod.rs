@@ -31,6 +31,7 @@ use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
 
 /// Run one receiver session until the transfer is complete or the channel closes.
+#[allow(dead_code)]
 pub async fn run(
     cfg: ReceiverConfig,
     rx: mpsc::Receiver<InboundFrame>,

@@ -92,6 +92,7 @@ impl ReceiverProgress {
     }
 
     /// Return the timestamp of the first completed block, if any.
+    #[allow(dead_code)]
     pub fn first_completed_block_at(&self) -> Option<Instant> {
         self.first_completed_block_at.get().copied()
     }
