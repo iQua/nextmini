@@ -403,6 +403,7 @@ impl SenderShared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::session::api::InboundFrame;
 
     #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
@@ -424,5 +425,58 @@ mod tests {
         assert_eq!(symbols[1], b"cd");
         assert_eq!(symbols[2], b"ef");
         assert_eq!(symbols[3], b"\0\0");
+    }
+
+    #[tokio::test]
+    async fn plain_sender_ignores_block_ack_control_frames() {
+        let cfg = SenderConfig {
+            session: SessionConfig {
+                session_id: 0xA11C_E501,
+                block_size: 8,
+            },
+            route: TransportRoute {
+                src_ip: "10.0.0.1".parse().expect("valid source ip"),
+                dst_ip: "10.0.0.2".parse().expect("valid destination ip"),
+                src_port: 4701,
+                dst_port: 5701,
+            },
+            pacing: None,
+            receiver_ids: vec![7],
+            source_buffer: Bytes::from_static(b"abcdefgh"),
+            manifest: LosslessSessionManifest {
+                block_size: 8,
+                total_bytes: 8,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Plain,
+            },
+            ready_grace_ms: 100,
+            topology_ready: None,
+        };
+        let processors = ProcessorHandle::new(Default::default());
+        let mut sender = SessionSender::new(cfg, processors).expect("plain sender should build");
+        let mut mode = match &mut sender.mode {
+            SenderMode::Plain(mode) => std::mem::take(mode),
+            SenderMode::Fec(_) => panic!("expected plain sender"),
+        };
+
+        sender.shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    sender.shared.session.session_id,
+                    &LosslessSessionControl::BlockAck { block_id: 0 },
+                ),
+                peer_id: Some(7),
+            },
+            &mut mode,
+        );
+
+        assert!(
+            !sender
+                .shared
+                .ledger
+                .receiver_has_acked(7, 0)
+                .expect("receiver should exist"),
+            "plain sender should not record obsolete BlockAck feedback"
+        );
     }
 }
