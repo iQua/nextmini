@@ -53,7 +53,7 @@ impl FecReceiver {
             return;
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
-            shared.send_block_ack(symbol.block_id).await;
+            shared.send_fec_block_ack(symbol.block_id).await;
             return;
         }
 
@@ -67,7 +67,7 @@ impl FecReceiver {
             .try_decode_fec_block(shared, symbol.block_id, &fec_mode)
             .await
         {
-            shared.send_block_ack(symbol.block_id).await;
+            shared.send_fec_block_ack(symbol.block_id).await;
             return;
         }
 

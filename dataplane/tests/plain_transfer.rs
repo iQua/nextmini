@@ -12,7 +12,7 @@ use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, PlainStatus,
 };
 
 const SOURCE_NODE_ID: usize = 11;
@@ -22,7 +22,7 @@ const SRC_PORT: u16 = 4700;
 const DST_PORT: u16 = 5700;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_acks_completed_block_and_writes_sink() {
+async fn plain_receiver_reports_complete_on_eot_and_writes_sink() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -84,18 +84,25 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
     .await
     .expect("block data should reach receiver");
 
-    let ack_packet = common::recv_packet(&mut capture.packet_rx).await;
-    let ack_payload = ack_packet
-        .tcp_payload()
-        .expect("ack packet should include payload");
-    let (_, ack_control) =
-        lossless_session::decode_control(ack_payload).expect("ack control should decode");
-    assert_eq!(
-        ack_control,
-        LosslessSessionControl::BlockAck { block_id: 0 }
-    );
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
 
-    drop(tx);
+    let status_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let status_payload = status_packet
+        .tcp_payload()
+        .expect("plain status packet should include payload");
+    let (_, status_control) =
+        lossless_session::decode_control(status_payload).expect("plain status should decode");
+    assert_eq!(
+        status_control,
+        LosslessSessionControl::PlainStatus {
+            status: PlainStatus::Complete,
+        }
+    );
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
@@ -112,7 +119,7 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
+async fn plain_receiver_waits_for_eot_before_completion() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -132,7 +139,8 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
-    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+    let mut receiver_task =
+        tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
 
     tx.send(InboundFrame {
         bytes: lossless_session::encode_control(
@@ -167,20 +175,42 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
     .await
     .expect("block data should reach receiver");
 
-    let ack_packet = common::recv_packet(&mut capture.packet_rx).await;
-    let ack_payload = ack_packet
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "plain receiver should stay quiet until Eot"
+    );
+    assert!(
+        timeout(Duration::from_millis(200), &mut receiver_task)
+            .await
+            .is_err(),
+        "plain receiver should not finish before Eot"
+    );
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(SESSION_ID + 2, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
+
+    let status_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let status_payload = status_packet
         .tcp_payload()
-        .expect("ack packet should include payload");
-    let (_, ack_control) =
-        lossless_session::decode_control(ack_payload).expect("ack control should decode");
+        .expect("plain status packet should include payload");
+    let (_, status_control) =
+        lossless_session::decode_control(status_payload).expect("plain status should decode");
     assert_eq!(
-        ack_control,
-        LosslessSessionControl::BlockAck { block_id: 0 }
+        status_control,
+        LosslessSessionControl::PlainStatus {
+            status: PlainStatus::Complete,
+        }
     );
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
-        .expect("receiver task should stop once all blocks are complete")
+        .expect("receiver task should stop after Eot confirms completion")
         .expect("receiver task should exit cleanly");
 
     assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
@@ -324,27 +354,36 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
     .await
     .expect("block data should reach receiver");
 
-    let ack_packet = common::recv_packet(&mut capture.packet_rx).await;
-    let ack_payload = ack_packet
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(SESSION_ID + 5, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
+
+    let status_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let status_payload = status_packet
         .tcp_payload()
-        .expect("ack packet should include payload");
-    let (_, ack_control) =
-        lossless_session::decode_control(ack_payload).expect("ack control should decode");
+        .expect("plain status packet should include payload");
+    let (_, status_control) =
+        lossless_session::decode_control(status_payload).expect("plain status should decode");
     assert_eq!(
-        ack_control,
-        LosslessSessionControl::BlockAck { block_id: 0 }
+        status_control,
+        LosslessSessionControl::PlainStatus {
+            status: PlainStatus::Complete,
+        }
     );
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
-        .expect("receiver task should stop once all blocks are complete")
+        .expect("receiver task should stop after Eot confirms completion")
         .expect("receiver task should exit cleanly");
 
     assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_sender_completes_after_block_ack() {
+async fn plain_sender_completes_after_complete_status() {
     let mut capture = common::packet_capture(
         SOURCE_NODE_ID,
         RECEIVER_NODE_ID,
@@ -406,9 +445,102 @@ async fn plain_sender_completes_after_block_ack() {
     }
 
     ctrl_tx
-        .send(common::block_ack_frame(SESSION_ID + 1, RECEIVER_NODE_ID, 0))
+        .send(common::plain_status_frame(
+            SESSION_ID + 1,
+            RECEIVER_NODE_ID,
+            PlainStatus::Complete,
+        ))
         .await
-        .expect("block ack should enqueue");
+        .expect("plain complete status should enqueue");
+
+    timeout(Duration::from_secs(5), sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_sender_ignores_obsolete_block_ack_frames() {
+    let mut capture = common::packet_capture(
+        SOURCE_NODE_ID,
+        RECEIVER_NODE_ID,
+        SRC_PORT + 6,
+        DST_PORT + 6,
+        1,
+        2048,
+    )
+    .await;
+    let sender_cfg = SenderConfig {
+        session: capture.session_config(SESSION_ID + 6, 16),
+        route: capture.route(),
+        pacing: None,
+        receiver_ids: vec![RECEIVER_NODE_ID],
+        source_buffer: Bytes::from_static(b"mnopqrstuvwxabcd"),
+        manifest: LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Plain,
+        },
+        ready_grace_ms: 500,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
+    let mut sender_task =
+        tokio::spawn(sender::run(sender_cfg, ctrl_rx, capture.processors.clone()));
+
+    let manifest_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let manifest_payload = manifest_packet
+        .tcp_payload()
+        .expect("manifest packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(manifest_payload),
+        Some((_, LosslessSessionControl::Manifest { .. }))
+    ));
+
+    ctrl_tx
+        .send(common::ready_frame(SESSION_ID + 6, RECEIVER_NODE_ID))
+        .await
+        .expect("ready frame should enqueue");
+
+    let mut saw_block_data = false;
+    let mut saw_eot = false;
+    while !saw_block_data || !saw_eot {
+        let packet = common::recv_packet(&mut capture.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include payload");
+        if let Some((_, data, body)) = lossless_session::decode_block_data(payload) {
+            assert_eq!(data.block_id, 0);
+            assert_eq!(body, b"mnopqrstuvwxabcd");
+            saw_block_data = true;
+            continue;
+        }
+        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+            saw_eot = true;
+        }
+    }
+
+    ctrl_tx
+        .send(common::block_ack_frame(SESSION_ID + 6, RECEIVER_NODE_ID, 0))
+        .await
+        .expect("obsolete block ack should enqueue");
+    assert!(
+        timeout(Duration::from_millis(200), &mut sender_task)
+            .await
+            .is_err(),
+        "plain sender should ignore obsolete BlockAck feedback"
+    );
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            SESSION_ID + 6,
+            RECEIVER_NODE_ID,
+            PlainStatus::Complete,
+        ))
+        .await
+        .expect("plain complete status should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
         .await

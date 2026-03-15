@@ -77,6 +77,48 @@ Use `--no-build` to reuse existing release binaries:
 ./examples/ns-lossless/run.sh --case fec-2r-symbols --no-build
 ```
 
+## Manual validation and triage
+
+The namespace reproducer is intentionally a manual validation path because it requires `sudo` for namespace setup and cleanup. A representative plain-mode stress run is:
+
+```bash
+./examples/ns-lossless/run.sh \
+  --mode plain \
+  --trees 1 \
+  --receivers 5 \
+  --payload-size $((64*1024*1024)) \
+  --block-size $((8*1024))
+```
+
+The generated artifact directory for that invocation is:
+
+```bash
+examples/ns-lossless/artifacts/custom-plain-1t-5r-b8192-s32-p1-c2048-q2048
+```
+
+For repeat runs, add `--no-build` once `target/release/controller` and `target/release/nextmini` are already current.
+
+On success, `examples/ns-lossless/verify_hashes.py` reports matching receiver hashes and prints the receiver throughput summary. A clean pass looks like this:
+
+- `artifacts/source-1.status` contains `ok`
+- all five `artifacts/receiver-*.status` files contain `ok`
+- `python3 examples/ns-lossless/verify_hashes.py examples/ns-lossless/artifacts/custom-plain-1t-5r-b8192-s32-p1-c2048-q2048/artifacts` succeeds
+
+When a run fails or times out, inspect the per-run artifact directory without adding the namespace command to CI:
+
+```bash
+case_dir=examples/ns-lossless/artifacts/custom-plain-1t-5r-b8192-s32-p1-c2048-q2048
+rg -n "^(ok|error:)" "$case_dir"/artifacts/*.status
+rg -n "Lossless plain sender processed round feedback|session dropped inbound frame|timed out waiting for completion" \
+  "$case_dir"/dataplane.log
+rg -n "Integration test (source|receiver) finished successfully|timed out" \
+  "$case_dir"/controller.log
+perl -ne 'print if /Lossless sender|Lossless receiver|PlainStatus|timed out/' \
+  "$case_dir"/dataplane.log
+```
+
+The `*.status` files tell you whether the source or any receiver timed out. The `dataplane.log` queries above isolate the plain-mode round-feedback path, late-frame replay warnings, and session timeout lines that are most useful when verifying convergence regressions.
+
 ## What varies between cases
 
 - plain or FEC mode

@@ -1,17 +1,66 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use nextmini_messages::lossless_session::{MissingBlockRange, PlainStatus};
 use tokio::sync::mpsc;
+use tracing::debug;
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
-use crate::node::session::ledger::BlockState;
 
 /// Plain-mode sender state machine.
 #[derive(Default)]
 pub(super) struct PlainSender {
-    cursor: u64,
+    pending_blocks: Vec<u64>,
+    cursor: usize,
     round_eot_sent: bool,
+    round_reports: BTreeMap<usize, PlainStatus>,
+    complete: bool,
+    initialized: bool,
 }
 
-impl super::ModeHooks for PlainSender {}
+impl super::ModeHooks for PlainSender {
+    fn on_plain_status(
+        &mut self,
+        shared: &super::SenderShared,
+        peer_id: usize,
+        status: PlainStatus,
+    ) {
+        if !self.round_eot_sent {
+            return;
+        }
+
+        self.round_reports.insert(peer_id, status);
+        if self.round_reports.len() < shared.receiver_set.len() {
+            return;
+        }
+
+        let mut next_round = BTreeSet::new();
+        let mut complete = true;
+        for receiver_id in &shared.receiver_ids {
+            let Some(status) = self.round_reports.get(receiver_id) else {
+                return;
+            };
+            match status {
+                PlainStatus::Complete => {}
+                PlainStatus::MissingBlocks { ranges } => {
+                    complete = false;
+                    collect_missing_blocks(&mut next_round, ranges);
+                }
+            }
+        }
+
+        self.complete = complete;
+        self.pending_blocks = next_round.into_iter().collect();
+        self.cursor = 0;
+        self.round_eot_sent = false;
+        self.round_reports.clear();
+        debug!(
+            complete = self.complete,
+            retransmit_blocks = self.pending_blocks.len(),
+            "Lossless plain sender processed round feedback"
+        );
+    }
+}
 
 impl PlainSender {
     /// Main send loop for plain mode.
@@ -20,10 +69,15 @@ impl PlainSender {
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) {
-        while !shared.ledger.is_complete() {
-            shared.drain_controls(ctrl_rx, self);
+        self.ensure_initial_round(shared);
 
-            if let Some(block_id) = self.next_block(shared) {
+        while !self.complete {
+            shared.drain_controls(ctrl_rx, self);
+            if self.complete {
+                break;
+            }
+
+            if let Some(block_id) = self.next_block() {
                 self.send_block(shared, block_id).await;
                 continue;
             }
@@ -37,22 +91,29 @@ impl PlainSender {
             if !shared.wait_for_signal(ctrl_rx, self).await {
                 break;
             }
-            self.cursor = 0;
-            self.round_eot_sent = false;
         }
     }
 
+    pub(super) fn is_complete(&self) -> bool {
+        self.complete
+    }
+
     /// Return the next plain block that still needs to be sent.
-    fn next_block(&mut self, shared: &super::SenderShared) -> Option<u64> {
-        while self.cursor < shared.plan.total_blocks() {
-            let block_id = self.cursor;
+    fn next_block(&mut self) -> Option<u64> {
+        while self.cursor < self.pending_blocks.len() {
+            let block_id = self.pending_blocks[self.cursor];
             self.cursor += 1;
-            if shared.ledger.block_state(block_id) != Some(BlockState::Complete) {
-                self.round_eot_sent = false;
-                return Some(block_id);
-            }
+            return Some(block_id);
         }
         None
+    }
+
+    fn ensure_initial_round(&mut self, shared: &super::SenderShared) {
+        if self.initialized {
+            return;
+        }
+        self.pending_blocks = (0..shared.plan.total_blocks()).collect();
+        self.initialized = true;
     }
 
     /// Encode and send one plain data block.
@@ -80,5 +141,13 @@ impl PlainSender {
             &frame,
         )
         .await;
+    }
+}
+
+fn collect_missing_blocks(out: &mut BTreeSet<u64>, ranges: &[MissingBlockRange]) {
+    for range in ranges {
+        for block_id in range.start_block_id..range.end_block_id {
+            out.insert(block_id);
+        }
     }
 }

@@ -1,8 +1,9 @@
 //! Sender task for block-first lossless sessions.
 //!
-//! Plain mode sends complete blocks on the default tree. FEC mode sends source
-//! symbols first, emits `Eot` after the source sweep, and only then responds to
-//! per-block deficit feedback with extra fountain symbols.
+//! Plain mode sends complete blocks on the default tree and converges with
+//! end-of-round status feedback. FEC mode sends source symbols first, emits
+//! `Eot` after the source sweep, and only then responds to per-block deficit
+//! feedback with extra fountain symbols.
 
 mod fec;
 mod plain;
@@ -15,6 +16,7 @@ use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
     self, BlockStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -55,6 +57,9 @@ pub(super) trait ModeHooks {
 
     /// Observe per-block FEC deficit feedback from a receiver.
     fn on_block_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: BlockStatus) {}
+
+    /// Observe plain-mode end-of-round feedback from a receiver.
+    fn on_plain_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: PlainStatus) {}
 }
 
 /// Shared sender shell that owns session-level transport and ledger state.
@@ -194,10 +199,13 @@ impl SessionSender {
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         }
 
+        let complete = match &self.mode {
+            SenderMode::Plain(mode) => mode.is_complete(),
+            SenderMode::Fec(_) => self.shared.ledger.is_complete(),
+        };
         info!(
             session_id = self.shared.session.session_id,
-            complete = self.shared.ledger.is_complete(),
-            "Lossless sender finished"
+            complete, "Lossless sender finished"
         );
     }
 }
@@ -315,6 +323,9 @@ impl SenderShared {
                 }
             }
             LosslessSessionControl::BlockAck { block_id } => {
+                if !self.manifest.mode.is_fec() {
+                    return;
+                }
                 let Some(peer_id) = frame.peer_id else {
                     return;
                 };
@@ -332,6 +343,15 @@ impl SenderShared {
                     return;
                 };
                 mode.on_block_status(self, peer_id, status);
+            }
+            LosslessSessionControl::PlainStatus { status } => {
+                let Some(peer_id) = frame.peer_id else {
+                    return;
+                };
+                if !self.receiver_set.contains(&peer_id) {
+                    return;
+                }
+                mode.on_plain_status(self, peer_id, status);
             }
         }
     }
@@ -383,6 +403,7 @@ impl SenderShared {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::node::session::api::InboundFrame;
 
     #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
@@ -404,5 +425,58 @@ mod tests {
         assert_eq!(symbols[1], b"cd");
         assert_eq!(symbols[2], b"ef");
         assert_eq!(symbols[3], b"\0\0");
+    }
+
+    #[tokio::test]
+    async fn plain_sender_ignores_block_ack_control_frames() {
+        let cfg = SenderConfig {
+            session: SessionConfig {
+                session_id: 0xA11C_E501,
+                block_size: 8,
+            },
+            route: TransportRoute {
+                src_ip: "10.0.0.1".parse().expect("valid source ip"),
+                dst_ip: "10.0.0.2".parse().expect("valid destination ip"),
+                src_port: 4701,
+                dst_port: 5701,
+            },
+            pacing: None,
+            receiver_ids: vec![7],
+            source_buffer: Bytes::from_static(b"abcdefgh"),
+            manifest: LosslessSessionManifest {
+                block_size: 8,
+                total_bytes: 8,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Plain,
+            },
+            ready_grace_ms: 100,
+            topology_ready: None,
+        };
+        let processors = ProcessorHandle::new(Default::default());
+        let mut sender = SessionSender::new(cfg, processors).expect("plain sender should build");
+        let mut mode = match &mut sender.mode {
+            SenderMode::Plain(mode) => std::mem::take(mode),
+            SenderMode::Fec(_) => panic!("expected plain sender"),
+        };
+
+        sender.shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    sender.shared.session.session_id,
+                    &LosslessSessionControl::BlockAck { block_id: 0 },
+                ),
+                peer_id: Some(7),
+            },
+            &mut mode,
+        );
+
+        assert!(
+            !sender
+                .shared
+                .ledger
+                .receiver_has_acked(7, 0)
+                .expect("receiver should exist"),
+            "plain sender should not record obsolete BlockAck feedback"
+        );
     }
 }

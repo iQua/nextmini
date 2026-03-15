@@ -14,7 +14,7 @@ use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    LosslessSessionMode, MissingBlockRange, PlainStatus,
 };
 
 const SOURCE_NODE_ID: usize = 21;
@@ -23,7 +23,7 @@ const SRC_PORT: u16 = 4710;
 const DST_PORT: u16 = 5710;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_sender_emits_every_block_id_before_completion() {
+async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
     let mut capture = common::packet_capture(
         SOURCE_NODE_ID,
         RECEIVER_NODE_ID,
@@ -83,16 +83,58 @@ async fn plain_sender_emits_every_block_id_before_completion() {
     }
 
     assert_eq!(block_ids, BTreeSet::from([0, 1, 2]));
-    for block_id in 0..3 {
-        ctrl_tx
-            .send(common::block_ack_frame(
-                0xA11C_E101,
-                RECEIVER_NODE_ID,
-                block_id,
-            ))
-            .await
-            .expect("block ack should enqueue");
+    ctrl_tx
+        .send(common::plain_status_frame(
+            0xA11C_E101,
+            RECEIVER_NODE_ID,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
+        .await
+        .expect("plain missing status should enqueue");
+    ctrl_tx
+        .send(common::plain_status_frame(
+            0xA11C_E101,
+            RECEIVER_NODE_ID,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
+        .await
+        .expect("duplicate plain missing status should enqueue");
+
+    let mut retransmit_block_ids = BTreeSet::new();
+    let mut saw_second_eot = false;
+    while retransmit_block_ids.len() < 1 || !saw_second_eot {
+        let packet = common::recv_packet(&mut capture.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include payload");
+        if let Some((_, data, _)) = lossless_session::decode_block_data(payload) {
+            retransmit_block_ids.insert(data.block_id);
+            continue;
+        }
+        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+            saw_second_eot = true;
+        }
     }
+
+    assert_eq!(retransmit_block_ids, BTreeSet::from([1]));
+    ctrl_tx
+        .send(common::plain_status_frame(
+            0xA11C_E101,
+            RECEIVER_NODE_ID,
+            PlainStatus::Complete,
+        ))
+        .await
+        .expect("plain complete status should enqueue");
 
     timeout(Duration::from_secs(5), sender_task)
         .await
@@ -101,7 +143,7 @@ async fn plain_sender_emits_every_block_id_before_completion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_writes_and_acks_every_block() {
+async fn plain_receiver_writes_and_reports_complete_after_eot() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -160,22 +202,23 @@ async fn plain_receiver_writes_and_acks_every_block() {
         .expect("block data should reach receiver");
     }
 
-    let mut acked = BTreeSet::new();
-    while acked.len() < 3 {
-        let packet = common::recv_packet(&mut capture.packet_rx).await;
-        let payload = packet
-            .tcp_payload()
-            .expect("ack packet should include payload");
-        let (_, control) =
-            lossless_session::decode_control(payload).expect("control packet should decode");
-        let LosslessSessionControl::BlockAck { block_id } = control else {
-            panic!("unexpected receiver control frame: {control:?}");
-        };
-        acked.insert(block_id);
-    }
-    assert_eq!(acked, BTreeSet::from([0, 1, 2]));
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(0xA11C_E102, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
 
-    drop(tx);
+    let status_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let status_payload = status_packet
+        .tcp_payload()
+        .expect("plain status packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(status_payload).expect("plain status should decode");
+    let LosslessSessionControl::PlainStatus { status } = control else {
+        panic!("unexpected receiver control frame: {control:?}");
+    };
+    assert_eq!(status, PlainStatus::Complete);
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
