@@ -333,6 +333,7 @@ impl SenderShared {
                 };
                 mode.on_block_status(self, peer_id, status);
             }
+            LosslessSessionControl::PlainStatus { .. } => {}
         }
     }
 

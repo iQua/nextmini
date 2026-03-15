@@ -25,6 +25,7 @@ pub enum LosslessSessionCtrlKind {
     BlockAck = 3,
     BlockStatus = 4,
     Eot = 5,
+    PlainStatus = 6,
 }
 
 #[repr(u8)]
@@ -125,6 +126,23 @@ pub struct BlockStatus {
     pub deficit_symbols: u16,
 }
 
+/// Canonical missing-block range used by plain-mode end-of-round feedback.
+///
+/// `end_block_id` is exclusive, so `[start_block_id, end_block_id)` denotes the
+/// missing logical blocks in this range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingBlockRange {
+    pub start_block_id: u64,
+    pub end_block_id: u64,
+}
+
+/// End-of-round plain-mode feedback emitted after `Eot`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlainStatus {
+    Complete,
+    MissingBlocks { ranges: Vec<MissingBlockRange> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LosslessSessionValidationError {
     ZeroBlockSize,
@@ -146,6 +164,7 @@ pub enum LosslessSessionValidationError {
     BlockDataRequiresPlainMode,
     BlockSymbolRequiresFecMode,
     BlockStatusRequiresFecMode,
+    PlainStatusRequiresPlainMode,
     BlockIdOutOfRange {
         block_id: u64,
         total_blocks: u64,
@@ -158,6 +177,79 @@ pub enum LosslessSessionValidationError {
     BlockSymbolTreeIdNotAdvertised {
         tree_id: u16,
     },
+    MissingBlockRangesEmpty,
+    MissingBlockRangeInvalid {
+        start_block_id: u64,
+        end_block_id: u64,
+    },
+    MissingBlockRangeOutOfRange {
+        end_block_id: u64,
+        total_blocks: u64,
+    },
+    MissingBlockRangesMustBeSortedMerged,
+    TooManyMissingBlockRanges {
+        configured: usize,
+        max: usize,
+    },
+}
+
+pub const MAX_MISSING_BLOCK_RANGES: usize = u8::MAX as usize;
+
+impl PlainStatus {
+    pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
+        let ranges = match self {
+            Self::Complete => return Ok(()),
+            Self::MissingBlocks { ranges } => ranges,
+        };
+
+        if ranges.is_empty() {
+            return Err(LosslessSessionValidationError::MissingBlockRangesEmpty);
+        }
+        if ranges.len() > MAX_MISSING_BLOCK_RANGES {
+            return Err(LosslessSessionValidationError::TooManyMissingBlockRanges {
+                configured: ranges.len(),
+                max: MAX_MISSING_BLOCK_RANGES,
+            });
+        }
+
+        let mut previous_end = None;
+        for range in ranges {
+            if range.start_block_id >= range.end_block_id {
+                return Err(LosslessSessionValidationError::MissingBlockRangeInvalid {
+                    start_block_id: range.start_block_id,
+                    end_block_id: range.end_block_id,
+                });
+            }
+            if let Some(prev_end) = previous_end
+                && range.start_block_id <= prev_end
+            {
+                return Err(LosslessSessionValidationError::MissingBlockRangesMustBeSortedMerged);
+            }
+            previous_end = Some(range.end_block_id);
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_against_total_blocks(
+        &self,
+        total_blocks: u64,
+    ) -> Result<(), LosslessSessionValidationError> {
+        self.validate()?;
+        if let Self::MissingBlocks { ranges } = self {
+            for range in ranges {
+                if range.end_block_id > total_blocks {
+                    return Err(
+                        LosslessSessionValidationError::MissingBlockRangeOutOfRange {
+                            end_block_id: range.end_block_id,
+                            total_blocks,
+                        },
+                    );
+                }
+            }
+        }
+        Ok(())
+    }
 }
 
 impl LosslessSessionManifest {
@@ -278,6 +370,17 @@ impl LosslessSessionManifest {
         Ok(())
     }
 
+    pub fn validate_plain_status(
+        &self,
+        status: &PlainStatus,
+    ) -> Result<(), LosslessSessionValidationError> {
+        self.validate()?;
+        if self.mode.is_fec() {
+            return Err(LosslessSessionValidationError::PlainStatusRequiresPlainMode);
+        }
+        status.validate_against_total_blocks(self.total_blocks)
+    }
+
     pub fn validate_control(
         &self,
         control: &LosslessSessionControl,
@@ -294,6 +397,7 @@ impl LosslessSessionManifest {
                 }
                 self.validate_block_id(status.block_id)
             }
+            LosslessSessionControl::PlainStatus { status } => self.validate_plain_status(status),
         }
     }
 }
@@ -388,9 +492,12 @@ impl LosslessSessionHeader {
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
     Ready { node_id: u64 },
+    // Retained during the plain-mode cutover; later issues switch plain mode to
+    // PlainStatus while FEC continues to use per-block feedback.
     BlockAck { block_id: u64 },
     BlockStatus { status: BlockStatus },
     Eot,
+    PlainStatus { status: PlainStatus },
 }
 
 impl LosslessSessionControl {
@@ -404,6 +511,7 @@ impl LosslessSessionControl {
                 }
                 Ok(())
             }
+            Self::PlainStatus { status } => status.validate(),
         }
     }
 }
@@ -543,12 +651,22 @@ pub fn decode_block_symbol(
 }
 
 const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
+const PLAIN_STATUS_FIXED_BODY_LEN: usize = 1 + 1 + 2;
+const PLAIN_STATUS_RANGE_LEN: usize = 8 + 8;
 
 /// Maximum size of a control frame under the block-first protocol.
 ///
-/// The largest body is `Manifest` with `u8::MAX` tree ids.
-pub const MAX_CONTROL_FRAME_SIZE: usize =
-    LosslessSessionHeader::LEN + MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2);
+/// The largest body is either `Manifest` with `u8::MAX` tree ids or
+/// `PlainStatus::MissingBlocks` with `u8::MAX` canonical ranges.
+pub const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
+    + max_control_body_len(
+        MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2),
+        PLAIN_STATUS_FIXED_BODY_LEN + (MAX_MISSING_BLOCK_RANGES * PLAIN_STATUS_RANGE_LEN),
+    );
+
+const fn max_control_body_len(lhs: usize, rhs: usize) -> usize {
+    if lhs > rhs { lhs } else { rhs }
+}
 
 fn manifest_tree_ids(mode: &LosslessSessionMode) -> &[u16] {
     match mode {
@@ -566,6 +684,12 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
         LosslessSessionControl::BlockAck { .. } => 8,
         LosslessSessionControl::BlockStatus { .. } => 12,
         LosslessSessionControl::Eot => 0,
+        LosslessSessionControl::PlainStatus { status } => match status {
+            PlainStatus::Complete => PLAIN_STATUS_FIXED_BODY_LEN,
+            PlainStatus::MissingBlocks { ranges } => {
+                PLAIN_STATUS_FIXED_BODY_LEN + (ranges.len() * PLAIN_STATUS_RANGE_LEN)
+            }
+        },
     }
 }
 
@@ -637,6 +761,32 @@ pub fn encode_control_into<'a>(
             LosslessSessionCtrlKind::BlockStatus as u8
         }
         LosslessSessionControl::Eot => LosslessSessionCtrlKind::Eot as u8,
+        LosslessSessionControl::PlainStatus { status } => {
+            let body_start = LosslessSessionHeader::LEN;
+            match status {
+                PlainStatus::Complete => {
+                    buf[body_start] = 0;
+                    buf[body_start + 1] = 0;
+                    buf[body_start + 2..body_start + 4].copy_from_slice(&0u16.to_be_bytes());
+                }
+                PlainStatus::MissingBlocks { ranges } => {
+                    assert!(
+                        ranges.len() <= MAX_MISSING_BLOCK_RANGES,
+                        "missing block ranges exceed wire capacity"
+                    );
+                    buf[body_start] = 1;
+                    buf[body_start + 1] = ranges.len() as u8;
+                    buf[body_start + 2..body_start + 4].copy_from_slice(&0u16.to_be_bytes());
+                    let mut pos = body_start + PLAIN_STATUS_FIXED_BODY_LEN;
+                    for range in ranges {
+                        buf[pos..pos + 8].copy_from_slice(&range.start_block_id.to_be_bytes());
+                        buf[pos + 8..pos + 16].copy_from_slice(&range.end_block_id.to_be_bytes());
+                        pos += PLAIN_STATUS_RANGE_LEN;
+                    }
+                }
+            }
+            LosslessSessionCtrlKind::PlainStatus as u8
+        }
     };
 
     LosslessSessionHeader {
@@ -747,6 +897,37 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             }
             LosslessSessionControl::Eot
         }
+        x if x == LosslessSessionCtrlKind::PlainStatus as u8 => {
+            if body.len() < PLAIN_STATUS_FIXED_BODY_LEN {
+                return None;
+            }
+
+            let report_kind = body[0];
+            let range_count = body[1] as usize;
+            if body.len() != PLAIN_STATUS_FIXED_BODY_LEN + (range_count * PLAIN_STATUS_RANGE_LEN) {
+                return None;
+            }
+
+            let status = match report_kind {
+                0 if range_count == 0 => PlainStatus::Complete,
+                1 => {
+                    let mut ranges = Vec::with_capacity(range_count);
+                    let mut pos = PLAIN_STATUS_FIXED_BODY_LEN;
+                    for _ in 0..range_count {
+                        ranges.push(MissingBlockRange {
+                            start_block_id: u64::from_be_bytes(body[pos..pos + 8].try_into().ok()?),
+                            end_block_id: u64::from_be_bytes(
+                                body[pos + 8..pos + 16].try_into().ok()?,
+                            ),
+                        });
+                        pos += PLAIN_STATUS_RANGE_LEN;
+                    }
+                    PlainStatus::MissingBlocks { ranges }
+                }
+                _ => return None,
+            };
+            LosslessSessionControl::PlainStatus { status }
+        }
         _ => return None,
     };
     ctrl.validate().ok()?;
@@ -820,6 +1001,23 @@ mod tests {
             manifest_fec,
             LosslessSessionControl::Ready { node_id: 99 },
             LosslessSessionControl::BlockAck { block_id: 2 },
+            LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            },
+            LosslessSessionControl::PlainStatus {
+                status: PlainStatus::MissingBlocks {
+                    ranges: vec![
+                        MissingBlockRange {
+                            start_block_id: 0,
+                            end_block_id: 1,
+                        },
+                        MissingBlockRange {
+                            start_block_id: 2,
+                            end_block_id: 3,
+                        },
+                    ],
+                },
+            },
             LosslessSessionControl::BlockStatus {
                 status: BlockStatus {
                     block_id: 2,
@@ -849,6 +1047,17 @@ mod tests {
             },
             LosslessSessionControl::Ready { node_id: 11 },
             LosslessSessionControl::BlockAck { block_id: 1 },
+            LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            },
+            LosslessSessionControl::PlainStatus {
+                status: PlainStatus::MissingBlocks {
+                    ranges: vec![MissingBlockRange {
+                        start_block_id: 1,
+                        end_block_id: 2,
+                    }],
+                },
+            },
             LosslessSessionControl::BlockStatus {
                 status: BlockStatus {
                     block_id: 1,
@@ -935,6 +1144,11 @@ mod tests {
             }),
             Err(LosslessSessionValidationError::BlockStatusRequiresFecMode)
         );
+        manifest
+            .validate_control(&LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            })
+            .expect("plain manifests should accept plain status reports");
     }
 
     #[test]
@@ -958,6 +1172,12 @@ mod tests {
         assert_eq!(
             manifest.validate_block_symbol(&bad_symbol),
             Err(LosslessSessionValidationError::BlockSymbolTreeIdNotAdvertised { tree_id: 99 })
+        );
+        assert_eq!(
+            manifest.validate_control(&LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            }),
+            Err(LosslessSessionValidationError::PlainStatusRequiresPlainMode)
         );
     }
 
@@ -1010,6 +1230,16 @@ mod tests {
         let mut bad_ready = ready.clone();
         bad_ready.truncate(LosslessSessionHeader::LEN + 4);
         assert!(decode_control(&bad_ready).is_none());
+
+        let plain_status = encode_control(
+            1,
+            &LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            },
+        );
+        let mut bad_plain_status = plain_status.clone();
+        bad_plain_status.truncate(LosslessSessionHeader::LEN + 1);
+        assert!(decode_control(&bad_plain_status).is_none());
 
         let mut bad_mode = good.clone();
         bad_mode[LosslessSessionHeader::LEN] = 9;
@@ -1070,6 +1300,75 @@ mod tests {
         assert_eq!(
             control.validate(),
             Err(LosslessSessionValidationError::ZeroDeficitSymbols)
+        );
+    }
+
+    #[test]
+    fn plain_status_validation_rejects_bad_ranges() {
+        let manifest = plain_manifest();
+
+        manifest
+            .validate_plain_status(&PlainStatus::Complete)
+            .expect("complete status should validate");
+        manifest
+            .validate_plain_status(&PlainStatus::MissingBlocks {
+                ranges: vec![
+                    MissingBlockRange {
+                        start_block_id: 0,
+                        end_block_id: 1,
+                    },
+                    MissingBlockRange {
+                        start_block_id: 2,
+                        end_block_id: 3,
+                    },
+                ],
+            })
+            .expect("sorted disjoint missing ranges should validate");
+
+        assert_eq!(
+            PlainStatus::MissingBlocks { ranges: vec![] }.validate(),
+            Err(LosslessSessionValidationError::MissingBlockRangesEmpty)
+        );
+        assert_eq!(
+            manifest.validate_plain_status(&PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 2,
+                    end_block_id: 2,
+                }],
+            }),
+            Err(LosslessSessionValidationError::MissingBlockRangeInvalid {
+                start_block_id: 2,
+                end_block_id: 2,
+            })
+        );
+        assert_eq!(
+            manifest.validate_plain_status(&PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 2,
+                    end_block_id: 4,
+                }],
+            }),
+            Err(
+                LosslessSessionValidationError::MissingBlockRangeOutOfRange {
+                    end_block_id: 4,
+                    total_blocks: 3,
+                }
+            )
+        );
+        assert_eq!(
+            manifest.validate_plain_status(&PlainStatus::MissingBlocks {
+                ranges: vec![
+                    MissingBlockRange {
+                        start_block_id: 1,
+                        end_block_id: 3,
+                    },
+                    MissingBlockRange {
+                        start_block_id: 2,
+                        end_block_id: 3,
+                    },
+                ],
+            }),
+            Err(LosslessSessionValidationError::MissingBlockRangesMustBeSortedMerged)
         );
     }
 }

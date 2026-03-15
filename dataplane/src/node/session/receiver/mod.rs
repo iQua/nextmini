@@ -124,6 +124,7 @@ impl SessionReceiver {
             }
             LosslessSessionControl::Ready { .. }
             | LosslessSessionControl::BlockAck { .. }
+            | LosslessSessionControl::PlainStatus { .. }
             | LosslessSessionControl::BlockStatus { .. } => {}
             LosslessSessionControl::Eot => {
                 self.shared.reemit_completed_acks().await;
