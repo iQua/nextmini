@@ -8,10 +8,13 @@ use tokio::time::timeout;
 use nextmini::node::session::api::{LosslessRuntimeHandle, SessionOutcome, StartError};
 use nextmini::node::session::runtime::ReceiverRequest;
 use nextmini::node::session::runtime::SenderRequest;
-use nextmini_messages::lossless_session::{self, LosslessSessionControl, PlainStatus};
+use nextmini_messages::lossless_session::{
+    self, LosslessSessionControl, MissingBlockRange, PlainStatus,
+};
 
 const SOURCE_NODE_ID: usize = 41;
 const RECEIVER_NODE_ID: usize = 42;
+const RECEIVER_B_NODE_ID: usize = 43;
 const SRC_PORT: u16 = 4730;
 const DST_PORT: u16 = 5730;
 
@@ -325,6 +328,140 @@ async fn completed_receiver_replays_complete_on_late_duplicate_block_data() {
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
     );
     assert_plain_complete(&mut capture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_converges_across_plain_multireceiver_retransmit_round() {
+    let mut capture = common::packet_capture(
+        SOURCE_NODE_ID,
+        RECEIVER_NODE_ID,
+        SRC_PORT + 5,
+        DST_PORT + 5,
+        1,
+        2048,
+    )
+    .await;
+    let mut runtime_cfg = capture.cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = false;
+    runtime_cfg.ready_grace_ms = 300;
+    let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
+    runtime.set_topology_ready(true);
+
+    let session_id = 0xA11C_E306;
+    let mut session = runtime
+        .start_sender(SenderRequest {
+            session: capture.session_config(session_id, 16),
+            route: capture.route(),
+            pacing: None,
+            receiver_ids: vec![RECEIVER_NODE_ID, RECEIVER_B_NODE_ID],
+            total_bytes: 32,
+            source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456"),
+            ready_grace_ms: 300,
+        })
+        .await
+        .expect("sender should start");
+
+    let manifest_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let manifest_payload = manifest_packet
+        .tcp_payload()
+        .expect("manifest packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(manifest_payload),
+        Some((_, LosslessSessionControl::Manifest { .. }))
+    ));
+
+    runtime.deliver(
+        session_id,
+        common::ready_frame(session_id, RECEIVER_NODE_ID),
+    );
+    runtime.deliver(
+        session_id,
+        common::ready_frame(session_id, RECEIVER_B_NODE_ID),
+    );
+
+    let mut saw_first_round_blocks = 0;
+    let mut saw_first_round_eot = false;
+    while saw_first_round_blocks < 2 || !saw_first_round_eot {
+        let packet = common::recv_packet(&mut capture.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include payload");
+        if lossless_session::decode_block_data(payload).is_some() {
+            saw_first_round_blocks += 1;
+            continue;
+        }
+        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+            saw_first_round_eot = true;
+        }
+    }
+
+    runtime.deliver(
+        session_id,
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+    );
+    runtime.deliver(
+        session_id,
+        common::plain_status_frame(
+            session_id,
+            RECEIVER_B_NODE_ID,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ),
+    );
+
+    let mut saw_retransmit_block = false;
+    let mut saw_second_eot = false;
+    while !saw_retransmit_block || !saw_second_eot {
+        let packet = common::recv_packet(&mut capture.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include payload");
+        if let Some((_, data, _)) = lossless_session::decode_block_data(payload) {
+            assert_eq!(
+                data.block_id, 1,
+                "sender should only retransmit the missing block"
+            );
+            saw_retransmit_block = true;
+            continue;
+        }
+        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+            saw_second_eot = true;
+        }
+    }
+
+    assert!(
+        timeout(Duration::from_millis(100), session.wait())
+            .await
+            .is_err(),
+        "sender must stay active until every receiver reports complete"
+    );
+
+    runtime.deliver(
+        session_id,
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+    );
+    assert!(
+        timeout(Duration::from_millis(100), session.wait())
+            .await
+            .is_err(),
+        "sender must keep waiting until the second receiver reports for the same round"
+    );
+
+    runtime.deliver(
+        session_id,
+        common::plain_status_frame(session_id, RECEIVER_B_NODE_ID, PlainStatus::Complete),
+    );
+    assert_eq!(
+        timeout(Duration::from_secs(5), session.wait())
+            .await
+            .expect("sender wait should not time out"),
+        SessionOutcome::Completed,
+        "sender should complete once the missing receiver reports complete after retransmit"
+    );
 }
 
 async fn assert_ready(capture: &mut common::PacketCaptureHarness) {
