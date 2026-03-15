@@ -13,7 +13,7 @@ use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    self, FecStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode, MissingBlockRange, PlainStatus,
 };
 
@@ -384,20 +384,32 @@ async fn fec_receiver_decodes_and_acks_every_block() {
         }
     }
 
-    let mut acked = BTreeSet::new();
-    while acked.len() < 3 {
-        let packet = common::recv_packet(&mut capture.packet_rx).await;
-        let payload = packet
-            .tcp_payload()
-            .expect("ack packet should include payload");
-        let (_, control) =
-            lossless_session::decode_control(payload).expect("control packet should decode");
-        let LosslessSessionControl::BlockAck { block_id } = control else {
-            panic!("unexpected receiver control frame: {control:?}");
-        };
-        acked.insert(block_id);
-    }
-    assert_eq!(acked, BTreeSet::from([0, 1, 2]));
+    assert!(
+        timeout(Duration::from_millis(150), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "receiver should not emit FEC completion before Eot"
+    );
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(0xA11C_E104, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
+
+    let packet = common::recv_packet(&mut capture.packet_rx).await;
+    let payload = packet
+        .tcp_payload()
+        .expect("status packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(payload).expect("control packet should decode");
+    assert_eq!(
+        control,
+        LosslessSessionControl::FecStatus {
+            status: FecStatus::Complete,
+        }
+    );
 
     drop(tx);
 

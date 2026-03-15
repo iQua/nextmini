@@ -13,8 +13,8 @@ use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionFecMode,
+    LosslessSessionManifest, LosslessSessionMode,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -120,7 +120,7 @@ async fn recv_control(packet_rx: &mut mpsc::Receiver<Packet>) -> (Packet, Lossle
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_acks_decoded_block_and_writes_sink() {
+async fn receiver_reports_complete_after_eot_and_writes_sink() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -152,12 +152,27 @@ async fn receiver_acks_decoded_block_and_writes_sink() {
         .await;
     }
 
+    assert!(
+        timeout(Duration::from_millis(150), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "receiver should not emit FEC completion before Eot"
+    );
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+    )
+    .await;
+
     let (ack_packet, ack) = recv_control(&mut harness.packet_rx).await;
     assert_eq!(ack_packet.lossless_session_id(), Some(SESSION_ID));
     assert_eq!(
         ack,
-        LosslessSessionControl::BlockAck { block_id: 0 },
-        "receiver should ack the completed block after decoding it"
+        LosslessSessionControl::FecStatus {
+            status: FecStatus::Complete,
+        },
+        "receiver should report round completion after Eot"
     );
 
     drop(harness.tx);
@@ -172,7 +187,7 @@ async fn receiver_acks_decoded_block_and_writes_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_requests_missing_symbols_after_eot_for_incomplete_block() {
+async fn receiver_reports_missing_blocks_after_eot_for_incomplete_block() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -204,15 +219,66 @@ async fn receiver_requests_missing_symbols_after_eot_for_incomplete_block() {
     let (_, status) = recv_control(&mut harness.packet_rx).await;
     assert_eq!(
         status,
-        LosslessSessionControl::BlockStatus {
-            status: BlockStatus {
-                block_id: 0,
-                deficit_symbols: 3,
+        LosslessSessionControl::FecStatus {
+            status: FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 0,
+                    deficit_symbols: 3,
+                }],
             },
         },
         "receiver should request the remaining source symbols first"
     );
 
+    timeout(Duration::from_secs(2), harness.receiver_task)
+        .await
+        .expect("receiver task should drain once input closes")
+        .expect("receiver task should exit cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn receiver_replays_same_missing_status_on_repeated_eot() {
+    let mut harness = build_receiver_harness().await;
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::Manifest {
+                manifest: manifest(8),
+            },
+        ),
+    )
+    .await;
+
+    let (_, ready) = recv_control(&mut harness.packet_rx).await;
+    assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
+
+    send_frame(
+        &harness.tx,
+        lossless_session::encode_block_symbol(SESSION_ID, 0, 0, 0, &[1u8, 2]),
+    )
+    .await;
+
+    let eot = lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot);
+    send_frame(&harness.tx, eot.clone()).await;
+    let (_, first) = recv_control(&mut harness.packet_rx).await;
+
+    send_frame(&harness.tx, eot).await;
+    let (_, second) = recv_control(&mut harness.packet_rx).await;
+
+    let expected = LosslessSessionControl::FecStatus {
+        status: FecStatus::MissingBlocks {
+            blocks: vec![BlockStatus {
+                block_id: 0,
+                deficit_symbols: 3,
+            }],
+        },
+    };
+    assert_eq!(first, expected);
+    assert_eq!(second, expected);
+
+    drop(harness.tx);
     timeout(Duration::from_secs(2), harness.receiver_task)
         .await
         .expect("receiver task should drain once input closes")

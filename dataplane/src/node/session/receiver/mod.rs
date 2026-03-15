@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
-    PlainStatus,
+    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    MissingBlockRange, PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -131,7 +131,7 @@ impl SessionReceiver {
     fn is_complete(&self) -> bool {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
-            Some(ReceiverMode::Fec(_)) => self.shared.has_all_blocks(),
+            Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
             None => false,
         }
     }
@@ -156,8 +156,7 @@ impl SessionReceiver {
                     mode.handle_eot(&self.shared).await;
                 }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
-                    mode.eot_seen = true;
-                    mode.send_status_for_incomplete_blocks(&self.shared).await;
+                    mode.handle_eot(&self.shared).await;
                 }
             }
         }
@@ -355,8 +354,7 @@ impl ReceiverShared {
         .await;
     }
 
-    /// Acknowledge completion of one logical FEC block.
-    pub(super) async fn send_fec_block_ack(&self, block_id: u64) {
+    async fn send_fec_status(&self, status: &FecStatus) {
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -367,7 +365,9 @@ impl ReceiverShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::BlockAck { block_id },
+            &LosslessSessionControl::FecStatus {
+                status: status.clone(),
+            },
         )
         .await;
     }
@@ -486,19 +486,19 @@ mod tests {
             plan: BlockPlan::new(16, 8).ok(),
             complete_blocks: BTreeSet::new(),
         };
-        let receiver = FecReceiver {
-            geometry: BlockPlan::new(16, 8)
+        let mut receiver = FecReceiver::new(
+            BlockPlan::new(16, 8)
                 .ok()
                 .and_then(|plan| plan.symbol_geometry(4).ok())
                 .expect("valid geometry"),
-            blocks: BTreeMap::from([(
-                0,
-                FecBlockState {
-                    symbols: BTreeMap::from([(0, vec![1, 2])]),
-                },
-            )]),
-            eot_seen: true,
-        };
+        );
+        receiver.blocks = BTreeMap::from([(
+            0,
+            FecBlockState {
+                symbols: BTreeMap::from([(0, vec![1, 2])]),
+            },
+        )]);
+        receiver.eot_seen = true;
 
         assert_eq!(receiver.block_deficit(&shared, 0), 3);
     }
