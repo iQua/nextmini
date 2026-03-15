@@ -270,6 +270,12 @@ impl SessionReceiver {
                     status: PlainStatus::Complete,
                 })
             }
+            Some(ReceiverMode::Fec(_)) if self.is_complete() => {
+                Some(CompletedReceiverReplay::Fec {
+                    route: self.shared.route,
+                    status: FecStatus::Complete,
+                })
+            }
             _ => None,
         }
     }
@@ -716,6 +722,123 @@ mod tests {
         assert!(progress.first_completed_block_at().is_some());
     }
 
+    #[tokio::test]
+    async fn completed_fec_receiver_registers_complete_replay_before_teardown() {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4751,
+            dst_port: 5751,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, mut packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let geometry = BlockPlan::new(8, 8)
+            .ok()
+            .and_then(|plan| plan.symbol_geometry(4).ok())
+            .expect("valid geometry");
+        let mut receiver = SessionReceiver {
+            shared: ReceiverShared {
+                session_id: 9,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                cfg: ReceiverConfig {
+                    session_id: 9,
+                    route,
+                    local_node_id: RECEIVER_NODE_ID,
+                    sink_buffer: None,
+                    progress: None,
+                    fec_enabled: true,
+                },
+                processors,
+                manifest: Some(LosslessSessionManifest {
+                    block_size: 8,
+                    total_bytes: 8,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Fec(
+                        nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
+                            4,
+                            vec![0, 1],
+                        ),
+                    ),
+                }),
+                plan: BlockPlan::new(8, 8).ok(),
+                complete_blocks: BTreeSet::from([0]),
+            },
+            mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
+        };
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::Eot,
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert_eq!(
+            recv_fec_status(&mut packet_rx).await,
+            FecStatus::Complete,
+            "completed FEC receivers should report complete at the round boundary"
+        );
+        assert!(receiver.is_complete());
+
+        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let register_task = tokio::spawn(async move {
+            receiver.register_completed_replay(Some(runtime_tx)).await;
+        });
+
+        let LosslessRuntimeMessage::ReceiverCompleted {
+            session_id,
+            replay,
+            ack,
+        } = timeout(Duration::from_secs(2), runtime_rx.recv())
+            .await
+            .expect("timed out waiting for replay registration")
+            .expect("runtime channel closed unexpectedly")
+        else {
+            panic!("unexpected runtime message");
+        };
+        assert_eq!(session_id, 9);
+        assert_eq!(
+            replay,
+            CompletedReceiverReplay::Fec {
+                route,
+                status: FecStatus::Complete,
+            }
+        );
+        ack.send(())
+            .expect("replay registration should still await ack");
+
+        register_task
+            .await
+            .expect("replay registration task should exit cleanly");
+    }
+
     async fn plain_test_receiver(
         total_blocks: u64,
         complete_blocks: BTreeSet<u64>,
@@ -793,6 +916,22 @@ mod tests {
         let (_, control) =
             lossless_session::decode_control(payload).expect("plain status should decode");
         let LosslessSessionControl::PlainStatus { status } = control else {
+            panic!("unexpected control frame: {control:?}");
+        };
+        status
+    }
+
+    async fn recv_fec_status(packet_rx: &mut mpsc::Receiver<Packet>) -> FecStatus {
+        let packet = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for fec status")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("fec status packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("fec status should decode");
+        let LosslessSessionControl::FecStatus { status } = control else {
             panic!("unexpected control frame: {control:?}");
         };
         status
