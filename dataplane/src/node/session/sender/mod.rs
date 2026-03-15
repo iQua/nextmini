@@ -1,8 +1,9 @@
 //! Sender task for block-first lossless sessions.
 //!
-//! Plain mode sends complete blocks on the default tree. FEC mode sends source
-//! symbols first, emits `Eot` after the source sweep, and only then responds to
-//! per-block deficit feedback with extra fountain symbols.
+//! Plain mode sends complete blocks on the default tree and converges with
+//! end-of-round status feedback. FEC mode sends source symbols first, emits
+//! `Eot` after the source sweep, and only then responds to aggregate round
+//! status feedback with extra fountain symbols.
 
 mod fec;
 mod plain;
@@ -14,14 +15,14 @@ use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
-use crate::node::session::ledger::SessionLedger;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
 
@@ -50,14 +51,14 @@ pub async fn run(
 
 /// Mode-specific sender hooks invoked by the shared control path.
 pub(super) trait ModeHooks {
-    /// Observe a newly completed block after a peer ACK updates the ledger.
-    fn on_block_completed(&mut self, _block_id: u64) {}
+    /// Observe FEC-mode end-of-round feedback from a receiver.
+    fn on_fec_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: FecStatus) {}
 
-    /// Observe per-block FEC deficit feedback from a receiver.
-    fn on_block_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: BlockStatus) {}
+    /// Observe plain-mode end-of-round feedback from a receiver.
+    fn on_plain_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: PlainStatus) {}
 }
 
-/// Shared sender shell that owns session-level transport and ledger state.
+/// Shared sender shell that owns session-level transport state.
 struct SessionSender {
     shared: SenderShared,
     mode: SenderMode,
@@ -74,7 +75,6 @@ pub(super) struct SenderShared {
     pub(super) ready_peers: BTreeSet<usize>,
     pub(super) plan: BlockPlan,
     pub(super) source: BlockSource,
-    pub(super) ledger: SessionLedger,
     pub(super) ready_grace: Duration,
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
@@ -147,8 +147,6 @@ impl SessionSender {
             usize::try_from(manifest.block_size).map_err(|_| "invalid block size in manifest")?;
         let plan = BlockPlan::new(manifest.total_bytes, block_size)
             .map_err(|_| "invalid block plan for sender")?;
-        let ledger = SessionLedger::new(plan.total_blocks(), cfg.receiver_ids.iter().copied())
-            .map_err(|_| "unable to allocate sender ledger")?;
         let pacer = cfg.pacing.map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer);
@@ -169,7 +167,6 @@ impl SessionSender {
                 ready_peers: BTreeSet::new(),
                 plan,
                 source,
-                ledger,
                 ready_grace,
                 topology_ready: cfg.topology_ready,
                 pacer,
@@ -203,10 +200,13 @@ impl SessionSender {
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         }
 
+        let complete = match &self.mode {
+            SenderMode::Plain(mode) => mode.is_complete(),
+            SenderMode::Fec(mode) => mode.is_complete(),
+        };
         info!(
             session_id = self.shared.session.session_id,
-            complete = self.shared.ledger.is_complete(),
-            "Lossless sender finished"
+            complete, "Lossless sender finished"
         );
     }
 }
@@ -315,7 +315,12 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot => {}
+            LosslessSessionControl::Manifest { .. }
+            | LosslessSessionControl::Eot
+            | LosslessSessionControl::BlockAck { .. }
+            // Legacy FEC feedback variants remain on the wire as no-ops after
+            // the round-status cutover.
+            | LosslessSessionControl::BlockStatus { .. } => {}
             LosslessSessionControl::Ready { node_id } => {
                 if let Ok(node_id) = usize::try_from(node_id)
                     && self.receiver_set.contains(&node_id)
@@ -323,24 +328,23 @@ impl SenderShared {
                     self.ready_peers.insert(node_id);
                 }
             }
-            LosslessSessionControl::BlockAck { block_id } => {
+            LosslessSessionControl::FecStatus { status } => {
                 let Some(peer_id) = frame.peer_id else {
                     return;
                 };
                 if !self.receiver_set.contains(&peer_id) {
                     return;
                 }
-                if let Ok(update) = self.ledger.ack_block(peer_id, block_id)
-                    && update.block_completed_now
-                {
-                    mode.on_block_completed(block_id);
-                }
+                mode.on_fec_status(self, peer_id, status);
             }
-            LosslessSessionControl::BlockStatus { status } => {
+            LosslessSessionControl::PlainStatus { status } => {
                 let Some(peer_id) = frame.peer_id else {
                     return;
                 };
-                mode.on_block_status(self, peer_id, status);
+                if !self.receiver_set.contains(&peer_id) {
+                    return;
+                }
+                mode.on_plain_status(self, peer_id, status);
             }
         }
     }

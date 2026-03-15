@@ -1,12 +1,9 @@
 use std::collections::BTreeMap;
 
-use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionControl, LosslessSessionMode,
-};
+use nextmini_messages::lossless_session::{self, BlockStatus, FecStatus, LosslessSessionMode};
 use tracing::warn;
 
 use crate::node::session::api::InboundFrame;
-use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Decoder};
 use crate::node::session::plan::SymbolGeometry;
@@ -22,6 +19,7 @@ pub(super) struct FecReceiver {
     pub(super) geometry: SymbolGeometry,
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
     pub(super) eot_seen: bool,
+    complete_reported: bool,
 }
 
 impl FecReceiver {
@@ -31,6 +29,7 @@ impl FecReceiver {
             geometry,
             blocks: BTreeMap::new(),
             eot_seen: false,
+            complete_reported: false,
         }
     }
 
@@ -53,27 +52,15 @@ impl FecReceiver {
             return;
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
-            shared.send_block_ack(symbol.block_id).await;
             return;
         }
 
         let state = self.blocks.entry(symbol.block_id).or_default();
-        let inserted = state
-            .symbols
-            .insert(symbol.symbol_id, payload.to_vec())
-            .is_none();
+        state.symbols.insert(symbol.symbol_id, payload.to_vec());
 
-        if self
+        let _ = self
             .try_decode_fec_block(shared, symbol.block_id, &fec_mode)
-            .await
-        {
-            shared.send_block_ack(symbol.block_id).await;
-            return;
-        }
-
-        if self.eot_seen && (inserted || !shared.complete_blocks.contains(&symbol.block_id)) {
-            self.send_block_status(shared, symbol.block_id).await;
-        }
+            .await;
     }
 
     /// Attempt to decode a complete-enough FEC block.
@@ -183,39 +170,36 @@ impl FecReceiver {
         }
     }
 
-    /// Report the current deficit for one incomplete FEC block.
-    async fn send_block_status(&self, shared: &super::ReceiverShared, block_id: u64) {
-        let deficit = self.block_deficit(shared, block_id);
-        control::send_control(
-            &shared.processors,
-            control::FrameRoute {
-                session_id: shared.session_id,
-                tree_id: None,
-                src_ip: shared.route.src_ip,
-                src_port: shared.route.src_port,
-                dst_ip: shared.route.dst_ip,
-                dst_port: shared.route.dst_port,
-            },
-            &LosslessSessionControl::BlockStatus {
-                status: BlockStatus {
-                    block_id,
-                    deficit_symbols: deficit,
-                },
-            },
-        )
-        .await;
-    }
-
-    /// Emit deficit feedback for every incomplete block after `Eot`.
-    pub(super) async fn send_status_for_incomplete_blocks(&self, shared: &super::ReceiverShared) {
+    pub(super) fn status(&self, shared: &super::ReceiverShared) -> Option<FecStatus> {
         let Some(plan) = shared.plan else {
-            return;
+            return None;
         };
+        if plan.total_blocks() == 0 || shared.has_all_blocks() {
+            return Some(FecStatus::Complete);
+        };
+        let mut blocks = Vec::new();
         for block_id in 0..plan.total_blocks() {
             if shared.complete_blocks.contains(&block_id) {
                 continue;
             }
-            self.send_block_status(shared, block_id).await;
+            blocks.push(BlockStatus {
+                block_id,
+                deficit_symbols: self.block_deficit(shared, block_id),
+            });
         }
+        Some(FecStatus::MissingBlocks { blocks })
+    }
+
+    pub(super) async fn handle_eot(&mut self, shared: &super::ReceiverShared) {
+        self.eot_seen = true;
+        let Some(status) = self.status(shared) else {
+            return;
+        };
+        shared.send_fec_status(&status).await;
+        self.complete_reported = matches!(status, FecStatus::Complete);
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.complete_reported
     }
 }

@@ -747,6 +747,7 @@ fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct IntegrationTreeConfig {
     pub tree_id: usize,
@@ -754,6 +755,7 @@ pub struct IntegrationTreeConfig {
     pub edges: Vec<(u32, u32)>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct IntegrationTestConfig {
     #[serde(default)]
@@ -787,6 +789,7 @@ pub struct IntegrationTestConfig {
     pub trees: Vec<IntegrationTreeConfig>,
 }
 
+#[allow(dead_code)]
 impl IntegrationTestConfig {
     pub fn is_receiver(&self, node_id: usize) -> bool {
         self.receiver_ids.contains(&node_id)
@@ -809,6 +812,7 @@ impl IntegrationTestConfig {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IntegrationNodeRole {
     Source,
@@ -1006,6 +1010,8 @@ mod tests {
         let mut cfg = LocalConfig {
             feature: super::Feature::Concurrent,
             channel_backpressure: false,
+            private_network_addr: "127.0.0.1".to_string(),
+            public_network_addr: "127.0.0.1".to_string(),
             ..Default::default()
         };
 

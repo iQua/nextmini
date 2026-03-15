@@ -10,18 +10,18 @@ use tokio::sync::{Mutex, mpsc, oneshot, watch};
 use tracing::warn;
 
 use nextmini_messages::TokenBucketSpec;
-use nextmini_messages::lossless_session::LosslessSessionManifest;
+use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
 
 use crate::node::config::LosslessConfig;
 use crate::node::packet::{LosslessTransportMeta, Packet};
 use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
 use crate::node::session::api::{
-    InboundFrame, LosslessRuntimeMessage, LosslessSessionHandle, SessionId, SessionOutcome,
-    SessionState, StartError,
+    CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage, LosslessSessionHandle,
+    SessionId, SessionOutcome, SessionState, StartError,
 };
 pub use crate::node::session::fec_policy::PreflightError;
 use crate::node::session::plan::BlockPlan;
-use crate::node::session::{fec_policy, receiver, sender};
+use crate::node::session::{control, fec_policy, receiver, sender};
 
 /// Settings shared by sender and receiver session tasks.
 #[derive(Clone, Debug)]
@@ -33,7 +33,7 @@ pub struct SessionConfig {
 }
 
 /// Precomputed transport envelope used for outbound lossless session frames.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TransportRoute {
     /// Local source IP address for the synthetic TCP wrapper.
     pub src_ip: Ipv4Addr,
@@ -54,7 +54,7 @@ pub struct SenderRequest {
     pub route: TransportRoute,
     /// Optional pacing configuration applied to outbound data.
     pub pacing: Option<TokenBucketSpec>,
-    /// Receiver node IDs expected to acknowledge each block.
+    /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
     /// Total logical object length in bytes.
     pub total_bytes: u64,
@@ -92,6 +92,7 @@ impl ReceiverProgress {
     }
 
     /// Return the timestamp of the first completed block, if any.
+    #[allow(dead_code)]
     pub fn first_completed_block_at(&self) -> Option<Instant> {
         self.first_completed_block_at.get().copied()
     }
@@ -106,7 +107,7 @@ pub struct SenderConfig {
     pub route: TransportRoute,
     /// Optional pacing configuration applied to outbound data.
     pub pacing: Option<TokenBucketSpec>,
-    /// Receiver node IDs expected to acknowledge each block.
+    /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
@@ -222,6 +223,7 @@ struct LosslessRuntime {
     processors: ProcessorHandle,
     config: LosslessConfig,
     sessions: AHashMap<SessionId, SessionEntry>,
+    completed_receivers: AHashMap<SessionId, CompletedReceiverReplay>,
     topology_ready_sender: watch::Sender<bool>,
     topology_ready: bool,
     message_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
@@ -242,6 +244,7 @@ impl LosslessRuntime {
             processors,
             config,
             sessions: AHashMap::default(),
+            completed_receivers: AHashMap::default(),
             topology_ready_sender,
             topology_ready: false,
             message_sender,
@@ -265,6 +268,14 @@ impl LosslessRuntime {
                 LosslessRuntimeMessage::Deliver { session, frame } => {
                     self.deliver_frame(session, frame).await;
                 }
+                LosslessRuntimeMessage::ReceiverCompleted {
+                    session_id,
+                    replay,
+                    ack,
+                } => {
+                    self.completed_receivers.insert(session_id, replay);
+                    let _ = ack.send(());
+                }
                 LosslessRuntimeMessage::SessionExited {
                     session_id,
                     outcome,
@@ -280,10 +291,14 @@ impl LosslessRuntime {
 
     /// Forward one inbound frame to the matching session task.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
+        if self.replay_completed_receiver(session, frame.clone()).await {
+            return;
+        }
+
         let inbox = self.sessions.get(&session).map(|entry| entry.inbox.clone());
 
         if let Some(inbox) = inbox {
-            if inbox.send(frame).await.is_err() {
+            if inbox.send(frame.clone()).await.is_err() {
                 warn!(
                     session_id = session,
                     "Lossless runtime: session dropped inbound frame."
@@ -304,11 +319,16 @@ impl LosslessRuntime {
                 .state_sender
                 .send(SessionState::Finished(SessionOutcome::Aborted));
         }
+        self.completed_receivers.remove(&session_id);
     }
 
     fn finish_session(&mut self, session_id: SessionId, outcome: SessionOutcome) {
+        let keep_completed_replay = outcome == SessionOutcome::Completed;
         if let Some(entry) = self.sessions.remove(&session_id) {
             let _ = entry.state_sender.send(SessionState::Finished(outcome));
+        }
+        if !keep_completed_replay {
+            self.completed_receivers.remove(&session_id);
         }
     }
 
@@ -321,6 +341,7 @@ impl LosslessRuntime {
         if self.sessions.contains_key(&sid) {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
+        self.completed_receivers.remove(&sid);
 
         let block_size = fec_policy::validate_block_size(req.session.block_size)?;
         let plan = BlockPlan::new(req.total_bytes, req.session.block_size).map_err(|_| {
@@ -430,6 +451,7 @@ impl LosslessRuntime {
         if self.sessions.contains_key(&sid) {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
+        self.completed_receivers.remove(&sid);
 
         let cfg = ReceiverConfig {
             session_id: req.session_id,
@@ -444,9 +466,14 @@ impl LosslessRuntime {
         let (inbox, inbox_receiver) = mpsc::channel(1024);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
-        let task = tokio::spawn(receiver::run(cfg, inbox_receiver, processors));
-        let abort_handle = task.abort_handle();
         let message_sender = self.message_sender.clone();
+        let task = tokio::spawn(receiver::run_with_runtime(
+            cfg,
+            inbox_receiver,
+            processors,
+            Some(message_sender.clone()),
+        ));
+        let abort_handle = task.abort_handle();
         tokio::spawn(async move {
             let outcome = match task.await {
                 Ok(()) => SessionOutcome::Completed,
@@ -478,5 +505,327 @@ impl LosslessRuntime {
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
         let _ = self.topology_ready_sender.send(ready);
+    }
+
+    async fn replay_completed_receiver(&self, session: SessionId, frame: InboundFrame) -> bool {
+        let Some(replay) = self.completed_receivers.get(&session) else {
+            return false;
+        };
+        match replay {
+            CompletedReceiverReplay::Plain { route, status } => {
+                let should_replay = lossless_session::decode_block_data(&frame.bytes).is_some()
+                    || matches!(
+                        lossless_session::decode_control(&frame.bytes),
+                        Some((_, LosslessSessionControl::Eot))
+                    );
+                if !should_replay {
+                    return false;
+                }
+
+                control::send_control(
+                    &self.processors,
+                    control::FrameRoute {
+                        session_id: session,
+                        tree_id: None,
+                        src_ip: route.src_ip,
+                        src_port: route.src_port,
+                        dst_ip: route.dst_ip,
+                        dst_port: route.dst_port,
+                    },
+                    &LosslessSessionControl::PlainStatus {
+                        status: status.clone(),
+                    },
+                )
+                .await;
+                true
+            }
+            CompletedReceiverReplay::Fec { route, status } => {
+                let should_replay = lossless_session::decode_block_symbol(&frame.bytes).is_some()
+                    || matches!(
+                        lossless_session::decode_control(&frame.bytes),
+                        Some((_, LosslessSessionControl::Eot))
+                    );
+                if !should_replay {
+                    return false;
+                }
+
+                control::send_control(
+                    &self.processors,
+                    control::FrameRoute {
+                        session_id: session,
+                        tree_id: None,
+                        src_ip: route.src_ip,
+                        src_port: route.src_port,
+                        dst_ip: route.dst_ip,
+                        dst_port: route.dst_port,
+                    },
+                    &LosslessSessionControl::FecStatus {
+                        status: status.clone(),
+                    },
+                )
+                .await;
+                true
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use tokio::sync::watch;
+
+    use nextmini_messages::lossless_session::{self, FecStatus, PlainStatus};
+    use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
+
+    use super::*;
+    use crate::node::NodeIdExt;
+    use crate::node::config::LocalConfig;
+
+    const SOURCE_NODE_ID: usize = 61;
+    const RECEIVER_NODE_ID: usize = 62;
+
+    #[tokio::test]
+    async fn deliver_frame_falls_back_to_completed_plain_receiver_when_inbox_is_closed() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E401;
+        let (inbox, inbox_rx) = mpsc::channel(1);
+        drop(inbox_rx);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Plain {
+                route,
+                status: PlainStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert_plain_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_replays_fec_complete_for_late_symbol_and_eot() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E402;
+
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Fec {
+                route,
+                status: FecStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert_fec_complete(&mut packet_rx).await;
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::Eot,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert_fec_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_prefers_completed_plain_replay_over_live_inbox_during_handoff() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E403;
+        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Plain {
+                route,
+                status: PlainStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert_plain_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_prefers_completed_fec_replay_over_live_inbox_during_handoff() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E404;
+        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Fec {
+                route,
+                status: FecStatus::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert_fec_complete(&mut packet_rx).await;
+    }
+
+    async fn test_runtime() -> (LosslessRuntime, mpsc::Receiver<Packet>, TransportRoute) {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4760,
+            dst_port: 5760,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+        (
+            LosslessRuntime::new(
+                processors,
+                cfg.lossless_runtime_config.clone(),
+                message_sender,
+                message_receiver,
+            ),
+            packet_rx,
+            route,
+        )
+    }
+
+    async fn assert_plain_complete(packet_rx: &mut mpsc::Receiver<Packet>) {
+        let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for replayed plain status")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("plain status packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("plain status should decode");
+        assert_eq!(
+            control,
+            LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            }
+        );
+    }
+
+    async fn assert_fec_complete(packet_rx: &mut mpsc::Receiver<Packet>) {
+        let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for replayed fec status")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("fec status packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("fec status should decode");
+        assert_eq!(
+            control,
+            LosslessSessionControl::FecStatus {
+                status: FecStatus::Complete,
+            }
+        );
     }
 }

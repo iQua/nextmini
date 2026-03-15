@@ -1,9 +1,10 @@
 use bytes::Bytes;
+use std::collections::BTreeMap;
 use tokio::sync::mpsc;
 use tracing::warn;
 
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, LosslessSessionManifest, LosslessSessionMode,
+    self, FecStatus, LosslessSessionManifest, LosslessSessionMode,
 };
 
 use crate::node::processor::SendOutcome;
@@ -11,8 +12,13 @@ use crate::node::session::api::InboundFrame;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder};
-use crate::node::session::ledger::BlockState;
 use crate::node::session::plan::{BlockPlan, SymbolGeometry};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoundPhase {
+    SendingData,
+    WaitingForReports,
+}
 
 /// FEC-mode sender state and scheduling cursors.
 pub(super) struct FecSender {
@@ -24,6 +30,9 @@ pub(super) struct FecSender {
     current_source_cache: Option<(u64, Vec<Bytes>)>,
     frame_scratch: Vec<u8>,
     round_eot_sent: bool,
+    phase: RoundPhase,
+    round_complete: bool,
+    round_reports: BTreeMap<usize, FecStatus>,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -65,6 +74,9 @@ impl FecSender {
             current_source_cache: None,
             frame_scratch: Vec::new(),
             round_eot_sent: false,
+            phase: RoundPhase::SendingData,
+            round_complete: false,
+            round_reports: BTreeMap::new(),
         })
     }
 
@@ -72,17 +84,40 @@ impl FecSender {
     ///
     /// Source symbols are always sent before extra fountain symbols. The sender
     /// only emits extra symbols after it has completed a source-symbol sweep
-    /// and received per-block deficit feedback.
+    /// and received round-status feedback for every receiver.
     pub(super) async fn run(
         &mut self,
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) {
-        while !shared.ledger.is_complete() {
+        while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
+
+            if self.phase == RoundPhase::WaitingForReports {
+                if self.round_reports.len() == shared.receiver_set.len() {
+                    self.finish_report_round();
+                    continue;
+                }
+                if !shared.wait_for_signal(ctrl_rx, self).await {
+                    break;
+                }
+                continue;
+            }
 
             if let Some((block_id, symbol_id)) = self.next_source_symbol(shared) {
                 if self.send_source_symbol(shared, block_id, symbol_id).await {
+                    self.round_eot_sent = false;
+                    continue;
+                }
+                if !shared.wait_for_signal(ctrl_rx, self).await {
+                    break;
+                }
+                continue;
+            }
+
+            if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
+                if self.send_extra_symbol(shared, block_id, symbol_id).await {
+                    self.round_eot_sent = false;
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
@@ -92,18 +127,8 @@ impl FecSender {
             }
 
             if !self.round_eot_sent {
-                shared.send_eot().await;
+                self.begin_report_round(shared).await;
                 self.round_eot_sent = true;
-                continue;
-            }
-
-            if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
-                if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    continue;
-                }
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    break;
-                }
                 continue;
             }
 
@@ -113,16 +138,17 @@ impl FecSender {
         }
     }
 
+    pub(super) fn is_complete(&self) -> bool {
+        self.round_complete
+    }
+
     /// Return the next source symbol to send in FEC mode.
-    fn next_source_symbol(&mut self, shared: &super::SenderShared) -> Option<(u64, u32)> {
+    fn next_source_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
         let symbols_per_block = u32::from(self.symbols_per_block);
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if shared.ledger.block_state(block_id) == Some(BlockState::Complete) {
-                continue;
-            }
-            if block.next_source_symbol < symbols_per_block {
-                self.round_eot_sent = false;
+            if block.next_source_symbol < symbols_per_block && self.phase == RoundPhase::SendingData
+            {
                 return Some((block_id, block.next_source_symbol));
             }
         }
@@ -130,13 +156,10 @@ impl FecSender {
     }
 
     /// Return the next extra fountain symbol requested by a receiver.
-    fn next_extra_symbol(&mut self, shared: &super::SenderShared) -> Option<(u64, u32)> {
+    fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if shared.ledger.block_state(block_id) == Some(BlockState::Complete) {
-                continue;
-            }
-            if block.extra_budget > 0 {
+            if block.extra_budget > 0 && self.phase == RoundPhase::SendingData {
                 return Some((block_id, block.next_fountain_symbol));
             }
         }
@@ -288,46 +311,57 @@ impl FecSender {
             .and_then(|block| block.encoder.as_ref())
             .map(|encoder| encoder.coded_symbol(symbol_id))
     }
+
+    async fn begin_report_round(&mut self, shared: &mut super::SenderShared) {
+        if self.phase == RoundPhase::WaitingForReports {
+            return;
+        }
+        shared.send_eot().await;
+        self.round_reports.clear();
+        self.phase = RoundPhase::WaitingForReports;
+    }
+
+    fn finish_report_round(&mut self) {
+        let mut aggregated = vec![0u16; self.blocks.len()];
+        let mut all_complete = true;
+
+        for status in self.round_reports.values() {
+            match status {
+                FecStatus::Complete => {}
+                FecStatus::MissingBlocks { blocks } => {
+                    all_complete = false;
+                    for block in blocks {
+                        let Some(entry) = aggregated
+                            .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
+                        else {
+                            continue;
+                        };
+                        *entry = (*entry).max(block.deficit_symbols);
+                    }
+                }
+            }
+        }
+
+        if all_complete {
+            self.round_complete = true;
+            return;
+        }
+
+        for (block, budget) in self.blocks.iter_mut().zip(aggregated) {
+            block.extra_budget = budget;
+        }
+        self.round_reports.clear();
+        self.phase = RoundPhase::SendingData;
+        self.round_eot_sent = false;
+    }
 }
 
 impl super::ModeHooks for FecSender {
-    /// Record additional symbol demand for one FEC block.
-    fn on_block_status(
-        &mut self,
-        shared: &super::SenderShared,
-        peer_id: usize,
-        status: BlockStatus,
-    ) {
-        if !shared.receiver_set.contains(&peer_id) {
+    fn on_fec_status(&mut self, _shared: &super::SenderShared, peer_id: usize, status: FecStatus) {
+        if self.phase != RoundPhase::WaitingForReports {
             return;
         }
-        if shared
-            .ledger
-            .receiver_has_acked(peer_id, status.block_id)
-            .unwrap_or(false)
-        {
-            return;
-        }
-        let Some(block) = fec_block_mut(self, status.block_id) else {
-            return;
-        };
-        block.extra_budget = block.extra_budget.max(status.deficit_symbols);
-    }
-
-    /// Drop encoder/cache state once a block is fully acknowledged.
-    fn on_block_completed(&mut self, block_id: u64) {
-        let symbols_per_block = u32::from(self.symbols_per_block);
-        let Some(block) = fec_block_mut(self, block_id) else {
-            return;
-        };
-        block.extra_budget = 0;
-        block.encoder = None;
-        block.next_source_symbol = symbols_per_block;
-        if let Some((cached_block_id, _)) = &self.current_source_cache
-            && *cached_block_id == block_id
-        {
-            self.current_source_cache = None;
-        }
+        self.round_reports.insert(peer_id, status);
     }
 }
 

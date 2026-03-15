@@ -372,6 +372,7 @@ impl Dataplane {
                     route,
                     local_node_id: self.cfg.node_id,
                     sink_buffer: Some(sink_buf.clone()),
+                    progress: None,
                 };
                 // Direct registration - both sender and receiver compute same session_id
                 let session = rt().block_on(handle.start_receiver(cfg)).map_err(|err| {
@@ -430,6 +431,7 @@ impl Dataplane {
                         route,
                         local_node_id,
                         sink_buffer: Some(sink_buf.clone()),
+                        progress: None,
                     };
 
                     // Direct registration - both sender and receiver compute same session_id

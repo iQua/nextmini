@@ -4,7 +4,11 @@ use std::fmt::{Display, Formatter};
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use crate::node::session::runtime::{PreflightError, ReceiverRequest, SenderRequest};
+use nextmini_messages::lossless_session::{FecStatus, PlainStatus};
+
+use crate::node::session::runtime::{
+    PreflightError, ReceiverRequest, SenderRequest, TransportRoute,
+};
 
 /// Opaque identifier used to route lossless session control and data frames.
 pub type SessionId = u64;
@@ -129,6 +133,20 @@ impl Display for StartError {
     }
 }
 
+/// Replay state retained for receivers that completed before late duplicate
+/// frames fully drained out of the runtime.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum CompletedReceiverReplay {
+    Plain {
+        route: TransportRoute,
+        status: PlainStatus,
+    },
+    Fec {
+        route: TransportRoute,
+        status: FecStatus,
+    },
+}
+
 /// Messages sent to the background lossless runtime task.
 pub(super) enum LosslessRuntimeMessage {
     /// Start a sender task for the provided session request.
@@ -148,6 +166,12 @@ pub(super) enum LosslessRuntimeMessage {
     Deliver {
         session: SessionId,
         frame: InboundFrame,
+    },
+    /// Register a completed receiver replay before its inbox is torn down.
+    ReceiverCompleted {
+        session_id: SessionId,
+        replay: CompletedReceiverReplay,
+        ack: oneshot::Sender<()>,
     },
     /// Report one child session exit back into the runtime actor.
     SessionExited {

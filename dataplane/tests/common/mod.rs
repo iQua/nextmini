@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::net::Ipv4Addr;
 use std::time::Duration;
 
@@ -10,7 +12,10 @@ use nextmini::node::packet::Packet;
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
-use nextmini_messages::lossless_session::{self, LosslessSessionControl};
+use nextmini_messages::lossless_session::{
+    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    PlainStatus,
+};
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
 pub struct PacketCaptureHarness {
@@ -109,12 +114,65 @@ pub fn ready_frame(session_id: u64, peer_id: usize) -> InboundFrame {
     )
 }
 
+pub fn manifest_frame(
+    session_id: u64,
+    peer_id: usize,
+    block_size: u32,
+    total_bytes: u64,
+    total_blocks: u64,
+) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size,
+                total_bytes,
+                total_blocks,
+                mode: LosslessSessionMode::Plain,
+            },
+        },
+    )
+}
+
 pub fn block_ack_frame(session_id: u64, peer_id: usize, block_id: u64) -> InboundFrame {
     control_frame(
         session_id,
         peer_id,
         LosslessSessionControl::BlockAck { block_id },
     )
+}
+
+pub fn block_data_frame(
+    session_id: u64,
+    peer_id: usize,
+    block_id: u64,
+    payload: &[u8],
+) -> InboundFrame {
+    InboundFrame {
+        bytes: lossless_session::encode_block_data(session_id, block_id, payload),
+        peer_id: Some(peer_id),
+    }
+}
+
+pub fn plain_status_frame(session_id: u64, peer_id: usize, status: PlainStatus) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::PlainStatus { status },
+    )
+}
+
+pub fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::FecStatus { status },
+    )
+}
+
+pub fn eot_frame(session_id: u64, peer_id: usize) -> InboundFrame {
+    control_frame(session_id, peer_id, LosslessSessionControl::Eot)
 }
 
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {
