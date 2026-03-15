@@ -7,7 +7,7 @@ use std::hash::{Hash, Hasher};
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use tokio::sync::Mutex;
@@ -177,6 +177,7 @@ async fn run_source(
         .await
         .map_err(|err| format!("lossless sender preflight rejected session {sid}: {err}"))?;
     let session_id = session.id();
+    let transfer_started_at = Instant::now();
 
     let outcome = tokio::time::timeout(
         Duration::from_millis(harness_cfg.receive_timeout_ms),
@@ -190,6 +191,21 @@ async fn run_source(
             "sender session {session_id} did not complete successfully"
         ));
     }
+
+    write_performance_metrics(
+        harness_cfg,
+        config.node_id,
+        IntegrationNodeRole::Source,
+        fs::metadata(&source_artifact)
+            .map_err(|err| {
+                format!(
+                    "failed to stat source artifact {}: {err}",
+                    source_artifact.display()
+                )
+            })?
+            .len(),
+        transfer_started_at.elapsed(),
+    )?;
 
     write_status(
         harness_cfg,
@@ -244,6 +260,7 @@ async fn run_receiver(
     let session_id = session.id();
 
     write_ready_marker(harness_cfg, config.node_id)?;
+    let transfer_started_at = Instant::now();
 
     let outcome = tokio::time::timeout(
         Duration::from_millis(harness_cfg.receive_timeout_ms),
@@ -265,6 +282,13 @@ async fn run_receiver(
     write_artifact_with_hash(
         &receiver_artifact_path(harness_cfg, config.node_id),
         &sink_bytes,
+    )?;
+    write_performance_metrics(
+        harness_cfg,
+        config.node_id,
+        IntegrationNodeRole::Receiver,
+        sink_bytes.len() as u64,
+        transfer_started_at.elapsed(),
     )?;
     write_status(
         harness_cfg,
@@ -387,6 +411,36 @@ fn write_status(
         .map_err(|err| format!("failed to write status for node {node_id}: {err}"))
 }
 
+fn write_performance_metrics(
+    cfg: &IntegrationTestConfig,
+    node_id: usize,
+    role: IntegrationNodeRole,
+    payload_bytes: u64,
+    duration: Duration,
+) -> Result<(), String> {
+    let duration_seconds = duration.as_secs_f64();
+    let throughput_gbps = if duration_seconds > 0.0 {
+        (payload_bytes as f64 * 8.0) / duration_seconds / 1_000_000_000.0
+    } else {
+        0.0
+    };
+    let path = performance_metrics_path(cfg, node_id, role);
+    let role_label = match role {
+        IntegrationNodeRole::Source => "source",
+        IntegrationNodeRole::Receiver => "receiver",
+        IntegrationNodeRole::Router => "router",
+    };
+    let payload = format!(
+        "role={role_label}\nnode_id={node_id}\npayload_bytes={payload_bytes}\nduration_seconds={duration_seconds:.9}\nthroughput_gbps={throughput_gbps:.9}\n"
+    );
+    fs::write(&path, payload).map_err(|err| {
+        format!(
+            "failed to write performance metrics for node {node_id} to {}: {err}",
+            path.display()
+        )
+    })
+}
+
 fn group_info_path(cfg: &IntegrationTestConfig) -> PathBuf {
     Path::new(&cfg.artifact_dir).join("group-info.txt")
 }
@@ -402,6 +456,19 @@ fn status_path(cfg: &IntegrationTestConfig, node_id: usize, role: IntegrationNod
         IntegrationNodeRole::Router => "router",
     };
     Path::new(&cfg.artifact_dir).join(format!("{label}-{node_id}.status"))
+}
+
+fn performance_metrics_path(
+    cfg: &IntegrationTestConfig,
+    node_id: usize,
+    role: IntegrationNodeRole,
+) -> PathBuf {
+    let label = match role {
+        IntegrationNodeRole::Source => "source",
+        IntegrationNodeRole::Receiver => "receiver",
+        IntegrationNodeRole::Router => "router",
+    };
+    Path::new(&cfg.artifact_dir).join(format!("{label}-{node_id}.metrics"))
 }
 
 fn source_artifact_path(cfg: &IntegrationTestConfig) -> PathBuf {
