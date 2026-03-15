@@ -33,7 +33,7 @@ pub(crate) enum SessionState {
     Finished(SessionOutcome),
 }
 
-/// abort() needs LosslessSessionHandle to talk back to the runtime. 
+/// abort() needs LosslessSessionHandle to talk back to the runtime.
 /// Here we simply wrap the abort sender.
 #[derive(Debug)]
 struct SessionAbortHandle {

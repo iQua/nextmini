@@ -117,6 +117,7 @@ async fn plain_receiver_writes_and_acks_every_block() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        progress: None,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
@@ -279,6 +280,7 @@ async fn fec_receiver_decodes_and_acks_every_block() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        progress: None,
         fec_enabled: true,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);

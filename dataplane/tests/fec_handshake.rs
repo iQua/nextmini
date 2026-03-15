@@ -112,7 +112,10 @@ async fn start_sender_surfaces_preflight_error_to_caller() {
     let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2001).await;
 
     assert!(
-        matches!(started, Err(StartError::Preflight(PreflightError::MissingTreeIds))),
+        matches!(
+            started,
+            Err(StartError::Preflight(PreflightError::MissingTreeIds))
+        ),
         "caller should get a typed preflight error"
     );
 }
@@ -267,8 +270,8 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         common::block_ack_frame(harness.session_id, 2, 0),
     );
     let completed = timeout(Duration::from_secs(5), harness.session.wait())
-    .await
-    .expect("sender runtime wait should not time out");
+        .await
+        .expect("sender runtime wait should not time out");
     assert_eq!(completed, SessionOutcome::Completed);
 }
 

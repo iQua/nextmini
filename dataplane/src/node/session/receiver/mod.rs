@@ -223,6 +223,10 @@ impl ReceiverShared {
 
     /// Copy one completed block payload into the optional sink buffer.
     pub(super) async fn write_block(&self, block_id: u64, payload: &[u8]) {
+        if let Some(progress) = &self.cfg.progress {
+            progress.mark_first_completed_block();
+        }
+
         let Some(plan) = self.plan else {
             return;
         };
@@ -315,6 +319,7 @@ impl ReceiverShared {
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::sync::Arc;
 
     use super::*;
     use crate::node::session::receiver::fec::{FecBlockState, FecReceiver};
@@ -340,6 +345,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 sink_buffer: None,
+                progress: None,
                 fec_enabled: true,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -396,6 +402,7 @@ mod tests {
                     },
                     local_node_id: 1,
                     sink_buffer: None,
+                    progress: None,
                     fec_enabled: false,
                 },
                 processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -412,5 +419,46 @@ mod tests {
         };
 
         assert!(receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn write_block_marks_first_completed_block_progress() {
+        let progress = Arc::new(crate::node::session::runtime::ReceiverProgress::default());
+        let shared = ReceiverShared {
+            session_id: 9,
+            route: crate::node::session::runtime::TransportRoute {
+                src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1,
+                dst_port: 2,
+            },
+            local_node_id: 1,
+            cfg: ReceiverConfig {
+                session_id: 9,
+                route: crate::node::session::runtime::TransportRoute {
+                    src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                    dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                    src_port: 1,
+                    dst_port: 2,
+                },
+                local_node_id: 1,
+                sink_buffer: None,
+                progress: Some(progress.clone()),
+                fec_enabled: false,
+            },
+            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
+            manifest: Some(LosslessSessionManifest {
+                block_size: 8,
+                total_bytes: 8,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Plain,
+            }),
+            plan: BlockPlan::new(8, 8).ok(),
+            complete_blocks: BTreeSet::new(),
+        };
+
+        shared.write_block(0, b"abcdefgh").await;
+
+        assert!(progress.first_completed_block_at().is_some());
     }
 }

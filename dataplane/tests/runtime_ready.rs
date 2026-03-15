@@ -5,9 +5,7 @@ use std::time::{Duration, Instant};
 use bytes::Bytes;
 use tokio::time::timeout;
 
-use nextmini::node::session::api::{
-    LosslessRuntimeHandle, SessionOutcome, StartError,
-};
+use nextmini::node::session::api::{LosslessRuntimeHandle, SessionOutcome, StartError};
 use nextmini::node::session::runtime::ReceiverRequest;
 use nextmini::node::session::runtime::SenderRequest;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl};
@@ -205,6 +203,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            progress: None,
         })
         .await
         .expect("first receiver should start");
@@ -215,6 +214,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            progress: None,
         })
         .await;
 

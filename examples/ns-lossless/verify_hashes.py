@@ -161,18 +161,7 @@ def main() -> None:
     receiver_throughputs = [metrics.throughput_gbps for metrics in receiver_metrics]
     slowest_receiver = min(receiver_metrics, key=lambda metrics: metrics.throughput_gbps)
     fastest_receiver = max(receiver_metrics, key=lambda metrics: metrics.throughput_gbps)
-    aggregate_receiver_gbps = (
-        len(receiver_metrics) * source_size * 8.0 / source_metrics.duration_seconds / 1_000_000_000.0
-    )
-
     print(f"VERIFICATION PASSED: {artifact_dir.name} sha256={source_digest}")
-    print(
-        "PERFORMANCE "
-        f"case={artifact_dir.name} "
-        f"source_gbps={source_metrics.throughput_gbps:.6f} "
-        f"source_duration_s={source_metrics.duration_seconds:.6f} "
-        f"aggregate_receiver_gbps={aggregate_receiver_gbps:.6f}"
-    )
     print(
         "PERFORMANCE receivers "
         f"count={len(receiver_metrics)} "

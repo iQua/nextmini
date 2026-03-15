@@ -208,6 +208,7 @@ impl LosslessUnicastFlowManager {
                 route,
                 local_node_id: cfg.node_id,
                 sink_buffer: None,
+                progress: None,
             };
 
             // Register receiver directly with the pre-computed session_id.

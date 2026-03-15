@@ -38,6 +38,7 @@ async fn plain_receiver_acks_completed_block_and_writes_sink() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        progress: None,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
@@ -127,6 +128,7 @@ async fn plain_receiver_completes_without_eot_once_all_blocks_arrive() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        progress: None,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
@@ -200,6 +202,7 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: None,
+        progress: None,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
@@ -258,6 +261,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        progress: None,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);

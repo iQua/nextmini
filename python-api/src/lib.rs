@@ -35,9 +35,7 @@ use nextmini::node::python::interface::{
 #[cfg(feature = "python-extension")]
 use nextmini::node::session;
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::api::{
-    LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome,
-};
+use nextmini::node::session::api::{LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome};
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;

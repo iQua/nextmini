@@ -21,7 +21,7 @@ use crate::node::controller::interface::ControllerInterfaceHandle;
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::session::api::{LosslessRuntimeHandle, SessionOutcome};
 use crate::node::session::runtime::{
-    ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
+    ReceiverProgress, ReceiverRequest, SenderRequest, SessionConfig, TransportRoute,
 };
 
 use self::controller_helpers::ControllerHarness;
@@ -240,6 +240,7 @@ async fn run_receiver(
     control.join_group(group_id).await;
 
     let sink = Arc::new(Mutex::new(Vec::new()));
+    let progress = Arc::new(ReceiverProgress::default());
     let sid = multicast_session_id(group_id as u64, harness_cfg.source_node_id);
     let mut session = lossless_runtime
         .start_receiver(ReceiverRequest {
@@ -254,13 +255,13 @@ async fn run_receiver(
             },
             local_node_id: config.node_id,
             sink_buffer: Some(sink.clone()),
+            progress: Some(progress.clone()),
         })
         .await
         .map_err(|err| format!("lossless receiver start rejected session {sid}: {err}"))?;
     let session_id = session.id();
 
     write_ready_marker(harness_cfg, config.node_id)?;
-    let transfer_started_at = Instant::now();
 
     let outcome = tokio::time::timeout(
         Duration::from_millis(harness_cfg.receive_timeout_ms),
@@ -275,6 +276,11 @@ async fn run_receiver(
         ));
     }
 
+    let transfer_finished_at = Instant::now();
+    let transfer_started_at = progress.first_completed_block_at().ok_or_else(|| {
+        format!("receiver session {session_id} completed without recording a completed block")
+    })?;
+
     let sink_bytes = sink.lock().await.clone();
     if sink_bytes.is_empty() {
         return Err("receiver sink is empty".to_string());
@@ -288,7 +294,7 @@ async fn run_receiver(
         config.node_id,
         IntegrationNodeRole::Receiver,
         sink_bytes.len() as u64,
-        transfer_started_at.elapsed(),
+        transfer_finished_at.saturating_duration_since(transfer_started_at),
     )?;
     write_status(
         harness_cfg,

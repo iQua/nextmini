@@ -26,7 +26,9 @@ From the repository root:
 
 If `--case` is omitted, `run.sh` defaults to `plain-1r`. A named case or one-off parameterized run executes one transfer. Sweep options execute many transfers sequentially and write one artifact set per generated case directory.
 
-At the end of each successful run, the verifier now prints a throughput summary in Gbit/s. It reports sender goodput for the completed source session plus receiver min/avg/max goodput across the receiver set.
+At the end of each successful run, the verifier prints a receiver throughput summary in Gbit/s with receiver min/avg/max goodput across the receiver set.
+
+Receiver throughput starts when each receiver completes its first logical block and stops when that receiver completes the full object. This excludes manifest/READY setup time and makes the printed `avg_gbps` line the cleanest receiver-side throughput summary for multi-receiver runs.
 
 The script escalates to `sudo` itself for the namespace setup. Running it without `sudo` avoids root `PATH` issues with user-local Rust installs in `~/.cargo/bin`.
 The generated dataplane config also enables host bridge `FORWARD` rules automatically so namespace
@@ -98,7 +100,7 @@ Per-run outputs are written under `examples/ns-lossless/artifacts/<case-name>/`.
 - `controller-config.toml`
 - `dataplane-config.toml`
 
-The verifier compares every receiver artifact against `artifacts/source.bin` and fails on any missing file, non-`ok` status, size mismatch, SHA256 mismatch, or malformed/missing throughput metrics file. Each `*.metrics` file stores the transfer payload size, elapsed seconds, and derived throughput in Gbit/s for that node.
+The verifier compares every receiver artifact against `artifacts/source.bin` and fails on any missing file, non-`ok` status, size mismatch, SHA256 mismatch, or malformed/missing throughput metrics file. Each `*.metrics` file stores the transfer payload size, elapsed seconds, and derived throughput in Gbit/s for that node. Receiver-side durations begin at the first completed logical block and end when the receiver finishes the object.
 
 ## Cleanup
 

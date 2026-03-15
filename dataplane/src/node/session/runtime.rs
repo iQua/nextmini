@@ -1,7 +1,8 @@
 //! Background runtime that owns lossless sender and receiver session tasks.
 
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
+use std::time::Instant;
 
 use ahash::AHashMap;
 use bytes::Bytes;
@@ -74,6 +75,26 @@ pub struct ReceiverRequest {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Optional progress tracker updated when the first logical block completes.
+    pub progress: Option<Arc<ReceiverProgress>>,
+}
+
+/// Shared receiver-side progress markers exported to integration harnesses.
+#[derive(Debug, Default)]
+pub struct ReceiverProgress {
+    first_completed_block_at: OnceLock<Instant>,
+}
+
+impl ReceiverProgress {
+    /// Record when the first logical block completed at the receiver.
+    pub fn mark_first_completed_block(&self) {
+        let _ = self.first_completed_block_at.set(Instant::now());
+    }
+
+    /// Return the timestamp of the first completed block, if any.
+    pub fn first_completed_block_at(&self) -> Option<Instant> {
+        self.first_completed_block_at.get().copied()
+    }
 }
 
 /// Fully derived sender configuration passed to the sender task.
@@ -108,6 +129,8 @@ pub struct ReceiverConfig {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Optional progress tracker updated when the first logical block completes.
+    pub progress: Option<Arc<ReceiverProgress>>,
     /// Whether FEC manifests are accepted by this runtime.
     pub fec_enabled: bool,
 }
@@ -413,6 +436,7 @@ impl LosslessRuntime {
             route: req.route,
             local_node_id: req.local_node_id,
             sink_buffer: req.sink_buffer,
+            progress: req.progress,
             fec_enabled: self.config.fec_enabled,
         };
         let processors = self.processors.clone();
