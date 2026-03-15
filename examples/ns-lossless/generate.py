@@ -20,6 +20,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--symbols-per-block", type=int, required=True)
     parser.add_argument("--payload-size", type=int, required=True)
     parser.add_argument(
+        "--receive-timeout-ms",
+        type=int,
+        default=120_000,
+        help="Transfer completion timeout for source/receiver sessions.",
+    )
+    parser.add_argument(
         "--controller-addr",
         default="ws://127.0.0.1:3000",
         help="Host-local controller address for dataplane startup.",
@@ -44,6 +50,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--symbols-per-block must be positive.")
     if args.payload_size <= 0:
         raise SystemExit("--payload-size must be positive.")
+    if args.receive_timeout_ms <= 0:
+        raise SystemExit("--receive-timeout-ms must be positive.")
     if args.mode == "plain" and args.trees != 1:
         raise SystemExit("plain mode currently supports exactly one tree in this harness.")
 
@@ -173,7 +181,7 @@ receiver_ids = [{receivers}]
 artifact_dir = "{artifact_dir}"
 payload_path = "{payload_path}"
 group_timeout_ms = 30000
-receive_timeout_ms = 60000
+receive_timeout_ms = {args.receive_timeout_ms}
 poll_interval_ms = 200
 src_port = 45000
 dst_port = 46000

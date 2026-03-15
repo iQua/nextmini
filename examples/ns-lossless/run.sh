@@ -16,6 +16,7 @@ trees=""
 block_size=""
 symbols_per_block=""
 payload_size=""
+receive_timeout_ms=""
 tree_sweep_max=""
 tree_sweep_receivers="20"
 receiver_sweep_max=""
@@ -36,6 +37,7 @@ Options:
   --block-size N             Custom run block size (default: 8192).
   --symbols-per-block N      Custom run symbols_per_block (default: 32).
   --payload-size N           Custom run payload size bytes (default: 262144).
+  --receive-timeout-ms N     Session completion timeout in ms (default: 120000).
   --tree-sweep-max N         Run a sweep from 1..N trees with fixed receivers.
   --tree-sweep-receivers N   Receiver count for tree sweep (default: 20).
   --receiver-sweep-max N     Run a sweep from 1..N receivers with fixed trees.
@@ -79,6 +81,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --payload-size)
       payload_size="${2:-}"
+      shift 2
+      ;;
+    --receive-timeout-ms)
+      receive_timeout_ms="${2:-}"
       shift 2
       ;;
     --tree-sweep-max)
@@ -169,6 +175,7 @@ validate_run_request() {
   local selected_block_size="$4"
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
+  local selected_receive_timeout_ms="$7"
 
   validate_mode "$selected_mode"
   require_positive_int "--receivers" "$selected_receivers"
@@ -176,6 +183,7 @@ validate_run_request() {
   require_positive_int "--block-size" "$selected_block_size"
   require_positive_int "--symbols-per-block" "$selected_symbols_per_block"
   require_positive_int "--payload-size" "$selected_payload_size"
+  require_positive_int "--receive-timeout-ms" "$selected_receive_timeout_ms"
 
   if [[ "$selected_mode" == "plain" ]] && (( selected_trees != 1 )); then
     echo "plain mode only supports exactly one tree." >&2
@@ -457,6 +465,7 @@ run_case() {
   local block_size="$5"
   local symbols_per_block="$6"
   local payload_size="$7"
+  local receive_timeout_ms="$8"
   local case_dir="${artifacts_root}/${name}"
 
   current_case_dir="$case_dir"
@@ -472,7 +481,8 @@ run_case() {
     --trees "$trees" \
     --block-size "$block_size" \
     --symbols-per-block "$symbols_per_block" \
-    --payload-size "$payload_size"
+    --payload-size "$payload_size" \
+    --receive-timeout-ms "$receive_timeout_ms"
 
   start_controller "$case_dir"
   start_dataplane "$case_dir"
@@ -498,6 +508,7 @@ run_tree_sweep() {
   local selected_block_size="$4"
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
+  local selected_receive_timeout_ms="$7"
 
   require_positive_int "--tree-sweep-max" "$max_trees"
   require_positive_int "--tree-sweep-receivers" "$selected_receivers"
@@ -509,7 +520,8 @@ run_tree_sweep() {
       "$tree_count" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
-      "$selected_payload_size"
+      "$selected_payload_size" \
+      "$selected_receive_timeout_ms"
 
     run_case \
       "$(make_case_name tree-sweep "$selected_mode" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block")" \
@@ -518,7 +530,8 @@ run_tree_sweep() {
       "$tree_count" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
-      "$selected_payload_size"
+      "$selected_payload_size" \
+      "$selected_receive_timeout_ms"
   done
 }
 
@@ -529,6 +542,7 @@ run_receiver_sweep() {
   local selected_block_size="$4"
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
+  local selected_receive_timeout_ms="$7"
 
   require_positive_int "--receiver-sweep-max" "$max_receivers"
   require_positive_int "--receiver-sweep-trees" "$selected_trees"
@@ -540,7 +554,8 @@ run_receiver_sweep() {
       "$selected_trees" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
-      "$selected_payload_size"
+      "$selected_payload_size" \
+      "$selected_receive_timeout_ms"
 
     run_case \
       "$(make_case_name receiver-sweep "$selected_mode" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block")" \
@@ -549,7 +564,8 @@ run_receiver_sweep() {
       "$selected_trees" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
-      "$selected_payload_size"
+      "$selected_payload_size" \
+      "$selected_receive_timeout_ms"
   done
 }
 
@@ -558,7 +574,7 @@ trap cleanup_on_exit EXIT
 require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
 
 if [[ -n "$case_name" ]]; then
-  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
     echo "--case cannot be combined with custom run or sweep options." >&2
     exit 1
   fi
@@ -576,10 +592,10 @@ mkdir -p "$artifacts_root"
 
 if [[ -n "$case_name" ]]; then
   case "$case_name" in
-    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 ;;
-    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 ;;
-    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 ;;
-    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 ;;
+    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 120000 ;;
+    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 120000 ;;
+    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 120000 ;;
+    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 120000 ;;
     *)
       echo "Unknown case: ${case_name}" >&2
       exit 1
@@ -592,6 +608,7 @@ selected_mode="${mode:-fec}"
 selected_block_size="${block_size:-8192}"
 selected_symbols_per_block="${symbols_per_block:-32}"
 selected_payload_size="${payload_size:-262144}"
+selected_receive_timeout_ms="${receive_timeout_ms:-120000}"
 ran_any="false"
 
 if [[ -n "$tree_sweep_max" ]]; then
@@ -601,7 +618,8 @@ if [[ -n "$tree_sweep_max" ]]; then
     "$selected_mode" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
-    "$selected_payload_size"
+    "$selected_payload_size" \
+    "$selected_receive_timeout_ms"
   ran_any="true"
 fi
 
@@ -612,11 +630,12 @@ if [[ -n "$receiver_sweep_max" ]]; then
     "$selected_mode" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
-    "$selected_payload_size"
+    "$selected_payload_size" \
+    "$selected_receive_timeout_ms"
   ran_any="true"
 fi
 
-if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" ) ]]; then
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" ) ]]; then
   if [[ -z "$receivers" || -z "$trees" ]]; then
     echo "Custom runs require both --receivers and --trees." >&2
     exit 1
@@ -628,7 +647,8 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
     "$trees" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
-    "$selected_payload_size"
+    "$selected_payload_size" \
+    "$selected_receive_timeout_ms"
 
   run_case \
     "$(make_case_name custom "$selected_mode" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block")" \
@@ -637,10 +657,11 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
     "$trees" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
-    "$selected_payload_size"
+    "$selected_payload_size" \
+    "$selected_receive_timeout_ms"
   ran_any="true"
 fi
 
 if [[ "$ran_any" == "false" ]]; then
-  run_case plain-1r plain 1 1 8192 32 262144
+  run_case plain-1r plain 1 1 8192 32 262144 120000
 fi
