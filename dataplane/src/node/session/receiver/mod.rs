@@ -1,20 +1,23 @@
 //! Receiver task for block-first lossless sessions.
 //!
-//! The receiver accepts a manifest, acknowledges completed plain blocks
-//! directly, and optionally accumulates FEC symbols until a block can be
-//! decoded. After `Eot`, incomplete FEC blocks trigger deficit feedback so the
-//! sender can emit additional fountain symbols.
+//! The receiver accepts a manifest, records completed plain blocks locally, and
+//! optionally accumulates FEC symbols until a block can be decoded. After
+//! `Eot`, plain mode emits end-of-round status feedback while incomplete FEC
+//! blocks trigger deficit feedback so the sender can emit additional fountain
+//! symbols.
 
 mod fec;
 mod plain;
 
 use std::collections::BTreeSet;
+use std::ops::Bound::{Excluded, Unbounded};
 
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+    PlainStatus,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -109,7 +112,11 @@ impl SessionReceiver {
 
     /// Return whether the receiver has completed every planned block.
     fn is_complete(&self) -> bool {
-        self.shared.is_complete()
+        match self.mode.as_ref() {
+            Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
+            Some(ReceiverMode::Fec(_)) => self.shared.has_all_blocks(),
+            None => false,
+        }
     }
 
     /// Handle one inbound control frame.
@@ -127,7 +134,9 @@ impl SessionReceiver {
             | LosslessSessionControl::PlainStatus { .. }
             | LosslessSessionControl::BlockStatus { .. } => {}
             LosslessSessionControl::Eot => {
-                self.shared.reemit_completed_acks().await;
+                if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
+                    mode.handle_eot(&self.shared).await;
+                }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
                     mode.eot_seen = true;
                     mode.send_status_for_incomplete_blocks(&self.shared).await;
@@ -186,7 +195,7 @@ impl SessionReceiver {
             return;
         };
         let mode = match &manifest.mode {
-            LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver),
+            LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver::default()),
             LosslessSessionMode::Fec(fec) => {
                 let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
                     return;
@@ -215,7 +224,7 @@ impl SessionReceiver {
 
 impl ReceiverShared {
     /// Return whether the receiver has completed every planned block.
-    fn is_complete(&self) -> bool {
+    fn has_all_blocks(&self) -> bool {
         let Some(plan) = self.plan else {
             return false;
         };
@@ -309,21 +318,80 @@ impl ReceiverShared {
         .await;
     }
 
-    /// Re-send block acknowledgements once `Eot` arrives.
-    async fn reemit_completed_acks(&self) {
-        for &block_id in &self.complete_blocks {
-            self.send_block_ack(block_id).await;
+    fn plain_status(&self) -> Option<PlainStatus> {
+        let total_blocks = self.plan?.total_blocks();
+        if total_blocks == 0 {
+            return Some(PlainStatus::Complete);
         }
+        if self.complete_blocks.len() as u64 == total_blocks {
+            return Some(PlainStatus::Complete);
+        }
+
+        let mut ranges = Vec::new();
+        let mut next_missing = 0u64;
+        while next_missing < total_blocks {
+            if self.complete_blocks.contains(&next_missing) {
+                next_missing += 1;
+                continue;
+            }
+
+            let start_block_id = next_missing;
+            let end_block_id = self
+                .complete_blocks
+                .range((Excluded(start_block_id), Unbounded))
+                .next()
+                .copied()
+                .unwrap_or(total_blocks);
+            ranges.push(MissingBlockRange {
+                start_block_id,
+                end_block_id,
+            });
+            next_missing = end_block_id;
+        }
+
+        Some(PlainStatus::MissingBlocks { ranges })
+    }
+
+    async fn send_plain_status(&self, status: &PlainStatus) {
+        control::send_control(
+            &self.processors,
+            control::FrameRoute {
+                session_id: self.session_id,
+                tree_id: None,
+                src_ip: self.route.src_ip,
+                src_port: self.route.src_port,
+                dst_ip: self.route.dst_ip,
+                dst_port: self.route.dst_port,
+            },
+            &LosslessSessionControl::PlainStatus {
+                status: status.clone(),
+            },
+        )
+        .await;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use std::collections::{BTreeMap, BTreeSet};
+    use std::net::Ipv4Addr;
     use std::sync::Arc;
+    use std::time::Duration;
+
+    use tokio::sync::mpsc;
+    use tokio::time::timeout;
+
+    use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
+    use crate::node::NodeIdExt;
+    use crate::node::config::LocalConfig;
+    use crate::node::packet::Packet;
+    use crate::node::processor::ProcessorHandle;
     use crate::node::session::receiver::fec::{FecBlockState, FecReceiver};
+
+    const SOURCE_NODE_ID: usize = 51;
+    const RECEIVER_NODE_ID: usize = 52;
 
     #[tokio::test]
     async fn block_deficit_requests_missing_source_symbols_first() {
@@ -382,7 +450,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn receiver_completion_does_not_require_eot() {
+    async fn plain_receiver_only_completes_after_reporting_complete_on_eot() {
         let receiver = SessionReceiver {
             shared: ReceiverShared {
                 session_id: 8,
@@ -419,7 +487,138 @@ mod tests {
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
         };
 
+        assert!(!receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_reports_complete_on_eot() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0, 1])).await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::Eot,
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert_eq!(
+            recv_plain_status(&mut packet_rx).await,
+            PlainStatus::Complete
+        );
         assert!(receiver.is_complete());
+        assert_eq!(receiver.shared.plain_status(), Some(PlainStatus::Complete));
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_reports_sparse_missing_ranges() {
+        let (receiver, _packet_rx) = plain_test_receiver(4, BTreeSet::from([0, 2])).await;
+
+        assert_eq!(
+            receiver.shared.plain_status(),
+            Some(PlainStatus::MissingBlocks {
+                ranges: vec![
+                    MissingBlockRange {
+                        start_block_id: 1,
+                        end_block_id: 2,
+                    },
+                    MissingBlockRange {
+                        start_block_id: 3,
+                        end_block_id: 4,
+                    },
+                ],
+            })
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_emits_sparse_missing_ranges_on_eot() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(4, BTreeSet::from([0, 2])).await;
+        let expected = PlainStatus::MissingBlocks {
+            ranges: vec![
+                MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                },
+                MissingBlockRange {
+                    start_block_id: 3,
+                    end_block_id: 4,
+                },
+            ],
+        };
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::Eot,
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert_eq!(recv_plain_status(&mut packet_rx).await, expected);
+        assert!(!receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_keeps_missing_status_stable_across_repeated_eot() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
+
+        let eot = InboundFrame {
+            bytes: lossless_session::encode_control(
+                receiver.shared.session_id,
+                &LosslessSessionControl::Eot,
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+        let expected = PlainStatus::MissingBlocks {
+            ranges: vec![MissingBlockRange {
+                start_block_id: 1,
+                end_block_id: 2,
+            }],
+        };
+
+        receiver.handle_control_frame(eot.clone()).await;
+        assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
+        assert!(!receiver.is_complete());
+        assert_eq!(receiver.shared.plain_status(), Some(expected.clone()));
+
+        receiver.handle_control_frame(eot).await;
+        assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
+        assert!(!receiver.is_complete());
+        assert_eq!(receiver.shared.plain_status(), Some(expected));
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_ignores_duplicate_data_before_eot() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
+        let frame = InboundFrame {
+            bytes: lossless_session::encode_block_data(receiver.shared.session_id, 0, b"abcdefgh"),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+
+        receiver.handle_block_data_frame(frame.clone()).await;
+        receiver.handle_block_data_frame(frame).await;
+
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "plain receiver should not emit per-block feedback before Eot"
+        );
+        assert!(!receiver.is_complete());
+        assert_eq!(
+            receiver.shared.plain_status(),
+            Some(PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            })
+        );
     }
 
     #[tokio::test]
@@ -461,5 +660,87 @@ mod tests {
         shared.write_block(0, b"abcdefgh").await;
 
         assert!(progress.first_completed_block_at().is_some());
+    }
+
+    async fn plain_test_receiver(
+        total_blocks: u64,
+        complete_blocks: BTreeSet<u64>,
+    ) -> (SessionReceiver, mpsc::Receiver<Packet>) {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4750,
+            dst_port: 5750,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        (
+            SessionReceiver {
+                shared: ReceiverShared {
+                    session_id: 8,
+                    route,
+                    local_node_id: RECEIVER_NODE_ID,
+                    cfg: ReceiverConfig {
+                        session_id: 8,
+                        route,
+                        local_node_id: RECEIVER_NODE_ID,
+                        sink_buffer: None,
+                        progress: None,
+                        fec_enabled: false,
+                    },
+                    processors,
+                    manifest: Some(LosslessSessionManifest {
+                        block_size: 8,
+                        total_bytes: total_blocks * 8,
+                        total_blocks,
+                        mode: LosslessSessionMode::Plain,
+                    }),
+                    plan: BlockPlan::new(total_blocks * 8, 8).ok(),
+                    complete_blocks,
+                },
+                mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
+            },
+            packet_rx,
+        )
+    }
+
+    async fn recv_plain_status(packet_rx: &mut mpsc::Receiver<Packet>) -> PlainStatus {
+        let packet = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for plain status")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("plain status packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("plain status should decode");
+        let LosslessSessionControl::PlainStatus { status } = control else {
+            panic!("unexpected control frame: {control:?}");
+        };
+        status
     }
 }

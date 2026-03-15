@@ -1,8 +1,12 @@
+use nextmini_messages::lossless_session::PlainStatus;
+
 use crate::node::session::api::InboundFrame;
 
 /// Plain-mode receiver state machine.
 #[derive(Default)]
-pub(super) struct PlainReceiver;
+pub(super) struct PlainReceiver {
+    complete_reported: bool,
+}
 
 impl PlainReceiver {
     /// Handle one plain data block.
@@ -30,12 +34,22 @@ impl PlainReceiver {
             return;
         }
         if shared.complete_blocks.contains(&data.block_id) {
-            shared.send_block_ack(data.block_id).await;
             return;
         }
 
         shared.write_block(data.block_id, payload).await;
         shared.complete_blocks.insert(data.block_id);
-        shared.send_block_ack(data.block_id).await;
+    }
+
+    pub(super) async fn handle_eot(&mut self, shared: &super::ReceiverShared) {
+        let Some(status) = shared.plain_status() else {
+            return;
+        };
+        shared.send_plain_status(&status).await;
+        self.complete_reported = matches!(status, PlainStatus::Complete);
+    }
+
+    pub(super) fn is_complete(&self) -> bool {
+        self.complete_reported
     }
 }

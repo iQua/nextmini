@@ -14,7 +14,7 @@ use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    LosslessSessionMode, PlainStatus,
 };
 
 const SOURCE_NODE_ID: usize = 21;
@@ -101,7 +101,7 @@ async fn plain_sender_emits_every_block_id_before_completion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_writes_and_acks_every_block() {
+async fn plain_receiver_writes_and_reports_complete_after_eot() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -160,22 +160,23 @@ async fn plain_receiver_writes_and_acks_every_block() {
         .expect("block data should reach receiver");
     }
 
-    let mut acked = BTreeSet::new();
-    while acked.len() < 3 {
-        let packet = common::recv_packet(&mut capture.packet_rx).await;
-        let payload = packet
-            .tcp_payload()
-            .expect("ack packet should include payload");
-        let (_, control) =
-            lossless_session::decode_control(payload).expect("control packet should decode");
-        let LosslessSessionControl::BlockAck { block_id } = control else {
-            panic!("unexpected receiver control frame: {control:?}");
-        };
-        acked.insert(block_id);
-    }
-    assert_eq!(acked, BTreeSet::from([0, 1, 2]));
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(0xA11C_E102, &LosslessSessionControl::Eot),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("eot should reach receiver");
 
-    drop(tx);
+    let status_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let status_payload = status_packet
+        .tcp_payload()
+        .expect("plain status packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(status_payload).expect("plain status should decode");
+    let LosslessSessionControl::PlainStatus { status } = control else {
+        panic!("unexpected receiver control frame: {control:?}");
+    };
+    assert_eq!(status, PlainStatus::Complete);
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
