@@ -209,7 +209,7 @@ pub enum LosslessSessionValidationError {
 }
 
 pub const MAX_MISSING_BLOCK_RANGES: usize = u8::MAX as usize;
-pub const MAX_FEC_STATUS_BLOCKS: usize = u8::MAX as usize;
+pub const MAX_FEC_STATUS_BLOCKS: usize = u16::MAX as usize;
 
 impl PlainStatus {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
@@ -768,15 +768,16 @@ const PLAIN_STATUS_RANGE_LEN: usize = 8 + 8;
 const FEC_STATUS_FIXED_BODY_LEN: usize = 1 + 1 + 2;
 const FEC_STATUS_BLOCK_LEN: usize = 8 + 2 + 2;
 
-/// Maximum size of a control frame under the block-first protocol.
+/// Stack-friendly scratch size for common control frames.
 ///
-/// The largest body is either `Manifest` with `u8::MAX` tree ids or
-/// `PlainStatus::MissingBlocks` with `u8::MAX` canonical ranges.
+/// Large `FecStatus::MissingBlocks` reports can exceed this bound; callers that
+/// need to encode arbitrarily large FEC status payloads should use
+/// [`encode_control`], which allocates an exact-size `Vec<u8>`.
 pub const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
     + max_control_body_len(
         MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2),
         PLAIN_STATUS_FIXED_BODY_LEN + (MAX_MISSING_BLOCK_RANGES * PLAIN_STATUS_RANGE_LEN),
-        FEC_STATUS_FIXED_BODY_LEN + (MAX_FEC_STATUS_BLOCKS * FEC_STATUS_BLOCK_LEN),
+        FEC_STATUS_FIXED_BODY_LEN + ((u8::MAX as usize) * FEC_STATUS_BLOCK_LEN),
     );
 
 const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize) -> usize {
@@ -816,7 +817,8 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
 }
 
 /// Encode a CONTROL frame into the provided buffer.
-/// The buffer must be at least `MAX_CONTROL_FRAME_SIZE` bytes.
+///
+/// The buffer must be at least `LosslessSessionHeader::LEN + control_body_len(control)` bytes.
 pub fn encode_control_into<'a>(
     buf: &'a mut [u8],
     session_id: u64,
@@ -923,8 +925,9 @@ pub fn encode_control_into<'a>(
                         "fec status blocks exceed wire capacity"
                     );
                     buf[body_start] = 1;
-                    buf[body_start + 1] = blocks.len() as u8;
-                    buf[body_start + 2..body_start + 4].copy_from_slice(&0u16.to_be_bytes());
+                    buf[body_start + 1] = (blocks.len() & 0xff) as u8;
+                    buf[body_start + 2] = ((blocks.len() >> 8) & 0xff) as u8;
+                    buf[body_start + 3] = 0;
                     let mut pos = body_start + FEC_STATUS_FIXED_BODY_LEN;
                     for block in blocks {
                         buf[pos..pos + 8].copy_from_slice(&block.block_id.to_be_bytes());
@@ -954,9 +957,9 @@ pub fn encode_control_into<'a>(
 
 /// Encode a CONTROL frame (header + control body) into a fresh `Vec<u8>`.
 pub fn encode_control(session_id: u64, control: &LosslessSessionControl) -> Vec<u8> {
-    let mut buf = [0u8; MAX_CONTROL_FRAME_SIZE];
-    let frame = encode_control_into(&mut buf, session_id, control);
-    frame.to_vec()
+    let mut buf = vec![0u8; LosslessSessionHeader::LEN + control_body_len(control)];
+    encode_control_into(&mut buf, session_id, control);
+    buf
 }
 
 /// Try to decode a CONTROL frame; returns (header, parsed control).
@@ -1084,7 +1087,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             }
 
             let report_kind = body[0];
-            let block_count = body[1] as usize;
+            let block_count = usize::from(body[1]) | (usize::from(body[2]) << 8);
             if body.len() != FEC_STATUS_FIXED_BODY_LEN + (block_count * FEC_STATUS_BLOCK_LEN) {
                 return None;
             }
@@ -1569,6 +1572,24 @@ mod tests {
     }
 
     #[test]
+    fn fec_status_roundtrips_at_255_block_limit() {
+        let control = LosslessSessionControl::FecStatus {
+            status: FecStatus::MissingBlocks {
+                blocks: (0..MAX_FEC_STATUS_BLOCKS as u64)
+                    .map(|block_id| BlockStatus {
+                        block_id,
+                        deficit_symbols: 4,
+                    })
+                    .collect(),
+            },
+        };
+
+        let encoded = encode_control(16, &control);
+        let (_, decoded) = decode_control(&encoded).expect("decode max-size fec status");
+        assert_eq!(decoded, control);
+    }
+
+    #[test]
     fn decode_control_rejects_plain_manifest_with_fec_fields() {
         let mut encoded = encode_control(
             11,
@@ -1679,6 +1700,22 @@ mod tests {
             Err(LosslessSessionValidationError::BlockIdOutOfRange {
                 block_id: 3,
                 total_blocks: 3,
+            })
+        );
+
+        assert_eq!(
+            FecStatus::MissingBlocks {
+                blocks: (0..(MAX_FEC_STATUS_BLOCKS as u64 + 1))
+                    .map(|block_id| BlockStatus {
+                        block_id,
+                        deficit_symbols: 1,
+                    })
+                    .collect(),
+            }
+            .validate(),
+            Err(LosslessSessionValidationError::TooManyFecStatusBlocks {
+                configured: MAX_FEC_STATUS_BLOCKS + 1,
+                max: MAX_FEC_STATUS_BLOCKS,
             })
         );
     }

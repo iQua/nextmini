@@ -511,6 +511,58 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fec_status_reports_all_missing_blocks_for_large_transfers() {
+        let plan = BlockPlan::new(300, 1).expect("plan");
+        let geometry = plan.symbol_geometry(4).expect("geometry");
+        let shared = ReceiverShared {
+            session_id: 9,
+            route: crate::node::session::runtime::TransportRoute {
+                src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1,
+                dst_port: 2,
+            },
+            local_node_id: 1,
+            cfg: ReceiverConfig {
+                session_id: 9,
+                route: crate::node::session::runtime::TransportRoute {
+                    src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                    dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                    src_port: 1,
+                    dst_port: 2,
+                },
+                local_node_id: 1,
+                sink_buffer: None,
+                progress: None,
+                fec_enabled: true,
+            },
+            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
+            manifest: Some(LosslessSessionManifest {
+                block_size: 1,
+                total_bytes: 300,
+                total_blocks: 300,
+                mode: LosslessSessionMode::Fec(
+                    nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
+                        4,
+                        vec![0, 1],
+                    ),
+                ),
+            }),
+            plan: Some(plan),
+            complete_blocks: BTreeSet::new(),
+        };
+        let receiver = FecReceiver::new(geometry);
+
+        let FecStatus::MissingBlocks { blocks } = receiver.status(&shared).expect("status") else {
+            panic!("expected missing-block status");
+        };
+
+        assert_eq!(blocks.len(), 300);
+        assert_eq!(blocks.first().map(|b| b.block_id), Some(0));
+        assert_eq!(blocks.last().map(|b| b.block_id), Some(299));
+    }
+
+    #[tokio::test]
     async fn plain_receiver_only_completes_after_reporting_complete_on_eot() {
         let receiver = SessionReceiver {
             shared: ReceiverShared {
