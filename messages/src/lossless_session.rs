@@ -619,6 +619,19 @@ pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<
 const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2 + 4;
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
+/// Encode a `BlockSymbol` frame into a fresh `Vec<u8>`.
+pub fn encode_block_symbol(
+    session_id: u64,
+    block_id: u64,
+    symbol_id: u32,
+    tree_id: u16,
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut out = Vec::new();
+    encode_block_symbol_into(&mut out, session_id, block_id, symbol_id, tree_id, payload);
+    out
+}
+
 /// Encode a `BlockSymbol` frame into the provided reusable buffer.
 pub fn encode_block_symbol_into<'a>(
     buf: &'a mut Vec<u8>,
