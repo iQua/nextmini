@@ -50,6 +50,7 @@ Run one custom case without editing the script:
 ```
 
 For custom runs, `--mode` defaults to `fec` when omitted. `plain` mode is only valid with `--trees 1`.
+Use `--packet-processors`, `--channel-capacity`, and `--queue-capacity` to exercise different namespace dataplane concurrency settings without editing the generated config.
 
 Run the two sweep families you asked for:
 
@@ -57,7 +58,7 @@ Run the two sweep families you asked for:
 ./examples/ns-lossless/run.sh --tree-sweep-max 10 --receiver-sweep-max 100
 ```
 
-That command runs in `fec` mode and uses the script defaults of `20` receivers for the tree sweep and `3` trees for the receiver sweep. Override them with `--tree-sweep-receivers`, `--receiver-sweep-trees`, `--block-size`, `--symbols-per-block`, `--payload-size`, `--receive-timeout-ms`, or `--status-timeout-seconds` if needed.
+That command runs in `fec` mode and uses the script defaults of `20` receivers for the tree sweep and `3` trees for the receiver sweep. Override them with `--tree-sweep-receivers`, `--receiver-sweep-trees`, `--block-size`, `--symbols-per-block`, `--payload-size`, `--receive-timeout-ms`, `--packet-processors`, `--channel-capacity`, `--queue-capacity`, or `--status-timeout-seconds` if needed.
 
 Use `--receive-timeout-ms` to override the generated integration session completion timeout (default: `120000`). This is separate from `--status-timeout-seconds`, which controls how long the shell runner waits for case status files.
 

@@ -19,6 +19,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, required=True)
     parser.add_argument("--symbols-per-block", type=int, required=True)
     parser.add_argument("--payload-size", type=int, required=True)
+    parser.add_argument("--packet-processors", type=int, default=1)
+    parser.add_argument("--channel-capacity", type=int, default=2048)
+    parser.add_argument("--queue-capacity", type=int, default=2048)
     parser.add_argument(
         "--receive-timeout-ms",
         type=int,
@@ -50,6 +53,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--symbols-per-block must be positive.")
     if args.payload_size <= 0:
         raise SystemExit("--payload-size must be positive.")
+    if args.packet_processors <= 0:
+        raise SystemExit("--packet-processors must be positive.")
+    if args.channel_capacity <= 0:
+        raise SystemExit("--channel-capacity must be positive.")
+    if args.queue_capacity <= 0:
+        raise SystemExit("--queue-capacity must be positive.")
     if args.receive_timeout_ms <= 0:
         raise SystemExit("--receive-timeout-ms must be positive.")
     if args.mode == "plain" and args.trees != 1:
@@ -152,10 +161,10 @@ private_network_interface = "eth0"
 private_network_name = "net1"
 n_nodes = {total_nodes(args.trees, args.receivers)}
 num_tun_queues = 1
-num_packet_processors = 1
-channel_capacity = 2048
+num_packet_processors = {args.packet_processors}
+channel_capacity = {args.channel_capacity}
 channel_backpressure = true
-queue_capacity = 2048
+queue_capacity = {args.queue_capacity}
 feature = "sequential"
 enable_local_interface = false
 controller_addr = "{args.controller_addr}"

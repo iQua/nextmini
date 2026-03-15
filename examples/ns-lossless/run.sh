@@ -17,6 +17,9 @@ block_size=""
 symbols_per_block=""
 payload_size=""
 receive_timeout_ms=""
+packet_processors=""
+channel_capacity=""
+queue_capacity=""
 tree_sweep_max=""
 tree_sweep_receivers="20"
 receiver_sweep_max=""
@@ -38,6 +41,9 @@ Options:
   --symbols-per-block N      Custom run symbols_per_block (default: 32).
   --payload-size N           Custom run payload size bytes (default: 262144).
   --receive-timeout-ms N     Session completion timeout in ms (default: 120000).
+  --packet-processors N      Dataplane packet processor lanes (default: 1).
+  --channel-capacity N       Dataplane channel capacity (default: 2048).
+  --queue-capacity N         Dataplane queue capacity (default: 2048).
   --tree-sweep-max N         Run a sweep from 1..N trees with fixed receivers.
   --tree-sweep-receivers N   Receiver count for tree sweep (default: 20).
   --receiver-sweep-max N     Run a sweep from 1..N receivers with fixed trees.
@@ -85,6 +91,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --receive-timeout-ms)
       receive_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --packet-processors)
+      packet_processors="${2:-}"
+      shift 2
+      ;;
+    --channel-capacity)
+      channel_capacity="${2:-}"
+      shift 2
+      ;;
+    --queue-capacity)
+      queue_capacity="${2:-}"
       shift 2
       ;;
     --tree-sweep-max)
@@ -176,6 +194,9 @@ validate_run_request() {
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
   local selected_receive_timeout_ms="$7"
+  local selected_packet_processors="$8"
+  local selected_channel_capacity="$9"
+  local selected_queue_capacity="${10}"
 
   validate_mode "$selected_mode"
   require_positive_int "--receivers" "$selected_receivers"
@@ -184,6 +205,9 @@ validate_run_request() {
   require_positive_int "--symbols-per-block" "$selected_symbols_per_block"
   require_positive_int "--payload-size" "$selected_payload_size"
   require_positive_int "--receive-timeout-ms" "$selected_receive_timeout_ms"
+  require_positive_int "--packet-processors" "$selected_packet_processors"
+  require_positive_int "--channel-capacity" "$selected_channel_capacity"
+  require_positive_int "--queue-capacity" "$selected_queue_capacity"
 
   if [[ "$selected_mode" == "plain" ]] && (( selected_trees != 1 )); then
     echo "plain mode only supports exactly one tree." >&2
@@ -198,14 +222,20 @@ make_case_name() {
   local selected_trees="$4"
   local selected_block_size="$5"
   local selected_symbols_per_block="$6"
+  local selected_packet_processors="$7"
+  local selected_channel_capacity="$8"
+  local selected_queue_capacity="$9"
 
-  printf '%s-%s-%st-%sr-b%s-s%s' \
+  printf '%s-%s-%st-%sr-b%s-s%s-p%s-c%s-q%s' \
     "$prefix" \
     "$selected_mode" \
     "$selected_trees" \
     "$selected_receivers" \
     "$selected_block_size" \
-    "$selected_symbols_per_block"
+    "$selected_symbols_per_block" \
+    "$selected_packet_processors" \
+    "$selected_channel_capacity" \
+    "$selected_queue_capacity"
 }
 
 build_binaries() {
@@ -466,6 +496,9 @@ run_case() {
   local symbols_per_block="$6"
   local payload_size="$7"
   local receive_timeout_ms="$8"
+  local selected_packet_processors="$9"
+  local selected_channel_capacity="${10}"
+  local selected_queue_capacity="${11}"
   local case_dir="${artifacts_root}/${name}"
 
   current_case_dir="$case_dir"
@@ -482,7 +515,10 @@ run_case() {
     --block-size "$block_size" \
     --symbols-per-block "$symbols_per_block" \
     --payload-size "$payload_size" \
-    --receive-timeout-ms "$receive_timeout_ms"
+    --receive-timeout-ms "$receive_timeout_ms" \
+    --packet-processors "$selected_packet_processors" \
+    --channel-capacity "$selected_channel_capacity" \
+    --queue-capacity "$selected_queue_capacity"
 
   start_controller "$case_dir"
   start_dataplane "$case_dir"
@@ -509,6 +545,9 @@ run_tree_sweep() {
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
   local selected_receive_timeout_ms="$7"
+  local selected_packet_processors="$8"
+  local selected_channel_capacity="$9"
+  local selected_queue_capacity="${10}"
 
   require_positive_int "--tree-sweep-max" "$max_trees"
   require_positive_int "--tree-sweep-receivers" "$selected_receivers"
@@ -521,17 +560,23 @@ run_tree_sweep() {
       "$selected_block_size" \
       "$selected_symbols_per_block" \
       "$selected_payload_size" \
-      "$selected_receive_timeout_ms"
+      "$selected_receive_timeout_ms" \
+      "$selected_packet_processors" \
+      "$selected_channel_capacity" \
+      "$selected_queue_capacity"
 
     run_case \
-      "$(make_case_name tree-sweep "$selected_mode" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block")" \
+      "$(make_case_name tree-sweep "$selected_mode" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
       "$selected_mode" \
       "$selected_receivers" \
       "$tree_count" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
       "$selected_payload_size" \
-      "$selected_receive_timeout_ms"
+      "$selected_receive_timeout_ms" \
+      "$selected_packet_processors" \
+      "$selected_channel_capacity" \
+      "$selected_queue_capacity"
   done
 }
 
@@ -543,6 +588,9 @@ run_receiver_sweep() {
   local selected_symbols_per_block="$5"
   local selected_payload_size="$6"
   local selected_receive_timeout_ms="$7"
+  local selected_packet_processors="$8"
+  local selected_channel_capacity="$9"
+  local selected_queue_capacity="${10}"
 
   require_positive_int "--receiver-sweep-max" "$max_receivers"
   require_positive_int "--receiver-sweep-trees" "$selected_trees"
@@ -555,17 +603,23 @@ run_receiver_sweep() {
       "$selected_block_size" \
       "$selected_symbols_per_block" \
       "$selected_payload_size" \
-      "$selected_receive_timeout_ms"
+      "$selected_receive_timeout_ms" \
+      "$selected_packet_processors" \
+      "$selected_channel_capacity" \
+      "$selected_queue_capacity"
 
     run_case \
-      "$(make_case_name receiver-sweep "$selected_mode" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block")" \
+      "$(make_case_name receiver-sweep "$selected_mode" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
       "$selected_mode" \
       "$receiver_count" \
       "$selected_trees" \
       "$selected_block_size" \
       "$selected_symbols_per_block" \
       "$selected_payload_size" \
-      "$selected_receive_timeout_ms"
+      "$selected_receive_timeout_ms" \
+      "$selected_packet_processors" \
+      "$selected_channel_capacity" \
+      "$selected_queue_capacity"
   done
 }
 
@@ -574,7 +628,7 @@ trap cleanup_on_exit EXIT
 require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
 
 if [[ -n "$case_name" ]]; then
-  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
     echo "--case cannot be combined with custom run or sweep options." >&2
     exit 1
   fi
@@ -592,10 +646,10 @@ mkdir -p "$artifacts_root"
 
 if [[ -n "$case_name" ]]; then
   case "$case_name" in
-    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 120000 ;;
-    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 120000 ;;
-    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 120000 ;;
-    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 120000 ;;
+    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 120000 1 2048 2048 ;;
+    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 120000 1 2048 2048 ;;
+    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 120000 1 2048 2048 ;;
+    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 120000 1 2048 2048 ;;
     *)
       echo "Unknown case: ${case_name}" >&2
       exit 1
@@ -609,6 +663,9 @@ selected_block_size="${block_size:-8192}"
 selected_symbols_per_block="${symbols_per_block:-32}"
 selected_payload_size="${payload_size:-262144}"
 selected_receive_timeout_ms="${receive_timeout_ms:-120000}"
+selected_packet_processors="${packet_processors:-1}"
+selected_channel_capacity="${channel_capacity:-2048}"
+selected_queue_capacity="${queue_capacity:-2048}"
 ran_any="false"
 
 if [[ -n "$tree_sweep_max" ]]; then
@@ -619,7 +676,10 @@ if [[ -n "$tree_sweep_max" ]]; then
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
-    "$selected_receive_timeout_ms"
+    "$selected_receive_timeout_ms" \
+    "$selected_packet_processors" \
+    "$selected_channel_capacity" \
+    "$selected_queue_capacity"
   ran_any="true"
 fi
 
@@ -631,11 +691,14 @@ if [[ -n "$receiver_sweep_max" ]]; then
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
-    "$selected_receive_timeout_ms"
+    "$selected_receive_timeout_ms" \
+    "$selected_packet_processors" \
+    "$selected_channel_capacity" \
+    "$selected_queue_capacity"
   ran_any="true"
 fi
 
-if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" ) ]]; then
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
   if [[ -z "$receivers" || -z "$trees" ]]; then
     echo "Custom runs require both --receivers and --trees." >&2
     exit 1
@@ -648,20 +711,26 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
-    "$selected_receive_timeout_ms"
+    "$selected_receive_timeout_ms" \
+    "$selected_packet_processors" \
+    "$selected_channel_capacity" \
+    "$selected_queue_capacity"
 
   run_case \
-    "$(make_case_name custom "$selected_mode" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block")" \
+    "$(make_case_name custom "$selected_mode" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
     "$selected_mode" \
     "$receivers" \
     "$trees" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
-    "$selected_receive_timeout_ms"
+    "$selected_receive_timeout_ms" \
+    "$selected_packet_processors" \
+    "$selected_channel_capacity" \
+    "$selected_queue_capacity"
   ran_any="true"
 fi
 
 if [[ "$ran_any" == "false" ]]; then
-  run_case plain-1r plain 1 1 8192 32 262144 120000
+  run_case plain-1r plain 1 1 8192 32 262144 120000 1 2048 2048
 fi
