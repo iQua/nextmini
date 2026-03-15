@@ -314,7 +314,9 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot => {}
+            LosslessSessionControl::Manifest { .. }
+            | LosslessSessionControl::Eot
+            | LosslessSessionControl::FecStatus { .. } => {}
             LosslessSessionControl::Ready { node_id } => {
                 if let Ok(node_id) = usize::try_from(node_id)
                     && self.receiver_set.contains(&node_id)

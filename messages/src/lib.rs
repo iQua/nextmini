@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 mod ip_ser;
 pub mod lossless_session;
 pub use lossless_session::{
-    BlockStatus, FecScheme, LOSSLESS_SESSION_VERSION, LosslessSessionBlockData,
+    BlockStatus, FecScheme, FecStatus, LOSSLESS_SESSION_VERSION, LosslessSessionBlockData,
     LosslessSessionBlockSymbol, LosslessSessionFecMode, LosslessSessionManifest,
     LosslessSessionMode,
 };

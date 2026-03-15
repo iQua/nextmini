@@ -149,7 +149,8 @@ impl SessionReceiver {
             LosslessSessionControl::Ready { .. }
             | LosslessSessionControl::BlockAck { .. }
             | LosslessSessionControl::PlainStatus { .. }
-            | LosslessSessionControl::BlockStatus { .. } => {}
+            | LosslessSessionControl::BlockStatus { .. }
+            | LosslessSessionControl::FecStatus { .. } => {}
             LosslessSessionControl::Eot => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_eot(&self.shared).await;
