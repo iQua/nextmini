@@ -8,7 +8,7 @@ use tokio::time::timeout;
 use nextmini::node::session::api::{LosslessRuntimeHandle, SessionOutcome, StartError};
 use nextmini::node::session::runtime::ReceiverRequest;
 use nextmini::node::session::runtime::SenderRequest;
-use nextmini_messages::lossless_session::{self, LosslessSessionControl};
+use nextmini_messages::lossless_session::{self, LosslessSessionControl, PlainStatus};
 
 const SOURCE_NODE_ID: usize = 41;
 const RECEIVER_NODE_ID: usize = 42;
@@ -86,14 +86,14 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
 
     runtime.deliver(
         session_id,
-        common::block_ack_frame(session_id, RECEIVER_NODE_ID, 0),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
     );
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
             .await
             .expect("sender wait should not time out"),
         SessionOutcome::Completed,
-        "sender should complete once topology is ready and the block is acknowledged"
+        "sender should complete once topology is ready and the receiver reports complete"
     );
 }
 
@@ -169,14 +169,14 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
 
     runtime.deliver(
         session_id,
-        common::block_ack_frame(session_id, RECEIVER_NODE_ID, 0),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
     );
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
             .await
             .expect("sender wait should not time out"),
         SessionOutcome::Completed,
-        "sender should still complete once the block is acknowledged after grace expiry"
+        "sender should still complete once the receiver reports complete after grace expiry"
     );
 }
 
@@ -230,4 +230,125 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
 
     first.abort();
     assert_eq!(first.wait().await, SessionOutcome::Aborted);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_receiver_replays_complete_on_late_eot() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 3,
+        DST_PORT + 3,
+        1,
+        2048,
+    )
+    .await;
+    let runtime = LosslessRuntimeHandle::new(
+        capture.processors.clone(),
+        capture.cfg.lossless_runtime_config.clone(),
+    );
+    let session_id = 0xA11C_E304;
+
+    let mut session = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+            progress: None,
+        })
+        .await
+        .expect("receiver should start");
+
+    runtime.deliver(
+        session_id,
+        common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
+    );
+    assert_ready(&mut capture).await;
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    runtime.deliver(session_id, common::eot_frame(session_id, SOURCE_NODE_ID));
+    assert_plain_complete(&mut capture).await;
+    assert_eq!(session.wait().await, SessionOutcome::Completed);
+
+    runtime.deliver(session_id, common::eot_frame(session_id, SOURCE_NODE_ID));
+    assert_plain_complete(&mut capture).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completed_receiver_replays_complete_on_late_duplicate_block_data() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 4,
+        DST_PORT + 4,
+        1,
+        2048,
+    )
+    .await;
+    let runtime = LosslessRuntimeHandle::new(
+        capture.processors.clone(),
+        capture.cfg.lossless_runtime_config.clone(),
+    );
+    let session_id = 0xA11C_E305;
+
+    let mut session = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+            progress: None,
+        })
+        .await
+        .expect("receiver should start");
+
+    runtime.deliver(
+        session_id,
+        common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
+    );
+    assert_ready(&mut capture).await;
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    runtime.deliver(session_id, common::eot_frame(session_id, SOURCE_NODE_ID));
+    assert_plain_complete(&mut capture).await;
+    assert_eq!(session.wait().await, SessionOutcome::Completed);
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    assert_plain_complete(&mut capture).await;
+}
+
+async fn assert_ready(capture: &mut common::PacketCaptureHarness) {
+    let ready_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let ready_payload = ready_packet
+        .tcp_payload()
+        .expect("ready packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(ready_payload),
+        Some((_, LosslessSessionControl::Ready { .. }))
+    ));
+}
+
+async fn assert_plain_complete(capture: &mut common::PacketCaptureHarness) {
+    let packet = common::recv_packet(&mut capture.packet_rx).await;
+    let payload = packet
+        .tcp_payload()
+        .expect("plain status packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(payload).expect("plain status should decode");
+    assert_eq!(
+        control,
+        LosslessSessionControl::PlainStatus {
+            status: PlainStatus::Complete,
+        }
+    );
 }

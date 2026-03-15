@@ -12,7 +12,7 @@ mod plain;
 use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
@@ -21,8 +21,8 @@ use nextmini_messages::lossless_session::{
 };
 
 use crate::node::processor::ProcessorHandle;
-use crate::node::session::api::InboundFrame;
 use crate::node::session::api::SessionId;
+use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
@@ -33,11 +33,20 @@ use self::plain::PlainReceiver;
 /// Run one receiver session until the transfer is complete or the channel closes.
 pub async fn run(
     cfg: ReceiverConfig,
-    mut rx: mpsc::Receiver<InboundFrame>,
+    rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
 ) {
+    run_with_runtime(cfg, rx, processors, None).await;
+}
+
+pub(super) async fn run_with_runtime(
+    cfg: ReceiverConfig,
+    mut rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+) {
     let mut receiver = SessionReceiver::new(cfg, processors);
-    receiver.run(&mut rx).await;
+    receiver.run(&mut rx, runtime_sender).await;
 }
 
 /// Stateful receiver loop shared by plain and FEC transfer modes.
@@ -83,7 +92,11 @@ impl SessionReceiver {
     }
 
     /// Execute the receiver loop until the object is complete.
-    async fn run(&mut self, rx: &mut mpsc::Receiver<InboundFrame>) {
+    async fn run(
+        &mut self,
+        rx: &mut mpsc::Receiver<InboundFrame>,
+        runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+    ) {
         info!(
             session_id = self.shared.session_id,
             "Lossless receiver started"
@@ -101,6 +114,10 @@ impl SessionReceiver {
             if self.is_complete() {
                 break;
             }
+        }
+
+        if self.is_complete() {
+            self.register_completed_replay(runtime_sender).await;
         }
 
         debug!(
@@ -219,6 +236,42 @@ impl SessionReceiver {
         self.shared.manifest = Some(manifest);
         self.mode = Some(mode);
         self.shared.send_ready().await;
+    }
+
+    async fn register_completed_replay(
+        &self,
+        runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+    ) {
+        let Some(runtime_sender) = runtime_sender else {
+            return;
+        };
+        let Some(replay) = self.completed_replay() else {
+            return;
+        };
+
+        let (ack_tx, ack_rx) = oneshot::channel();
+        if runtime_sender
+            .send(LosslessRuntimeMessage::ReceiverCompleted {
+                session_id: self.shared.session_id,
+                replay,
+                ack: ack_tx,
+            })
+            .is_ok()
+        {
+            let _ = ack_rx.await;
+        }
+    }
+
+    fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
+        match self.mode.as_ref() {
+            Some(ReceiverMode::Plain(_)) if self.is_complete() => {
+                Some(CompletedReceiverReplay::Plain {
+                    route: self.shared.route,
+                    status: PlainStatus::Complete,
+                })
+            }
+            _ => None,
+        }
     }
 }
 
