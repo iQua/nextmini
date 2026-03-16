@@ -3,9 +3,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use std::io::IoSlice;
+use tokio::io::AsyncReadExt;
 use tokio::io::Result;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::BidirectionalStream;
@@ -16,8 +15,9 @@ use tracing::{error, info};
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
-use crate::node::packet::{MAX_FRAMED_PACKET_SIZE, Packet, PacketBuf};
+use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
@@ -206,24 +206,7 @@ impl QuicReader {
     }
 
     async fn read_packet(&mut self) -> Result<Packet> {
-        let mut buf = PacketBuf::new();
-        buf.prepare_uninit(4);
-        self.stream.read_exact(buf.as_mut_slice()).await?;
-
-        let header = buf.as_slice();
-        let msg_len = header[2] as usize * 256 + header[3] as usize;
-        if !(20..=MAX_FRAMED_PACKET_SIZE).contains(&msg_len) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                format!("invalid IPv4 total length: {}", msg_len),
-            ));
-        }
-        buf.prepare_uninit(msg_len);
-        self.stream
-            .read_exact(&mut buf.as_mut_slice()[4..msg_len])
-            .await?;
-
-        Ok(Packet::new(msg_len, buf))
+        framing::read_packet(&mut self.stream).await
     }
 }
 
@@ -239,32 +222,6 @@ impl QuicWriter {
 
     /// Writes multiple packets to the QUIC network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
-        if packets.is_empty() {
-            return Ok(());
-        }
-
-        // first creates IoSlice objects from packet buffers
-        let mut io_slices: Vec<IoSlice> = packets
-            .iter()
-            .map(|packet| IoSlice::new(packet.bytes()))
-            .collect();
-
-        let mut slices = io_slices.as_mut_slice();
-
-        while !slices.is_empty() {
-            let written_this_call = self.stream.write_vectored(slices).await?;
-
-            if written_this_call == 0 {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::WriteZero,
-                    "write_vectored returned 0",
-                ));
-            }
-
-            // advances the slices to skip the written data
-            IoSlice::advance_slices(&mut slices, written_this_call);
-        }
-
-        Ok(())
+        framing::write_packets(&mut self.stream, &packets).await
     }
 }
