@@ -76,12 +76,26 @@ impl FecReceiver {
         let Some(block_state) = self.blocks.get(&block_id) else {
             return false;
         };
-        if block_state.symbols.len() < usize::from(fec_mode.symbols_per_block) {
+        let source_symbols = usize::from(fec_mode.symbols_per_block);
+        if block_state.symbols.len() < source_symbols {
             return false;
+        }
+        let Some(block_len) = plan.block_len(block_id) else {
+            return false;
+        };
+
+        if let Some(block) = systematic_block_payload(
+            block_state,
+            source_symbols,
+            self.geometry.symbol_size(),
+            block_len,
+        ) {
+            self.complete_block(shared, block_id, block).await;
+            return true;
         }
 
         let params = BlockParams::new(
-            usize::from(fec_mode.symbols_per_block),
+            source_symbols,
             self.geometry.symbol_size(),
             session_fec::block_seed(shared.session_id, block_id),
         );
@@ -109,9 +123,6 @@ impl FecReceiver {
         }
 
         let Ok(output) = decoder.decode(&received) else {
-            return false;
-        };
-        let Some(block_len) = plan.block_len(block_id) else {
             return false;
         };
 
@@ -143,10 +154,19 @@ impl FecReceiver {
         }
         block.truncate(block_len);
 
+        self.complete_block(shared, block_id, block).await;
+        true
+    }
+
+    async fn complete_block(
+        &mut self,
+        shared: &mut super::ReceiverShared,
+        block_id: u64,
+        block: Vec<u8>,
+    ) {
         shared.write_block(block_id, &block).await;
         shared.complete_blocks.insert(block_id);
         self.blocks.remove(&block_id);
-        true
     }
 
     /// Compute how many additional source-equivalent symbols are still needed.
@@ -202,4 +222,27 @@ impl FecReceiver {
     pub(super) fn is_complete(&self) -> bool {
         self.complete_reported
     }
+}
+
+fn systematic_block_payload(
+    block_state: &FecBlockState,
+    source_symbols: usize,
+    symbol_size: usize,
+    block_len: usize,
+) -> Option<Vec<u8>> {
+    let block_capacity = source_symbols.checked_mul(symbol_size)?;
+    let mut block = Vec::new();
+    block.try_reserve_exact(block_capacity).ok()?;
+
+    for symbol_id in 0..source_symbols as u32 {
+        let payload = block_state.symbols.get(&symbol_id)?;
+        let copy_len = payload.len().min(symbol_size);
+        block.extend_from_slice(&payload[..copy_len]);
+        if copy_len < symbol_size {
+            block.resize(block.len() + (symbol_size - copy_len), 0);
+        }
+    }
+
+    block.truncate(block_len);
+    Some(block)
 }
