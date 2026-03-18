@@ -114,4 +114,4 @@ services:
       - node2
     cap_add:
       - NET_ADMIN
-    command: /bin/bash -c "chmod +x iperf3_s.sh && sleep 9 && /var/nextmini/nextmini ws://controller:3000"
+    command: /bin/bash -c "chmod +x /var/node/iperf3_s.sh && sleep 9 && /var/nextmini/nextmini ws://controller:3000"
