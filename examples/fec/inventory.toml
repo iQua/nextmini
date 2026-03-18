@@ -1,0 +1,43 @@
+# FEC multi-tree file transfer experiment
+# Controller + DB: Boston (no sudo!)
+# Build on Boston, rsync binaries to all nodes
+
+[controller]
+host = "boston.csl.toronto.edu"
+user = "xindan"
+identity_file = "~/.ssh/no-key"
+no_sudo = true
+
+[paths]
+remote_repo_dir = "~/skyrocket/nextmini"
+
+[[nodes]]
+role = "trainer"
+node_id = 1
+host = "206.12.89.244"
+user = "ubuntu"
+identity_file = "~/.ssh/id_rsa_ns-test"
+
+[[nodes]]
+role = "worker"
+node_id = 2
+host = "206.12.102.201"
+user = "ubuntu"
+identity_file = "~/.ssh/no-key"
+rank = 0
+
+[[nodes]]
+role = "worker"
+node_id = 3
+host = "206.12.97.30"
+user = "ubuntu"
+identity_file = "~/.ssh/no-key"
+rank = 1
+
+[[nodes]]
+role = "worker"
+node_id = 4
+host = "34.172.51.76"
+user = "no-passphrase-key"
+identity_file = "~/.ssh/no-key"
+rank = 2
