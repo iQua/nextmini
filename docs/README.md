@@ -5,6 +5,7 @@ This is the canonical documentation for the Nextmini framework.
 To run development server:
 
 ```bash
+bun install
 bun dev
 ```
 
