@@ -1,4 +1,4 @@
-# FEC WAN Experiment
+# FEC WAN Experiment Agent Instructions
 
 This folder contains the WAN runner for comparing plain multicast against FEC multicast on the Boston/Arbutus testbed.
 
@@ -7,9 +7,14 @@ The runner lives in `examples/fec/run_fec.py`. It generates configs and payloads
 ## What The Runner Assumes
 
 - You can SSH from the machine running `run_fec.py` to Boston and to every selected VM.
+- The local machine running `run_fec.py` has `python3`, `rsync`, and `ssh` available.
 - Docker is installed on Boston and on every participating VM.
-- The Boston user can run Docker without `sudo`.
+- The remote user on Boston and on every participating VM can run Docker without `sudo`.
 - Every VM that needs to pull images already trusts the Boston registry at `boston.csl.toronto.edu:5000`.
+- Boston has enough network egress to build images with `docker build`, including pulling base images and Python/Rust build dependencies.
+- Every participating VM supports `docker run --network host --cap-add NET_ADMIN --device /dev/net/tun`.
+- The participating hosts can reach each other on the ports used by the controller and dataplane.
+- The inventory interface names are correct. The default is `ens3`, so hosts using another interface must override it in the inventory.
 
 Important: the runner does **not** configure Docker daemon trust for you. It starts a plain `registry:2` container on Boston and then assumes the other VMs can pull from it.
 
