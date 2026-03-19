@@ -51,6 +51,14 @@ identity_file = "~/.ssh/no-key"
 rank = 3
 
 [[nodes]]
+role = "worker"
+node_id = 8
+host = "206.12.91.229"
+user = "ubuntu"
+identity_file = "~/.ssh/no-key"
+rank = 4
+
+[[nodes]]
 role = "relay"
 node_id = 5
 host = "206.12.92.2"
