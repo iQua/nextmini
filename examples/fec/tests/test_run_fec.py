@@ -62,7 +62,7 @@ def write_inventory(path: Path) -> None:
             [[nodes]]
             role = "worker"
             node_id = 4
-            host = "34.172.51.76"
+            host = "34.30.74.243"
             user = "no-passphrase-key"
             identity_file = "~/.ssh/no-key"
             rank = 2
