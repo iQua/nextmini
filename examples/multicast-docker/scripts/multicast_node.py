@@ -21,6 +21,8 @@ except ImportError as exc:  # pragma: no cover - surfaced at launch time
 METADATA_FILE = "tensor-metadata.json"
 GROUP_INFO_FILE = "group-info.json"
 READY_FILE_TEMPLATE = "receiver-ready-{}.json"
+LOSSLESS_PACKET_OVERHEAD = 20 + 20 + 16
+MAX_LOSSLESS_CHUNK_SIZE = 65_535 - LOSSLESS_PACKET_OVERHEAD
 
 
 def atomic_write_json(path: Path, payload: dict) -> None:
@@ -102,6 +104,19 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def validate_chunk_size(chunk_size: int) -> int:
+    if chunk_size <= 0:
+        raise SystemExit("--chunk-size must be positive.")
+    if chunk_size > MAX_LOSSLESS_CHUNK_SIZE:
+        raise SystemExit(
+            "--chunk-size "
+            f"{chunk_size} exceeds the maximum lossless payload "
+            f"{MAX_LOSSLESS_CHUNK_SIZE}; larger chunks overflow the framed "
+            "IPv4/TCP packet envelope."
+        )
+    return chunk_size
+
+
 def load_toml(path: Path) -> dict:
     """Load a TOML file, using tomllib (3.11+) or tomli fallback."""
     try:
@@ -124,6 +139,28 @@ def read_fec_tree_ids(node_config: Path) -> List[int]:
     cfg = load_toml(node_config)
     lrc = cfg.get("lossless_runtime_config", {})
     return [int(t) for t in lrc.get("fec_default_tree_ids", [0])]
+
+
+def compute_group_route_trees(
+    controller_config: Path,
+    source_node_id: int,
+    receiver_ids: List[int],
+    tree_ids: List[int],
+) -> List[Tuple[int, List[Tuple[int, int]]]]:
+    topo_edges = read_controller_topology_edges(controller_config)
+    trees: list[tuple[int, list[tuple[int, int]]]] = []
+    for tree_id in tree_ids:
+        order = "asc" if tree_id % 2 == 0 else "desc"
+        edges = compute_shortest_path_tree_edges(
+            topo_edges,
+            src=source_node_id,
+            destinations=receiver_ids,
+            neighbor_order=order,
+        )
+        if not edges:
+            raise SystemExit(f"No shortest-path edges for tree_id={tree_id}; check topology.")
+        trees.append((tree_id, edges))
+    return trees
 
 
 def compute_shortest_path_tree_edges(
@@ -224,14 +261,14 @@ def write_tensor_metadata(
 
 
 def load_tensor_metadata_if_needed(args: argparse.Namespace) -> None:
-    if args.tensor_path is not None and args.expected_bytes is not None:
+    if args.expected_bytes is not None:
         return
     path = metadata_path(args)
     deadline = time.monotonic() + args.group_timeout
     while time.monotonic() < deadline:
         if path.exists():
             data = json.loads(path.read_text())
-            if args.tensor_path is None:
+            if args.tensor_path is None and data.get("path"):
                 args.tensor_path = Path(data["path"])
             if args.expected_bytes is None:
                 args.expected_bytes = int(data["bytes"])
@@ -360,23 +397,22 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    tree_ids = read_fec_tree_ids(args.config) if args.controller_config else []
+    tree_ids = read_fec_tree_ids(args.config) if args.controller_config else [0]
 
-    if args.controller_config and len(tree_ids) > 1:
-        # Multi-tree: compute per-tree shortest-path DAGs from controller topology.
-        topo_edges = read_controller_topology_edges(args.controller_config)
-        trees: list[tuple[int, list[tuple[int, int]]]] = []
-        for tid in tree_ids:
-            order = "asc" if tid % 2 == 0 else "desc"
-            tedges = compute_shortest_path_tree_edges(
-                topo_edges, src=source_node_id, destinations=receiver_ids,
-                neighbor_order=order,
-            )
-            if not tedges:
-                raise SystemExit(f"No shortest-path edges for tree_id={tid}; check topology.")
-            trees.append((tid, tedges))
-        log(f"Installing multicast trees={trees}", args.quiet)
-        dataplane.set_group_routes_multi(group_id, trees)
+    if args.controller_config:
+        trees = compute_group_route_trees(
+            controller_config=args.controller_config,
+            source_node_id=source_node_id,
+            receiver_ids=receiver_ids,
+            tree_ids=tree_ids,
+        )
+        if len(trees) > 1:
+            log(f"Installing multicast trees={trees}", args.quiet)
+            dataplane.set_group_routes_multi(group_id, trees)
+        else:
+            edges = trees[0][1]
+            log(f"Installing multicast DAG edges={edges}", args.quiet)
+            dataplane.set_group_routes(group_id, edges)
     else:
         # Single-tree or no controller config: use star topology.
         edges = build_star_edges(source_node_id, receiver_ids)
@@ -392,10 +428,6 @@ def run_source(args: argparse.Namespace) -> None:
     ):
         raise TimeoutError("Timed out waiting for multicast routes to install.")
 
-    log("Waiting for receivers to register receive sessions...", args.quiet)
-    wait_for_receivers_ready(args, receiver_ids)
-    log("All receivers are ready; starting send.", args.quiet)
-
     if args.tensor_path is None:
         raise SystemExit(
             "Source role requires a tensor file; set --tensor-path or --generate-tensor."
@@ -408,6 +440,10 @@ def run_source(args: argparse.Namespace) -> None:
         raise SystemExit("Tensor file is empty; nothing to transmit.")
     args.expected_bytes = total_bytes
     write_tensor_metadata(args, args.tensor_path, total_bytes)
+
+    log("Waiting for receivers to register receive sessions...", args.quiet)
+    wait_for_receivers_ready(args, receiver_ids)
+    log("All receivers are ready; starting send.", args.quiet)
 
     log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
     send_start_time = time.perf_counter()
@@ -516,8 +552,7 @@ def run_receiver(args: argparse.Namespace) -> None:
 
 def main() -> int:
     args = parse_args()
-    if args.chunk_size <= 0:
-        raise SystemExit("--chunk-size must be positive.")
+    args.chunk_size = validate_chunk_size(args.chunk_size)
     if args.role == "source" and args.tensor_path is None:
         args.generate_tensor = True
     if args.artifact_dir:

@@ -7,6 +7,8 @@ target/
 # Generated artifacts / caches
 .multidc_cache/
 examples/multicast-docker/artifacts/
+examples/fec/generated/
+examples/fec/artifacts/
 tensors/
 
 # Python

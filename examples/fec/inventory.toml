@@ -41,3 +41,17 @@ host = "34.172.51.76"
 user = "no-passphrase-key"
 identity_file = "~/.ssh/no-key"
 rank = 2
+
+[[nodes]]
+role = "relay"
+node_id = 5
+host = "206.12.92.2"
+user = "ubuntu"
+identity_file = "~/.ssh/no-key"
+
+[[nodes]]
+role = "relay"
+node_id = 6
+host = "206.12.100.198"
+user = "ubuntu"
+identity_file = "~/.ssh/no-key"

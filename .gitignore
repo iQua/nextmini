@@ -35,6 +35,9 @@ tensors/**
 
 # artifacts
 **/artifacts
+examples/fec/generated/
+examples/fec/artifacts/
+examples/fec/.last-image-tag
 
 # iperf results
 iperf-results.md
