@@ -104,9 +104,33 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def validate_chunk_size(chunk_size: int) -> int:
+def validate_chunk_size(
+    chunk_size: int,
+    *,
+    fec: str = "off",
+    config_path: Path | None = None,
+) -> int:
     if chunk_size <= 0:
         raise SystemExit("--chunk-size must be positive.")
+    if fec == "on":
+        if config_path is None:
+            raise SystemExit("--config is required to validate FEC chunk size.")
+        cfg = load_toml(config_path)
+        lrc = cfg.get("lossless_runtime_config", {})
+        symbols_per_block = int(lrc.get("fec_default_symbols_per_block", 0))
+        if symbols_per_block <= 0:
+            raise SystemExit(
+                "FEC validation requires lossless_runtime_config.fec_default_symbols_per_block >= 1."
+            )
+        symbol_size = (chunk_size + symbols_per_block - 1) // symbols_per_block
+        if symbol_size > MAX_LOSSLESS_CHUNK_SIZE:
+            raise SystemExit(
+                "--chunk-size "
+                f"{chunk_size} with fec_default_symbols_per_block={symbols_per_block} yields "
+                f"symbol_size={symbol_size}, which exceeds the maximum lossless payload "
+                f"{MAX_LOSSLESS_CHUNK_SIZE}."
+            )
+        return chunk_size
     if chunk_size > MAX_LOSSLESS_CHUNK_SIZE:
         raise SystemExit(
             "--chunk-size "
@@ -552,7 +576,11 @@ def run_receiver(args: argparse.Namespace) -> None:
 
 def main() -> int:
     args = parse_args()
-    args.chunk_size = validate_chunk_size(args.chunk_size)
+    args.chunk_size = validate_chunk_size(
+        args.chunk_size,
+        fec=args.fec,
+        config_path=args.config,
+    )
     if args.role == "source" and args.tensor_path is None:
         args.generate_tensor = True
     if args.artifact_dir:

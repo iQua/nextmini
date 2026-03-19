@@ -87,13 +87,23 @@ def write_inventory(path: Path) -> None:
 
 
 class RunFecTests(unittest.TestCase):
-    def test_validate_block_size_rejects_oversized_lossless_payload(self) -> None:
+    def test_validate_block_size_rejects_oversized_plain_payload_but_allows_large_fec_blocks(
+        self,
+    ) -> None:
         mod = load_run_fec_module()
 
         with self.assertRaises(ValueError):
             mod.validate_block_size(65_536)
 
         self.assertEqual(mod.validate_block_size(8_192), 8_192)
+        self.assertEqual(
+            mod.validate_block_size(
+                128 * 1024,
+                fec_enabled=True,
+                symbols_per_block=16,
+            ),
+            128 * 1024,
+        )
 
     def test_load_inventory_accepts_relays(self) -> None:
         mod = load_run_fec_module()
@@ -106,7 +116,7 @@ class RunFecTests(unittest.TestCase):
         self.assertEqual([node.node_id for node in inventory.workers], [2, 3, 4])
         self.assertEqual([node.node_id for node in inventory.relays], [5, 6])
 
-    def test_compute_relay_trees_uses_one_relay_per_tree(self) -> None:
+    def test_compute_relay_trees_uses_two_relays_per_tree(self) -> None:
         mod = load_run_fec_module()
 
         plain = mod.compute_relay_trees(
@@ -117,20 +127,20 @@ class RunFecTests(unittest.TestCase):
         )
         self.assertEqual(
             plain,
-            [(0, [(1, 5), (5, 2), (5, 3), (5, 4)])],
+            [(0, [(1, 5), (5, 6), (6, 2), (6, 3), (6, 4)])],
         )
 
         fec = mod.compute_relay_trees(
             source_node_id=1,
             receiver_ids=[2, 3, 4],
-            relay_ids=[5, 6],
+            relay_ids=[5, 6, 7, 8],
             tree_ids=[0, 1],
         )
         self.assertEqual(
             fec,
             [
-                (0, [(1, 5), (5, 2), (5, 3), (5, 4)]),
-                (1, [(1, 6), (6, 2), (6, 3), (6, 4)]),
+                (0, [(1, 5), (5, 6), (6, 2), (6, 3), (6, 4)]),
+                (1, [(1, 7), (7, 8), (8, 2), (8, 3), (8, 4)]),
             ],
         )
 
@@ -232,8 +242,8 @@ class RunFecTests(unittest.TestCase):
             controller_cfg = mod._load_toml(run_dir / "controller-config.toml")
             node_cfg = mod._load_toml(run_dir / "node-1.toml")
 
-        self.assertEqual(controller_cfg["topology"]["n_nodes"], 5)
-        self.assertEqual(node_cfg["n_nodes"], 5)
+        self.assertEqual(controller_cfg["topology"]["n_nodes"], 6)
+        self.assertEqual(node_cfg["n_nodes"], 6)
 
     def test_build_state_only_includes_active_plan_nodes(self) -> None:
         mod = load_run_fec_module()
@@ -249,7 +259,7 @@ class RunFecTests(unittest.TestCase):
                 payload_size=1024,
                 tree_ids=None,
                 receiver_ids=[2, 3],
-                relay_ids=[5],
+                relay_ids=[5, 6],
                 group_label="active-nodes",
                 out_dir=Path(tmpdir) / "plain-run",
                 block_size=8_192,
@@ -262,7 +272,7 @@ class RunFecTests(unittest.TestCase):
                 image_tag="fec-test",
             )
 
-        self.assertEqual(sorted(int(node_id) for node_id in state["nodes"]), [1, 2, 3, 5])
+        self.assertEqual(sorted(int(node_id) for node_id in state["nodes"]), [1, 2, 3, 5, 6])
 
     def test_noncontiguous_active_node_ids_use_active_count_for_n_nodes(self) -> None:
         mod = load_run_fec_module()
@@ -278,7 +288,7 @@ class RunFecTests(unittest.TestCase):
                 payload_size=1024,
                 tree_ids=None,
                 receiver_ids=[2, 3],
-                relay_ids=[5],
+                relay_ids=[5, 6],
                 group_label="active-count",
                 out_dir=Path(tmpdir) / "plain-run",
                 block_size=8_192,
@@ -288,8 +298,8 @@ class RunFecTests(unittest.TestCase):
             controller_cfg = mod._load_toml(run_dir / "controller-config.toml")
             node_cfg = mod._load_toml(run_dir / "node-5.toml")
 
-        self.assertEqual(controller_cfg["topology"]["n_nodes"], 4)
-        self.assertEqual(node_cfg["n_nodes"], 4)
+        self.assertEqual(controller_cfg["topology"]["n_nodes"], 5)
+        self.assertEqual(node_cfg["n_nodes"], 5)
 
     def test_remove_local_run_dir_only_allows_generated_children(self) -> None:
         mod = load_run_fec_module()

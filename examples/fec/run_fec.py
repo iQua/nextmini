@@ -36,6 +36,7 @@ DEFAULT_RECEIVE_TIMEOUT_MS = 300_000
 DEFAULT_RUN_TIMEOUT = 900
 DEFAULT_REMOTE_RUN_ROOT = "~/fec-runs"
 DEFAULT_BOSTON_NETWORK = "fec-control"
+RELAYS_PER_TREE = 2
 
 LOCAL_REGISTRY = "127.0.0.1:5000"
 PUBLIC_REGISTRY = "boston.csl.toronto.edu:5000"
@@ -121,9 +122,26 @@ def parse_size(value: str) -> int:
     return int(raw)
 
 
-def validate_block_size(block_size: int) -> int:
+def validate_block_size(
+    block_size: int,
+    *,
+    fec_enabled: bool = False,
+    symbols_per_block: int = 1,
+) -> int:
     if block_size <= 0:
         raise ValueError("block_size must be positive.")
+    if fec_enabled:
+        if symbols_per_block <= 0:
+            raise ValueError("symbols_per_block must be positive for fec mode.")
+        symbol_size = (block_size + symbols_per_block - 1) // symbols_per_block
+        if symbol_size > MAX_LOSSLESS_BLOCK_SIZE:
+            raise ValueError(
+                "block_size "
+                f"{block_size} with symbols_per_block={symbols_per_block} yields "
+                f"symbol_size={symbol_size}, which exceeds the maximum lossless payload "
+                f"{MAX_LOSSLESS_BLOCK_SIZE}."
+            )
+        return block_size
     if block_size > MAX_LOSSLESS_BLOCK_SIZE:
         raise ValueError(
             "block_size "
@@ -245,16 +263,20 @@ def compute_relay_trees(
         raise SystemExit("At least one receiver is required.")
     if not tree_ids:
         raise SystemExit("At least one tree ID is required.")
-    if len(relay_ids) < len(tree_ids):
+    required_relays = len(tree_ids) * RELAYS_PER_TREE
+    if len(relay_ids) < required_relays:
         raise SystemExit(
-            f"Need at least {len(tree_ids)} relays for tree_ids={tree_ids}, got {relay_ids}."
+            f"Need at least {required_relays} relays for tree_ids={tree_ids} "
+            f"with {RELAYS_PER_TREE} relays per tree, got {relay_ids}."
         )
 
     trees: list[tuple[int, list[tuple[int, int]]]] = []
     for tree_index, tree_id in enumerate(tree_ids):
-        relay_id = relay_ids[tree_index]
-        edges = [(source_node_id, relay_id)]
-        edges.extend((relay_id, receiver_id) for receiver_id in receiver_ids)
+        offset = tree_index * RELAYS_PER_TREE
+        tree_relays = relay_ids[offset : offset + RELAYS_PER_TREE]
+        edges = [(source_node_id, tree_relays[0])]
+        edges.extend((src, dst) for src, dst in zip(tree_relays, tree_relays[1:]))
+        edges.extend((tree_relays[-1], receiver_id) for receiver_id in receiver_ids)
         trees.append((tree_id, edges))
     return trees
 
@@ -299,7 +321,7 @@ def build_run_plan(
         mode=mode,
         source_node_id=source_node_id,
         receiver_ids=receivers,
-        relay_ids=relays[: len(trees)],
+        relay_ids=relays[: len(trees) * RELAYS_PER_TREE],
         tree_ids=trees,
         trees=computed_trees,
         topology_edges=topology_edges,
@@ -507,7 +529,11 @@ def generate_case(
     group_timeout: int = DEFAULT_GROUP_TIMEOUT,
     receive_timeout_ms: int = DEFAULT_RECEIVE_TIMEOUT_MS,
 ) -> tuple[Path, RunPlan]:
-    validate_block_size(block_size)
+    validate_block_size(
+        block_size,
+        fec_enabled=mode == "fec",
+        symbols_per_block=symbols_per_block,
+    )
     plan = build_run_plan(
         inventory,
         mode=mode,
@@ -563,25 +589,24 @@ def generate_case(
             group_timeout=group_timeout,
         ),
         "receivers": {
-            str(node.node_id): _receiver_command(
+            str(node_id): _receiver_command(
                 plan,
-                node.node_id,
+                node_id,
                 block_size=block_size,
                 expected_bytes=payload_size,
                 group_timeout=group_timeout,
                 receive_timeout_ms=receive_timeout_ms,
             )
-            for node in inventory.workers
+            for node_id in plan.receiver_ids
         },
         "relays": {
-            str(node.node_id): _router_command(
+            str(node_id): _router_command(
                 plan,
-                node.node_id,
+                node_id,
                 block_size=block_size,
                 group_timeout=group_timeout,
             )
-            for node in inventory.relays
-            if node.node_id in plan.relay_ids
+            for node_id in plan.relay_ids
         },
     }
     manifest = {
@@ -777,7 +802,16 @@ def read_remote_text(target: SshTarget, path: str) -> str:
 
 def write_remote_text(target: SshTarget, path: str, content: str) -> None:
     parent = str(Path(path).parent)
-    script = f"mkdir -p {shlex.quote(parent)} && cat > {shlex.quote(path)}"
+    tmp_pattern = f"{parent}/.tmp-write.XXXXXX"
+    script = textwrap.dedent(
+        f"""\
+        set -e
+        mkdir -p {shlex.quote(parent)}
+        tmp_file=$(mktemp {shlex.quote(tmp_pattern)})
+        cat > "$tmp_file"
+        mv "$tmp_file" {shlex.quote(path)}
+        """
+    ).strip()
     remote_bash(target, script, input_text=content)
 
 
@@ -863,6 +897,17 @@ def ssh_target_from_state(raw: dict) -> SshTarget:
     )
 
 
+def _state_remote_run_dir(entry: dict) -> str:
+    return expand_remote_path(
+        ssh_target_from_state(entry["ssh"]),
+        entry["remote_run_dir"],
+    )
+
+
+def _state_artifact_dir(entry: dict) -> str:
+    return f"{_state_remote_run_dir(entry)}/artifacts"
+
+
 def sync_repo_to_boston(inventory: Inventory) -> str:
     controller_target = inventory.controller.ssh
     remote_repo_dir = expand_remote_path(controller_target, inventory.remote_repo_dir)
@@ -892,6 +937,7 @@ def sync_repo_to_boston(inventory: Inventory) -> str:
         "--exclude=.pytest_cache/",
         "--exclude=.mypy_cache/",
         "--exclude=.ruff_cache/",
+        "--exclude=.multidc_cache/",
         "--exclude=examples/fec/generated/",
         "--exclude=examples/fec/artifacts/",
         "--exclude=examples/multicast-docker/artifacts/",
@@ -968,9 +1014,7 @@ def build_state(
     refs = build_image_refs(image_tag)
     payload_path = run_dir / "payload.bin"
     controller_target = inventory.controller.ssh
-    controller_run_dir = expand_remote_path(
-        controller_target, f"{DEFAULT_REMOTE_RUN_ROOT}/{run_dir.name}"
-    )
+    controller_run_dir = f"{DEFAULT_REMOTE_RUN_ROOT}/{run_dir.name}"
     active_node_ids = {
         plan.source_node_id,
         *plan.receiver_ids,
@@ -1004,8 +1048,15 @@ def build_state(
         if node.node_id not in active_node_ids:
             continue
         target = node.ssh
-        remote_run_dir = expand_remote_path(target, f"{DEFAULT_REMOTE_RUN_ROOT}/{run_dir.name}")
-        role_name = "source" if node.role == "trainer" else node.role
+        remote_run_dir = f"{DEFAULT_REMOTE_RUN_ROOT}/{run_dir.name}"
+        if node.node_id == plan.source_node_id:
+            role_name = "source"
+        elif node.node_id in plan.relay_ids:
+            role_name = "relay"
+        elif node.node_id in plan.receiver_ids:
+            role_name = "receiver"
+        else:
+            role_name = node.role
         state["nodes"][str(node.node_id)] = {
             "role": node.role,
             "node_id": node.node_id,
@@ -1024,17 +1075,19 @@ def stage_run_files(inventory: Inventory, run_dir: Path, state: dict) -> None:
 
     controller_entry = state["controller"]
     controller_target = ssh_target_from_state(controller_entry["ssh"])
-    ensure_remote_dir(controller_target, controller_entry["remote_run_dir"], clean=True)
-    ensure_remote_dir(controller_target, controller_entry["artifact_dir"])
+    controller_run_dir = _state_remote_run_dir(controller_entry)
+    controller_artifact_dir = _state_artifact_dir(controller_entry)
+    ensure_remote_dir(controller_target, controller_run_dir, clean=True)
+    ensure_remote_dir(controller_target, controller_artifact_dir)
     copy_to_remote(
         controller_target,
         controller_cfg,
-        f"{controller_entry['remote_run_dir']}/controller-config.toml",
+        f"{controller_run_dir}/controller-config.toml",
     )
     copy_to_remote(
         controller_target,
         manifest_path,
-        f"{controller_entry['remote_run_dir']}/manifest.json",
+        f"{controller_run_dir}/manifest.json",
     )
 
     for node in inventory.nodes:
@@ -1042,28 +1095,30 @@ def stage_run_files(inventory: Inventory, run_dir: Path, state: dict) -> None:
         if node_state is None:
             continue
         target = ssh_target_from_state(node_state["ssh"])
-        ensure_remote_dir(target, node_state["remote_run_dir"], clean=True)
-        ensure_remote_dir(target, node_state["artifact_dir"])
+        node_run_dir = _state_remote_run_dir(node_state)
+        node_artifact_dir = _state_artifact_dir(node_state)
+        ensure_remote_dir(target, node_run_dir, clean=True)
+        ensure_remote_dir(target, node_artifact_dir)
         copy_to_remote(
             target,
             run_dir / f"node-{node.node_id}.toml",
-            f"{node_state['remote_run_dir']}/node-{node.node_id}.toml",
+            f"{node_run_dir}/node-{node.node_id}.toml",
         )
         copy_to_remote(
             target,
             manifest_path,
-            f"{node_state['remote_run_dir']}/manifest.json",
+            f"{node_run_dir}/manifest.json",
         )
         if node.role == "trainer":
             copy_to_remote(
                 target,
                 controller_cfg,
-                f"{node_state['remote_run_dir']}/controller-config.toml",
+                f"{node_run_dir}/controller-config.toml",
             )
             copy_to_remote(
                 target,
                 payload_path,
-                f"{node_state['remote_run_dir']}/payload.bin",
+                f"{node_run_dir}/payload.bin",
             )
 
 
@@ -1071,7 +1126,7 @@ def start_controller_stack(state: dict) -> None:
     controller_entry = state["controller"]
     target = ssh_target_from_state(controller_entry["ssh"])
     refs = state["image_refs"]
-    config_path = f"{controller_entry['remote_run_dir']}/controller-config.toml"
+    config_path = f"{_state_remote_run_dir(controller_entry)}/controller-config.toml"
     bind = f"{config_path}:/var/nextmini/config.toml:ro"
     remote_bash(
         target,
@@ -1128,7 +1183,7 @@ def launch_node_container(
     node_state = state["nodes"][str(node_id)]
     target = ssh_target_from_state(node_state["ssh"])
     command_text = " ".join(shlex.quote(part) for part in command)
-    bind = f"{node_state['remote_run_dir']}:/run"
+    bind = f"{_state_remote_run_dir(node_state)}:/run"
     remote_bash(
         target,
         textwrap.dedent(
@@ -1153,7 +1208,7 @@ def launch_node_container(
 def relay_group_info(state: dict, *, timeout_seconds: int) -> None:
     trainer_entry = state["nodes"][str(state["source_node_id"])]
     trainer_target = ssh_target_from_state(trainer_entry["ssh"])
-    trainer_group_info = f"{trainer_entry['artifact_dir']}/{GROUP_INFO_FILE}"
+    trainer_group_info = f"{_state_artifact_dir(trainer_entry)}/{GROUP_INFO_FILE}"
     pending_receivers = [state["nodes"][str(node_id)] for node_id in state["receiver_ids"]]
     deadline = time.monotonic() + timeout_seconds
 
@@ -1164,7 +1219,7 @@ def relay_group_info(state: dict, *, timeout_seconds: int) -> None:
                 target = ssh_target_from_state(entry["ssh"])
                 write_remote_text(
                     target,
-                    f"{entry['artifact_dir']}/{GROUP_INFO_FILE}",
+                    f"{_state_artifact_dir(entry)}/{GROUP_INFO_FILE}",
                     group_info,
                 )
             return
@@ -1184,7 +1239,7 @@ def relay_receiver_ready_files(state: dict, *, timeout_seconds: int) -> None:
             receiver_entry = state["nodes"][str(node_id)]
             receiver_target = ssh_target_from_state(receiver_entry["ssh"])
             ready_name = READY_FILE_TEMPLATE.format(node_id)
-            ready_path = f"{receiver_entry['artifact_dir']}/{ready_name}"
+            ready_path = f"{_state_artifact_dir(receiver_entry)}/{ready_name}"
             if not remote_file_exists(receiver_target, ready_path):
                 receiver_state = remote_container_state(
                     receiver_target, receiver_entry["container_name"]
@@ -1197,7 +1252,7 @@ def relay_receiver_ready_files(state: dict, *, timeout_seconds: int) -> None:
             ready_payload = read_remote_text(receiver_target, ready_path)
             write_remote_text(
                 trainer_target,
-                f"{trainer_entry['artifact_dir']}/{ready_name}",
+                f"{_state_artifact_dir(trainer_entry)}/{ready_name}",
                 ready_payload,
             )
             pending.remove(node_id)
@@ -1219,7 +1274,7 @@ def wait_for_receiver_outputs(state: dict, *, timeout_seconds: int) -> None:
         for node_id in list(pending):
             receiver_entry = state["nodes"][str(node_id)]
             receiver_target = ssh_target_from_state(receiver_entry["ssh"])
-            output_path = f"{receiver_entry['artifact_dir']}/receiver-{node_id}.bin"
+            output_path = f"{_state_artifact_dir(receiver_entry)}/receiver-{node_id}.bin"
             size = remote_file_size(receiver_target, output_path)
             if size == expected_size:
                 pending.remove(node_id)
@@ -1290,19 +1345,19 @@ def fetch_artifacts(state: dict) -> dict:
     trainer_dir.mkdir(parents=True, exist_ok=True)
     copy_optional_remote_file(
         trainer_target,
-        f"{trainer_entry['artifact_dir']}/{GROUP_INFO_FILE}",
+        f"{_state_artifact_dir(trainer_entry)}/{GROUP_INFO_FILE}",
         trainer_dir / GROUP_INFO_FILE,
     )
     copy_optional_remote_file(
         trainer_target,
-        f"{trainer_entry['artifact_dir']}/{METADATA_FILE}",
+        f"{_state_artifact_dir(trainer_entry)}/{METADATA_FILE}",
         trainer_dir / METADATA_FILE,
     )
     for node_id in state["receiver_ids"]:
         ready_name = READY_FILE_TEMPLATE.format(node_id)
         copy_optional_remote_file(
             trainer_target,
-            f"{trainer_entry['artifact_dir']}/{ready_name}",
+            f"{_state_artifact_dir(trainer_entry)}/{ready_name}",
             trainer_dir / ready_name,
         )
 
@@ -1313,13 +1368,13 @@ def fetch_artifacts(state: dict) -> dict:
         node_dir.mkdir(parents=True, exist_ok=True)
         copy_optional_remote_file(
             receiver_target,
-            f"{receiver_entry['artifact_dir']}/receiver-{node_id}.bin",
+            f"{_state_artifact_dir(receiver_entry)}/receiver-{node_id}.bin",
             node_dir / f"receiver-{node_id}.bin",
         )
         ready_name = READY_FILE_TEMPLATE.format(node_id)
         copy_optional_remote_file(
             receiver_target,
-            f"{receiver_entry['artifact_dir']}/{ready_name}",
+            f"{_state_artifact_dir(receiver_entry)}/{ready_name}",
             node_dir / ready_name,
         )
 
@@ -1402,7 +1457,7 @@ def cleanup_remote_run_dirs(state: dict) -> None:
         target = ssh_target_from_state(node_entry["ssh"])
         remote_bash(
             target,
-            f"rm -rf {shlex.quote(node_entry['remote_run_dir'])}",
+            f"rm -rf {shlex.quote(_state_remote_run_dir(node_entry))}",
             check=False,
         )
 
@@ -1410,7 +1465,7 @@ def cleanup_remote_run_dirs(state: dict) -> None:
     controller_target = ssh_target_from_state(controller_entry["ssh"])
     remote_bash(
         controller_target,
-        f"rm -rf {shlex.quote(controller_entry['remote_run_dir'])}",
+        f"rm -rf {shlex.quote(_state_remote_run_dir(controller_entry))}",
         check=False,
     )
 

@@ -54,13 +54,34 @@ def write_controller_config(path: Path) -> None:
 
 
 class MulticastNodeTests(unittest.TestCase):
-    def test_validate_chunk_size_rejects_oversized_lossless_payload(self) -> None:
+    def test_validate_chunk_size_rejects_oversized_plain_payload_but_allows_large_fec_blocks(
+        self,
+    ) -> None:
         mod = load_multicast_node_module()
 
         with self.assertRaises(SystemExit):
             mod.validate_chunk_size(65_536)
 
         self.assertEqual(mod.validate_chunk_size(8_192), 8_192)
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "node.toml"
+            config_path.write_text(
+                textwrap.dedent(
+                    """\
+                    [lossless_runtime_config]
+                    fec_default_symbols_per_block = 16
+                    """
+                ),
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                mod.validate_chunk_size(
+                    128 * 1024,
+                    fec="on",
+                    config_path=config_path,
+                ),
+                128 * 1024,
+            )
 
     def test_controller_topology_plan_supports_single_tree_relay_path(self) -> None:
         mod = load_multicast_node_module()
