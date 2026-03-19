@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
     self, FecStatus, LosslessSessionManifest, LosslessSessionMode,
@@ -33,6 +33,11 @@ pub(super) struct FecSender {
     phase: RoundPhase,
     round_complete: bool,
     round_reports: BTreeMap<usize, FecStatus>,
+    source_symbols_sent: u64,
+    extra_symbols_sent: u64,
+    report_rounds: u32,
+    repair_rounds: u32,
+    scheduled_extra_symbols: u64,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -77,6 +82,11 @@ impl FecSender {
             phase: RoundPhase::SendingData,
             round_complete: false,
             round_reports: BTreeMap::new(),
+            source_symbols_sent: 0,
+            extra_symbols_sent: 0,
+            report_rounds: 0,
+            repair_rounds: 0,
+            scheduled_extra_symbols: 0,
         })
     }
 
@@ -136,6 +146,16 @@ impl FecSender {
                 break;
             }
         }
+
+        info!(
+            session_id = shared.session.session_id,
+            source_symbols_sent = self.source_symbols_sent,
+            extra_symbols_sent = self.extra_symbols_sent,
+            report_rounds = self.report_rounds,
+            repair_rounds = self.repair_rounds,
+            scheduled_extra_symbols = self.scheduled_extra_symbols,
+            "Lossless FEC sender stats"
+        );
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -184,6 +204,7 @@ impl FecSender {
         if let Some(block) = fec_block_mut(self, block_id) {
             block.next_source_symbol += 1;
         }
+        self.source_symbols_sent += 1;
         true
     }
 
@@ -206,6 +227,7 @@ impl FecSender {
             block.extra_budget = block.extra_budget.saturating_sub(1);
             block.next_fountain_symbol += 1;
         }
+        self.extra_symbols_sent += 1;
         true
     }
 
@@ -319,6 +341,7 @@ impl FecSender {
         shared.send_eot().await;
         self.round_reports.clear();
         self.phase = RoundPhase::WaitingForReports;
+        self.report_rounds += 1;
     }
 
     fn finish_report_round(&mut self) {
@@ -347,6 +370,11 @@ impl FecSender {
             return;
         }
 
+        self.repair_rounds += 1;
+        self.scheduled_extra_symbols += aggregated
+            .iter()
+            .map(|&count| u64::from(count))
+            .sum::<u64>();
         for (block, budget) in self.blocks.iter_mut().zip(aggregated) {
             block.extra_budget = budget;
         }

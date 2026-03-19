@@ -268,6 +268,30 @@ def format_throughput(bytes_transferred: int, elapsed_seconds: float) -> str:
     return f"{mib_per_sec:.2f} MiB/s ({mbps:.2f} Mbps)"
 
 
+def receiver_first_completed_block_offset_seconds(
+    dataplane: object, session_id: int
+) -> float | None:
+    getter = getattr(dataplane, "receiver_first_completed_block_offset_ms", None)
+    if getter is None:
+        return None
+    raw_value = getter(session_id)
+    if raw_value is None:
+        return None
+    return float(raw_value) / 1000.0
+
+
+def receiver_steady_state_duration_seconds(
+    dataplane: object, session_id: int
+) -> float | None:
+    getter = getattr(dataplane, "receiver_steady_state_duration_ms", None)
+    if getter is None:
+        return None
+    raw_value = getter(session_id)
+    if raw_value is None:
+        return None
+    return float(raw_value) / 1000.0
+
+
 def metadata_path(args: argparse.Namespace) -> Path:
     return args.artifact_dir / METADATA_FILE
 
@@ -470,8 +494,6 @@ def run_source(args: argparse.Namespace) -> None:
     log("All receivers are ready; starting send.", args.quiet)
 
     log(f"Starting transmission of {total_bytes} bytes...", args.quiet)
-    send_start_time = time.perf_counter()
-
     with args.tensor_path.open("rb") as fh:
         tensor_bytes = fh.read()
     builder = nm.PacketBuilder(size=total_bytes)
@@ -487,6 +509,7 @@ def run_source(args: argparse.Namespace) -> None:
         src_port=args.src_port,
         dst_port=args.dst_port,
     )
+    send_start_time = time.perf_counter()
     log(f"Started lossless send session (session ID = {sid}).", args.quiet)
 
     ok = dataplane.lossless_wait(sid, timeout_ms=args.group_timeout * 1000)
@@ -548,9 +571,12 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     ok = dataplane.lossless_wait(sid, timeout_ms=args.receive_timeout_ms)
     recv_end_time = time.perf_counter()
-    elapsed = recv_end_time - recv_start_time
+    full_elapsed = recv_end_time - recv_start_time
 
     log(f"Receive completion: {ok}.", args.quiet)
+
+    steady_state_elapsed = receiver_steady_state_duration_seconds(dataplane, sid)
+    first_completed_offset = receiver_first_completed_block_offset_seconds(dataplane, sid)
 
     view = dataplane.get_data_buffer(sid)
     payload_bytes = bytes(view.read())
@@ -563,10 +589,21 @@ def run_receiver(args: argparse.Namespace) -> None:
         throughput_bytes = args.expected_bytes
     else:
         throughput_bytes = len(payload_bytes)
+    if first_completed_offset is not None:
+        log(
+            f"First completed block arrived {first_completed_offset:.3f}s after receiver session start.",
+            args.quiet,
+        )
+    elapsed = steady_state_elapsed if steady_state_elapsed is not None else full_elapsed
     log(
         f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(throughput_bytes, elapsed)}.",
         args.quiet,
     )
+    if steady_state_elapsed is not None:
+        log(
+            f"Reception full-session wall time was {full_elapsed:.3f}s.",
+            args.quiet,
+        )
 
     if payload_bytes is not None and sink_path is not None:
         sink_path.parent.mkdir(parents=True, exist_ok=True)
