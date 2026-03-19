@@ -45,9 +45,9 @@ rank = 2
 [[nodes]]
 role = "worker"
 node_id = 7
-host = "206.12.91.229"
+host = "206.12.91.32"
 user = "ubuntu"
-identity_file = "~/.ssh/id_rsa_ns-test"
+identity_file = "~/.ssh/no-key"
 rank = 3
 
 [[nodes]]
