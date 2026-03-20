@@ -46,18 +46,17 @@ static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
 #[cfg(feature = "python-extension")]
-type BufferRegistry = Arc<Mutex<HashMap<u64, Arc<Mutex<Vec<u8>>>>>>;
-#[cfg(feature = "python-extension")]
-type SessionRegistry = Arc<Mutex<HashMap<u64, LosslessSessionHandle>>>;
-#[cfg(feature = "python-extension")]
-type ReceiverProgressRegistry = Arc<Mutex<HashMap<u64, ReceiverProgressRecord>>>;
-
-#[cfg(feature = "python-extension")]
-struct ReceiverProgressRecord {
-    registered_at: Instant,
+struct ReceiverState {
+    sink_buffer: Arc<Mutex<Vec<u8>>>,
     progress: Arc<session::runtime::ReceiverProgress>,
+    registered_at: Instant,
     completed_at: Option<Instant>,
 }
+
+#[cfg(feature = "python-extension")]
+type ReceiverRegistry = Arc<Mutex<HashMap<u64, ReceiverState>>>;
+#[cfg(feature = "python-extension")]
+type SessionRegistry = Arc<Mutex<HashMap<u64, LosslessSessionHandle>>>;
 
 #[cfg(feature = "python-extension")]
 async fn store_session_handle(
@@ -72,12 +71,12 @@ async fn store_session_handle(
 
 #[cfg(feature = "python-extension")]
 async fn mark_receiver_session_completed(
-    receiver_progress_registry: &ReceiverProgressRegistry,
+    receiver_registry: &ReceiverRegistry,
     session_id: u64,
 ) {
-    let mut guard = receiver_progress_registry.lock().await;
-    if let Some(record) = guard.get_mut(&session_id) {
-        record.completed_at = Some(Instant::now());
+    let mut guard = receiver_registry.lock().await;
+    if let Some(state) = guard.get_mut(&session_id) {
+        state.completed_at = Some(Instant::now());
     }
 }
 
@@ -265,36 +264,30 @@ struct Dataplane {
     #[cfg(feature = "python-extension")]
     session_registry: SessionRegistry,
     #[cfg(feature = "python-extension")]
-    buffer_registry: BufferRegistry,
-    #[cfg(feature = "python-extension")]
-    receiver_progress_registry: ReceiverProgressRegistry,
+    receiver_registry: ReceiverRegistry,
     event_stash: Arc<Mutex<VecDeque<PythonEvent>>>,
 }
 
 impl Dataplane {
-    #[cfg(feature = "python-extension")]
-    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
-        let mut guard = rt().block_on(self.buffer_registry.lock());
-        guard.insert(session_id, buf);
-    }
-
     #[cfg(feature = "python-extension")]
     fn remember_session(&self, session: LosslessSessionHandle) -> u64 {
         rt().block_on(store_session_handle(&self.session_registry, session))
     }
 
     #[cfg(feature = "python-extension")]
-    fn remember_receiver_progress(
+    fn remember_receiver_state(
         &self,
         session_id: u64,
+        sink_buffer: Arc<Mutex<Vec<u8>>>,
         progress: Arc<session::runtime::ReceiverProgress>,
     ) {
-        let mut guard = rt().block_on(self.receiver_progress_registry.lock());
+        let mut guard = rt().block_on(self.receiver_registry.lock());
         guard.insert(
             session_id,
-            ReceiverProgressRecord {
-                registered_at: Instant::now(),
+            ReceiverState {
+                sink_buffer,
                 progress,
+                registered_at: Instant::now(),
                 completed_at: None,
             },
         );
@@ -421,8 +414,7 @@ impl Dataplane {
                     ))
                 })?;
                 let session_id = session.id();
-                self.remember_buffer_sink(session_id, sink_buf);
-                self.remember_receiver_progress(session_id, progress);
+                self.remember_receiver_state(session_id, sink_buf, progress);
                 self.remember_session(session);
                 return Ok(session_id);
             }
@@ -452,8 +444,7 @@ impl Dataplane {
             if let Some(handle) = &self.lossless_runtime {
                 let handle = handle.clone();
                 let session_registry = self.session_registry.clone();
-                let buffer_registry = self.buffer_registry.clone();
-                let receiver_progress_registry = self.receiver_progress_registry.clone();
+                let receiver_registry = self.receiver_registry.clone();
                 let sp = src_port.unwrap_or(self.cfg.user_space_client_port);
                 let dp = dst_port.unwrap_or(self.cfg.user_space_server_port);
                 let local_node_id = self.cfg.node_id;
@@ -486,17 +477,13 @@ impl Dataplane {
                     let session_id = session.id();
 
                     {
-                        let mut guard = buffer_registry.lock().await;
-                        guard.insert(session_id, sink_buf);
-                    }
-
-                    {
-                        let mut guard = receiver_progress_registry.lock().await;
+                        let mut guard = receiver_registry.lock().await;
                         guard.insert(
                             session_id,
-                            ReceiverProgressRecord {
-                                registered_at: Instant::now(),
+                            ReceiverState {
+                                sink_buffer: sink_buf,
                                 progress,
+                                registered_at: Instant::now(),
                                 completed_at: None,
                             },
                         );
@@ -531,7 +518,7 @@ impl Dataplane {
                 let ok = rt().block_on(wait_for_session_handle(session, timeout_ms));
                 if ok {
                     rt().block_on(mark_receiver_session_completed(
-                        &self.receiver_progress_registry,
+                        &self.receiver_registry,
                         session_id,
                     ));
                 }
@@ -554,7 +541,7 @@ impl Dataplane {
         {
             if self.lossless_runtime.is_some() {
                 let session_registry = self.session_registry.clone();
-                let receiver_progress_registry = self.receiver_progress_registry.clone();
+                let receiver_registry = self.receiver_registry.clone();
                 return future_into_py(py, async move {
                     let session = {
                         let mut guard = session_registry.lock().await;
@@ -565,8 +552,7 @@ impl Dataplane {
                         None => false,
                     };
                     if ok {
-                        mark_receiver_session_completed(&receiver_progress_registry, session_id)
-                            .await;
+                        mark_receiver_session_completed(&receiver_registry, session_id).await;
                     }
 
                     Ok(ok)
@@ -583,16 +569,18 @@ impl Dataplane {
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
     fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<PacketView> {
-        let buf_arc = {
-            let guard = rt().block_on(self.buffer_registry.lock());
+        let sink_buffer = {
+            let guard = rt().block_on(self.receiver_registry.lock());
             guard
                 .get(&session_id)
-                .cloned()
-                .ok_or_else(|| PyKeyError::new_err(format!("no buffer for session {session_id}")))?
+                .map(|state| state.sink_buffer.clone())
+                .ok_or_else(|| {
+                    PyKeyError::new_err(format!("no buffer for session {session_id}"))
+                })?
         };
 
         let bytes = {
-            let mut guard = rt().block_on(buf_arc.lock());
+            let mut guard = rt().block_on(sink_buffer.lock());
             if consume {
                 Bytes::from(std::mem::take(&mut *guard))
             } else {
@@ -601,10 +589,8 @@ impl Dataplane {
         };
 
         if consume {
-            let mut guard = rt().block_on(self.buffer_registry.lock());
+            let mut guard = rt().block_on(self.receiver_registry.lock());
             guard.remove(&session_id);
-            let mut progress_guard = rt().block_on(self.receiver_progress_registry.lock());
-            progress_guard.remove(&session_id);
         }
 
         Ok(PacketView::from_bytes(bytes))
@@ -613,40 +599,32 @@ impl Dataplane {
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id))]
     fn receiver_first_completed_block_offset_ms(&self, session_id: u64) -> PyResult<Option<f64>> {
-        let guard = rt().block_on(self.receiver_progress_registry.lock());
-        let Some(record) = guard.get(&session_id) else {
+        let guard = rt().block_on(self.receiver_registry.lock());
+        let Some(state) = guard.get(&session_id) else {
             return Ok(None);
         };
-        let Some(first_completed_at) = record.progress.first_completed_block_at() else {
+        let Some(first_completed_at) = state.progress.first_completed_block_at() else {
             return Ok(None);
         };
-        Ok(Some(
-            first_completed_at
-                .saturating_duration_since(record.registered_at)
-                .as_secs_f64()
-                * 1000.0,
-        ))
+        let offset = first_completed_at.saturating_duration_since(state.registered_at);
+        Ok(Some(offset.as_secs_f64() * 1000.0))
     }
 
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id))]
     fn receiver_steady_state_duration_ms(&self, session_id: u64) -> PyResult<Option<f64>> {
-        let guard = rt().block_on(self.receiver_progress_registry.lock());
-        let Some(record) = guard.get(&session_id) else {
+        let guard = rt().block_on(self.receiver_registry.lock());
+        let Some(state) = guard.get(&session_id) else {
             return Ok(None);
         };
-        let Some(first_completed_at) = record.progress.first_completed_block_at() else {
+        let Some(first_completed_at) = state.progress.first_completed_block_at() else {
             return Ok(None);
         };
-        let Some(completed_at) = record.completed_at else {
+        let Some(completed_at) = state.completed_at else {
             return Ok(None);
         };
-        Ok(Some(
-            completed_at
-                .saturating_duration_since(first_completed_at)
-                .as_secs_f64()
-                * 1000.0,
-        ))
+        let duration = completed_at.saturating_duration_since(first_completed_at);
+        Ok(Some(duration.as_secs_f64() * 1000.0))
     }
 
     #[new]
@@ -685,9 +663,7 @@ impl Dataplane {
         #[cfg(feature = "python-extension")]
         let session_registry = Arc::new(Mutex::new(HashMap::new()));
         #[cfg(feature = "python-extension")]
-        let buffer_registry = Arc::new(Mutex::new(HashMap::new()));
-        #[cfg(feature = "python-extension")]
-        let receiver_progress_registry = Arc::new(Mutex::new(HashMap::new()));
+        let receiver_registry = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
             cfg,
@@ -700,9 +676,7 @@ impl Dataplane {
             #[cfg(feature = "python-extension")]
             session_registry,
             #[cfg(feature = "python-extension")]
-            buffer_registry,
-            #[cfg(feature = "python-extension")]
-            receiver_progress_registry,
+            receiver_registry,
             event_stash: Arc::new(Mutex::new(VecDeque::new())),
         })
     }
