@@ -191,9 +191,7 @@ impl FecReceiver {
     }
 
     pub(super) fn status(&self, shared: &super::ReceiverShared) -> Option<FecStatus> {
-        let Some(plan) = shared.plan else {
-            return None;
-        };
+        let plan = shared.plan?;
         if plan.total_blocks() == 0 || shared.has_all_blocks() {
             return Some(FecStatus::Complete);
         };

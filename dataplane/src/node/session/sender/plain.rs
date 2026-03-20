@@ -100,12 +100,13 @@ impl PlainSender {
 
     /// Return the next plain block that still needs to be sent.
     fn next_block(&mut self) -> Option<u64> {
-        while self.cursor < self.pending_blocks.len() {
+        if self.cursor < self.pending_blocks.len() {
             let block_id = self.pending_blocks[self.cursor];
             self.cursor += 1;
-            return Some(block_id);
+            Some(block_id)
+        } else {
+            None
         }
-        None
     }
 
     fn ensure_initial_round(&mut self, shared: &super::SenderShared) {

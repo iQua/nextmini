@@ -62,7 +62,7 @@ struct MmapStack {
 
 impl MmapStack {
     fn new(len: usize) -> nix::Result<Self> {
-        let length = NonZeroUsize::new(len).ok_or_else(|| nix::errno::Errno::EINVAL)?;
+        let length = NonZeroUsize::new(len).ok_or(nix::errno::Errno::EINVAL)?;
         let ptr = unsafe {
             mmap_anonymous(
                 None,
