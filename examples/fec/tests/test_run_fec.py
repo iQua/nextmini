@@ -28,58 +28,58 @@ def write_inventory(path: Path) -> None:
         textwrap.dedent(
             """\
             [controller]
-            host = "boston.csl.toronto.edu"
-            user = "xindan"
-            identity_file = "~/.ssh/no-key"
+            host = "controller.example.com"
+            user = "runner"
+            identity_file = "~/.ssh/id_example"
             no_sudo = true
 
             [paths]
-            remote_repo_dir = "~/skyrocket/nextmini"
+            remote_repo_dir = "~/nextmini"
 
             [[nodes]]
             role = "trainer"
             node_id = 1
-            host = "206.12.89.244"
+            host = "192.0.2.10"
             user = "ubuntu"
-            identity_file = "~/.ssh/id_rsa_ns-test"
+            identity_file = "~/.ssh/id_example"
 
             [[nodes]]
             role = "worker"
             node_id = 2
-            host = "206.12.102.201"
+            host = "198.51.100.20"
             user = "ubuntu"
-            identity_file = "~/.ssh/no-key"
+            identity_file = "~/.ssh/id_example"
             rank = 0
 
             [[nodes]]
             role = "worker"
             node_id = 3
-            host = "206.12.97.30"
+            host = "198.51.100.21"
             user = "ubuntu"
-            identity_file = "~/.ssh/no-key"
+            identity_file = "~/.ssh/id_example"
             rank = 1
 
             [[nodes]]
             role = "worker"
             node_id = 4
-            host = "34.30.74.243"
-            user = "no-passphrase-key"
-            identity_file = "~/.ssh/no-key"
+            host = "203.0.113.30"
+            user = "ubuntu"
+            identity_file = "~/.ssh/id_example"
             rank = 2
 
             [[nodes]]
             role = "relay"
             node_id = 5
-            host = "206.12.92.2"
+            host = "203.0.113.40"
             user = "ubuntu"
-            identity_file = "~/.ssh/no-key"
+            identity_file = "~/.ssh/id_example"
 
             [[nodes]]
             role = "relay"
             node_id = 6
-            host = "206.12.100.198"
+            host = "203.0.113.41"
             user = "ubuntu"
-            identity_file = "~/.ssh/no-key"
+            identity_file = "~/.ssh/id_example"
             """
         ),
         encoding="utf-8",
@@ -149,7 +149,7 @@ class RunFecTests(unittest.TestCase):
 
         plain_text = mod.render_node_config(
             node_id=2,
-            controller_addr="ws://boston.csl.toronto.edu:3000",
+            controller_addr="ws://controller.example.com:3000",
             tree_ids=[0],
             block_size=65_536,
             symbols_per_block=32,
@@ -157,7 +157,7 @@ class RunFecTests(unittest.TestCase):
         )
         fec_text = mod.render_node_config(
             node_id=2,
-            controller_addr="ws://boston.csl.toronto.edu:3000",
+            controller_addr="ws://controller.example.com:3000",
             tree_ids=[0, 1],
             block_size=65_536,
             symbols_per_block=32,
@@ -196,7 +196,7 @@ class RunFecTests(unittest.TestCase):
                 hashlib.sha256(payload_b.read_bytes()).hexdigest(),
             )
 
-    def test_image_refs_split_local_boston_push_from_public_worker_pull(self) -> None:
+    def test_image_refs_split_local_push_from_public_worker_pull(self) -> None:
         mod = load_run_fec_module()
 
         refs = mod.build_image_refs("fec-dev-20260319-032539")
@@ -207,7 +207,7 @@ class RunFecTests(unittest.TestCase):
         )
         self.assertEqual(
             refs["controller_public"],
-            "boston.csl.toronto.edu:5000/nextmini-controller:fec-dev-20260319-032539",
+            "registry.example.com:5000/nextmini-controller:fec-dev-20260319-032539",
         )
         self.assertEqual(
             refs["fec_local"],
@@ -215,7 +215,7 @@ class RunFecTests(unittest.TestCase):
         )
         self.assertEqual(
             refs["fec_public"],
-            "boston.csl.toronto.edu:5000/nextmini-fec:fec-dev-20260319-032539",
+            "registry.example.com:5000/nextmini-fec:fec-dev-20260319-032539",
         )
 
     def test_plain_case_uses_active_node_count_not_full_inventory(self) -> None:

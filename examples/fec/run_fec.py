@@ -35,11 +35,11 @@ DEFAULT_GROUP_TIMEOUT = 120
 DEFAULT_RECEIVE_TIMEOUT_MS = 300_000
 DEFAULT_RUN_TIMEOUT = 900
 DEFAULT_REMOTE_RUN_ROOT = "~/fec-runs"
-DEFAULT_BOSTON_NETWORK = "fec-control"
+DEFAULT_CONTROLLER_NETWORK = "fec-control"
 RELAYS_PER_TREE = 2
 
 LOCAL_REGISTRY = "127.0.0.1:5000"
-PUBLIC_REGISTRY = "boston.csl.toronto.edu:5000"
+PUBLIC_REGISTRY = os.environ.get("NEXTMINI_PUBLIC_REGISTRY", "registry.example.com:5000")
 
 GROUP_INFO_FILE = "group-info.json"
 METADATA_FILE = "tensor-metadata.json"
@@ -244,7 +244,7 @@ def load_inventory(path: Path) -> Inventory:
 
     return Inventory(
         controller=controller,
-        remote_repo_dir=str(paths_raw.get("remote_repo_dir", "~/skyrocket/nextmini")),
+        remote_repo_dir=str(paths_raw.get("remote_repo_dir", "~/nextmini")),
         trainer=trainer,
         workers=workers,
         relays=relays,
@@ -874,7 +874,7 @@ def postgres_container_name(run_dir: Path) -> str:
 
 
 def controller_network_name(run_dir: Path) -> str:
-    return f"{DEFAULT_BOSTON_NETWORK}-{unique_run_name(run_dir)}"
+    return f"{DEFAULT_CONTROLLER_NETWORK}-{unique_run_name(run_dir)}"
 
 
 def save_state(run_dir: Path, state: dict) -> None:
@@ -908,7 +908,7 @@ def _state_artifact_dir(entry: dict) -> str:
     return f"{_state_remote_run_dir(entry)}/artifacts"
 
 
-def sync_repo_to_boston(inventory: Inventory) -> str:
+def sync_repo_to_controller(inventory: Inventory) -> str:
     controller_target = inventory.controller.ssh
     remote_repo_dir = expand_remote_path(controller_target, inventory.remote_repo_dir)
     ensure_remote_dir(controller_target, remote_repo_dir)
@@ -948,7 +948,7 @@ def sync_repo_to_boston(inventory: Inventory) -> str:
     return remote_repo_dir
 
 
-def ensure_boston_registry(inventory: Inventory) -> None:
+def ensure_controller_registry(inventory: Inventory) -> None:
     controller_target = inventory.controller.ssh
     remote_bash(
         controller_target,
@@ -970,8 +970,8 @@ def ensure_boston_registry(inventory: Inventory) -> None:
 
 
 def prepare_images(inventory: Inventory, *, image_tag: str) -> dict[str, str]:
-    remote_repo_dir = sync_repo_to_boston(inventory)
-    ensure_boston_registry(inventory)
+    remote_repo_dir = sync_repo_to_controller(inventory)
+    ensure_controller_registry(inventory)
     refs = build_image_refs(image_tag)
     controller_target = inventory.controller.ssh
     remote_bash(
@@ -1724,7 +1724,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument(
             "--inventory",
             type=Path,
-            default=REPO_ROOT / "examples" / "fec" / "inventory.toml",
+            required=True,
+            help="Path to the private experiment inventory TOML.",
         )
 
     def add_mode_args(p: argparse.ArgumentParser) -> None:
@@ -1767,7 +1768,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_prepare = sub.add_parser(
         "prepare-images",
-        help="Sync repo to Boston, build controller/FEC images, and push them to the Boston registry.",
+        help="Sync repo to the controller host, build controller/FEC images, and push them to the configured registry.",
     )
     add_inventory_arg(p_prepare)
     p_prepare.add_argument("--image-tag", default=None)
