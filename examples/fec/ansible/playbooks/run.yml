@@ -1,0 +1,158 @@
+- name: Start controller
+  hosts: controller
+  vars: &common_vars
+    run_id: "{{ run_id | default('fec-demo') }}"
+    remote_run_dir: "{{ run_root }}/{{ run_id }}"
+    local_coord_dir: "{{ playbook_dir }}/../artifacts/{{ run_id }}/coordination"
+    controller_container: "fec-controller-{{ run_id }}"
+    postgres_container: "fec-postgres-{{ run_id }}"
+  tasks:
+    - name: Create remote run directory
+      ansible.builtin.file:
+        path: "{{ remote_run_dir }}"
+        state: directory
+
+    - name: Render controller config
+      ansible.builtin.template:
+        src: ../templates/controller-config.toml.j2
+        dest: "{{ remote_run_dir }}/controller-config.toml"
+        mode: "0644"
+
+    - name: Start Postgres and controller containers
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker network inspect {{ controller_network }} >/dev/null 2>&1 || docker network create {{ controller_network }} >/dev/null
+        docker rm -f {{ controller_container }} {{ postgres_container }} >/dev/null 2>&1 || true
+        docker run -d --name {{ postgres_container }} --network {{ controller_network }} --network-alias postgres \
+          -e POSTGRES_USER=pgusr -e POSTGRES_PASSWORD=pgpwrd -e POSTGRES_DB=nextmini docker.io/postgres:16-alpine >/dev/null
+        for _i in $(seq 1 60); do
+          docker exec {{ postgres_container }} pg_isready -U pgusr -d nextmini >/dev/null 2>&1 && break
+          sleep 1
+        done
+        docker pull {{ controller_image }} >/dev/null
+        docker run -d --name {{ controller_container }} --network {{ controller_network }} -p {{ controller_container_port }}:3000 \
+          -e RUST_LOG=info -v {{ remote_run_dir }}/controller-config.toml:/var/nextmini/config.toml:ro \
+          {{ controller_image }} /var/nextmini/controller >/dev/null
+      args:
+        executable: /bin/bash
+
+    - name: Wait for controller port
+      ansible.builtin.wait_for:
+        host: "127.0.0.1"
+        port: "{{ controller_container_port }}"
+        timeout: 60
+
+- name: Start node containers
+  hosts: trainer:workers:relays
+  vars:
+    <<: *common_vars
+    container_name: "fec-{{ inventory_hostname }}-{{ run_id }}"
+    node_role: >-
+      {% if 'trainer' in group_names %}source{% elif 'relays' in group_names %}router{% else %}receiver{% endif %}
+    role_args: >-
+      {% if node_role == 'source' %}
+      --controller-config /run/controller-config.toml
+      --receiver-ids {{ receiver_ids | join(',') }}
+      --tensor-path /run/payload.bin
+      {% elif node_role == 'receiver' %}
+      --node-id {{ hostvars[inventory_hostname].node_id }}
+      --tensor-path /run/payload.bin
+      --expected-bytes {{ payload_size_bytes }}
+      --receive-timeout-ms {{ receive_timeout_ms }}
+      {% endif %}
+  tasks:
+    - name: Create remote run directories
+      ansible.builtin.file:
+        path: "{{ item }}"
+        state: directory
+      loop:
+        - "{{ remote_run_dir }}"
+        - "{{ remote_run_dir }}/artifacts"
+
+    - name: Render node config
+      ansible.builtin.template:
+        src: ../templates/node.toml.j2
+        dest: "{{ remote_run_dir }}/node.toml"
+        mode: "0644"
+
+    - name: Render source-only controller config
+      ansible.builtin.template:
+        src: ../templates/controller-config.toml.j2
+        dest: "{{ remote_run_dir }}/controller-config.toml"
+        mode: "0644"
+      when: node_role == 'source'
+
+    - name: Create local coordination dir
+      ansible.builtin.file:
+        path: "{{ local_coord_dir }}"
+        state: directory
+      delegate_to: localhost
+      run_once: true
+
+    - name: Copy source payload
+      ansible.builtin.copy:
+        src: "{{ source_payload_path }}"
+        dest: "{{ remote_run_dir }}/payload.bin"
+        mode: "0644"
+      when: node_role == 'source'
+
+    - name: Start node container
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker rm -f {{ container_name }} >/dev/null 2>&1 || true
+        docker pull {{ node_image }} >/dev/null
+        docker run -d --name {{ container_name }} --network host --cap-add NET_ADMIN --device /dev/net/tun \
+          -e PYTHONUNBUFFERED=1 -e RUST_LOG=info -v {{ remote_run_dir }}:/run {{ node_image }} \
+          python /app/examples/multicast-docker/scripts/multicast_node.py --role {{ node_role }} --config /run/node.toml \
+          {{ role_args }} --group-label {{ group_label }} --source-node-id {{ source_node_id }} \
+          --artifact-dir /run/artifacts --chunk-size {{ block_size }} --group-timeout {{ group_timeout }} \
+          --fec {{ 'on' if mode == 'fec' else 'off' }} >/dev/null
+      args:
+        executable: /bin/bash
+
+    - name: Wait for source group info
+      ansible.builtin.wait_for:
+        path: "{{ remote_run_dir }}/artifacts/group-info.json"
+        timeout: "{{ group_timeout }}"
+      when: node_role == 'source'
+
+    - name: Fetch source group info
+      ansible.builtin.fetch:
+        src: "{{ remote_run_dir }}/artifacts/group-info.json"
+        dest: "{{ local_coord_dir }}/group-info.json"
+        flat: true
+      when: node_role == 'source'
+
+    - name: Copy source group info to receiver
+      ansible.builtin.copy:
+        src: "{{ local_coord_dir }}/group-info.json"
+        dest: "{{ remote_run_dir }}/artifacts/group-info.json"
+        mode: "0644"
+      when: node_role == 'receiver'
+
+    - name: Wait for receiver ready file
+      ansible.builtin.wait_for:
+        path: "{{ remote_run_dir }}/artifacts/receiver-ready-{{ hostvars[inventory_hostname].node_id }}.json"
+        timeout: "{{ group_timeout }}"
+      when: node_role == 'receiver'
+
+    - name: Fetch receiver ready file
+      ansible.builtin.fetch:
+        src: "{{ remote_run_dir }}/artifacts/receiver-ready-{{ hostvars[inventory_hostname].node_id }}.json"
+        dest: "{{ local_coord_dir }}/receiver-ready-{{ hostvars[inventory_hostname].node_id }}.json"
+        flat: true
+      when: node_role == 'receiver'
+
+    - name: Copy receiver ready files to source host
+      ansible.builtin.copy:
+        src: "{{ local_coord_dir }}/receiver-ready-{{ item }}.json"
+        dest: "{{ remote_run_dir }}/artifacts/receiver-ready-{{ item }}.json"
+        mode: "0644"
+      loop: "{{ receiver_ids }}"
+      when: node_role == 'source'
+
+    - name: Wait for receiver artifact
+      ansible.builtin.wait_for:
+        path: "{{ remote_run_dir }}/artifacts/receiver-{{ hostvars[inventory_hostname].node_id }}.bin"
+        timeout: "{{ (receive_timeout_ms / 1000) | int }}"
+      when: node_role == 'receiver'

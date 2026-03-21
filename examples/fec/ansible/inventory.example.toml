@@ -1,0 +1,33 @@
+[all.vars]
+run_root = "/tmp/fec-runs"
+controller_network = "fec-control"
+controller_container_port = 3000
+group_label = "fec-demo"
+mode = "fec"
+source_node_id = 1
+block_size = 65536
+symbols_per_block = 32
+group_timeout = 120
+receive_timeout_ms = 300000
+payload_size_bytes = 104857600
+source_payload_path = "./payload.bin"
+receiver_ids = [2, 3]
+tree_ids = [0, 1]
+n_nodes = 5
+topology_edges = [[1, 5], [5, 2], [5, 3], [1, 6], [6, 2], [6, 3]]
+controller_image = "registry.example.com:5000/nextmini-controller:latest"
+node_image = "registry.example.com:5000/nextmini-fec:latest"
+
+[controller.hosts]
+ctrl = { ansible_host = "controller.example.com", ansible_user = "runner" }
+
+[trainer.hosts]
+source_node = { ansible_host = "trainer.example.com", ansible_user = "ubuntu", node_id = 1 }
+
+[workers.hosts]
+worker_a = { ansible_host = "worker-a.example.com", ansible_user = "ubuntu", node_id = 2, rank = 0 }
+worker_b = { ansible_host = "worker-b.example.com", ansible_user = "ubuntu", node_id = 3, rank = 1 }
+
+[relays.hosts]
+relay_a = { ansible_host = "relay-a.example.com", ansible_user = "ubuntu", node_id = 5 }
+relay_b = { ansible_host = "relay-b.example.com", ansible_user = "ubuntu", node_id = 6 }
