@@ -22,7 +22,7 @@ node_value() {
 
 remote_cmd() {
   local user="$1" host="$2" key="$3" port="$4" script="$5" remote_script
-  local cmd=(ssh -o BatchMode=yes)
+  local cmd=(ssh -n -o BatchMode=yes)
   [[ -n "$key" ]] && cmd+=(-i "$key")
   [[ "$port" != "22" ]] && cmd+=(-p "$port")
   printf -v remote_script 'bash -lc %q' "$script"
@@ -138,10 +138,12 @@ run_case() {
 
   cleanup_case false
   printf '{"path":"/run/payload.bin","bytes":%s}\n' "$PAYLOAD_SIZE_BYTES" >"$metadata_path"
+  remote_cmd "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "mkdir -p ~/$REMOTE_RUN_DIR"
   copy_to "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "$CONTROLLER_CONFIG_PATH" "~/$REMOTE_RUN_DIR/controller-config.toml"
   start_controller
   for node_id in $ACTIVE_NODE_IDS; do
     role="$(node_value NODE_ROLE "$node_id")"
+    remote_node "$node_id" "mkdir -p ~/$REMOTE_RUN_DIR/artifacts"
     copy_to_node "$node_id" "$(node_value NODE_CONFIG "$node_id")" "~/$REMOTE_RUN_DIR/node.toml"
     [[ "$role" == "worker" ]] && copy_to_node "$node_id" "$metadata_path" "~/$REMOTE_RUN_DIR/artifacts/tensor-metadata.json"
     if [[ "$role" == "trainer" ]]; then
