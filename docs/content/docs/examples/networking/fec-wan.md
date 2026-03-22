@@ -1,8 +1,12 @@
-# FEC WAN Example
+---
+title: "FEC WAN Example"
+description: "Runs plain and FEC multicast experiments across real machines over SSH."
+---
 
 This example runs plain and FEC multicast experiments across real machines over SSH.
 
 The workflow is intentionally small:
+
 - edit one inventory file
 - build and publish two images
 - run one shell script
@@ -11,17 +15,17 @@ Cases run sequentially in the order they appear in the inventory. After each cas
 
 ## Files
 
-- `inventory.example.toml`
+- `examples/fec/inventory.example.toml`
   Fill in your controller host, node hosts, image refs, SSH credentials, and ordered case list.
-- `run_experiments.sh`
+- `examples/fec/run_experiments.sh`
   Main entrypoint. Runs cases in inventory order, stages files, starts containers, collects logs, and cleans up.
-- `plan_case.py`
+- `examples/fec/plan_case.py`
   Parses TOML, renders configs, and generates the payload for one case.
-- `templates/controller-config.toml`
+- `examples/fec/templates/controller-config.toml`
   Controller template.
-- `templates/node.toml`
+- `examples/fec/templates/node.toml`
   Node template.
-- `Dockerfile`
+- `examples/fec/Dockerfile`
   FEC node image used by the trainer, receivers, and relays.
 
 ## Prerequisites
@@ -54,14 +58,16 @@ docker push registry.example.com:5000/nextmini-fec:latest
 ```
 
 Use image refs in the inventory that are reachable from:
+
 - the controller host for the controller image
 - every trainer / receiver / relay host for the node image
 
 ## Fill In The Inventory
 
-Start from [inventory.example.toml](/home/xindan/nextmini/examples/fec/inventory.example.toml).
+Start from `examples/fec/inventory.example.toml`.
 
 You need to set:
+
 - `[controller]`: controller SSH host/user/key
 - `[images]`: controller and node image refs
 - `[paths]`: optional remote run root
@@ -70,6 +76,7 @@ You need to set:
 - `[[cases]]`: the ordered experiment sequence
 
 Each case needs:
+
 - `name`
 - `mode`: `plain` or `fec`
 - `receiver_ids`
@@ -87,6 +94,7 @@ bash examples/fec/run_experiments.sh --inventory examples/fec/inventory.example.
 ```
 
 The runner will:
+
 1. plan the next case with `plan_case.py`
 2. copy configs and payload to the remote hosts
 3. start Postgres and the controller on the controller host
@@ -101,6 +109,7 @@ The runner will:
 By default, local outputs go under `/tmp/nextmini-fec/<run-id>/`.
 
 Each run directory contains:
+
 - `payload.bin`
 - `controller-config.toml`
 - `node-*.toml`
