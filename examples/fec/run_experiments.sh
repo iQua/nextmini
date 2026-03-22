@@ -134,7 +134,7 @@ collect_logs() {
 
 run_case() {
   local metadata_path="$RUN_DIR/tensor-metadata.json"
-  local node_id role
+  local node_id role verify_failed=0 source_hash receiver_path receiver_hash
 
   cleanup_case false
   printf '{"path":"/run/payload.bin","bytes":%s}\n' "$PAYLOAD_SIZE_BYTES" >"$metadata_path"
@@ -167,7 +167,18 @@ run_case() {
     wait_remote_file "$node_id" "~/$REMOTE_RUN_DIR/artifacts/receiver-$node_id.bin" "$((RECEIVE_TIMEOUT_MS / 1000))"
   done
   collect_logs
+  source_hash="$(sha256sum "$PAYLOAD_PATH" | awk '{print $1}')"
+  for node_id in $RECEIVER_IDS; do
+    receiver_path="$RUN_DIR/receiver-$node_id.bin"
+    if copy_from_node "$node_id" "~/$REMOTE_RUN_DIR/artifacts/receiver-$node_id.bin" "$receiver_path"; then
+      receiver_hash="$(sha256sum "$receiver_path" | awk '{print $1}')"
+      [[ "$receiver_hash" == "$source_hash" ]] || verify_failed=1
+    else
+      verify_failed=1
+    fi
+  done
   cleanup_case true
+  (( verify_failed == 0 )) || return 1
   printf '%s -> %s\n' "$CASE_NAME" "$RUN_DIR"
 }
 
