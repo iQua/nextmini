@@ -362,8 +362,10 @@ def run_source(args: argparse.Namespace) -> None:
 
     tree_ids = read_fec_tree_ids(args.config) if args.controller_config else []
 
-    if args.controller_config and len(tree_ids) > 1:
-        # Multi-tree: compute per-tree shortest-path DAGs from controller topology.
+    if args.controller_config and len(tree_ids) >= 1:
+        # Compute per-tree shortest-path DAGs from controller topology.
+        # This is required when intermediate relay nodes exist between source
+        # and receivers — star edges would skip them.
         topo_edges = read_controller_topology_edges(args.controller_config)
         trees: list[tuple[int, list[tuple[int, int]]]] = []
         for tid in tree_ids:
@@ -375,10 +377,15 @@ def run_source(args: argparse.Namespace) -> None:
             if not tedges:
                 raise SystemExit(f"No shortest-path edges for tree_id={tid}; check topology.")
             trees.append((tid, tedges))
-        log(f"Installing multicast trees={trees}", args.quiet)
-        dataplane.set_group_routes_multi(group_id, trees)
+        if len(trees) == 1:
+            # Single tree: use simple set_group_routes
+            log(f"Installing multicast DAG edges={trees[0][1]}", args.quiet)
+            dataplane.set_group_routes(group_id, trees[0][1])
+        else:
+            log(f"Installing multicast trees={trees}", args.quiet)
+            dataplane.set_group_routes_multi(group_id, trees)
     else:
-        # Single-tree or no controller config: use star topology.
+        # No controller config: use star topology (direct source → receiver).
         edges = build_star_edges(source_node_id, receiver_ids)
         if not edges:
             raise SystemExit("No multicast DAG edges computed; check receiver IDs.")

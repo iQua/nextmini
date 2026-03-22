@@ -107,6 +107,3 @@ results/do-20260322-103422/
 └── ...
 ```
 
-## Author
-
-Zhenghao Ni (zhenghao.ni@mail.utoronto.ca)

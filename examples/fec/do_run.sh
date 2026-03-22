@@ -368,13 +368,16 @@ build_images() {
 
     log "  Building images on VM1..."
     remote "$vm1_ip" bash -s <<BUILDEOF
-set -euo pipefail
+set -e
+rm -rf /tmp/nextmini-build
 mkdir -p /tmp/nextmini-build && cd /tmp/nextmini-build
 tar xzf /tmp/nextmini-src.tar.gz
 echo "=== Building FEC node image ==="
-docker build -t "nextmini-fec:${IMAGE_TAG}" -f examples/fec/Dockerfile . 2>&1 | tail -5
+docker build -t "nextmini-fec:${IMAGE_TAG}" -f examples/fec/Dockerfile . 2>&1 | tail -5 || true
+docker image inspect "nextmini-fec:${IMAGE_TAG}" >/dev/null 2>&1 || { echo "FAIL: fec image not built"; exit 1; }
 echo "=== Building controller image ==="
-docker build -t "nextmini-controller:${IMAGE_TAG}" -f examples/fec/Dockerfile.controller.local . 2>&1 | tail -5
+docker build -t "nextmini-controller:${IMAGE_TAG}" -f examples/fec/Dockerfile.controller.local . 2>&1 | tail -5 || true
+docker image inspect "nextmini-controller:${IMAGE_TAG}" >/dev/null 2>&1 || { echo "FAIL: controller image not built"; exit 1; }
 echo "BUILD_DONE"
 rm -rf /tmp/nextmini-build /tmp/nextmini-src.tar.gz
 BUILDEOF
@@ -599,10 +602,16 @@ database = "nextmini"
 port = "5432"
 TOML
 SRC_CONF_EOF
-        # Upload payload
-        log "    Uploading payload to source ($ip)..."
-        upload "$PAYLOAD_FILE" "$ip" "${run_dir}/payload.bin"
-        role_args="--controller-config /run/controller-config.toml --receiver-ids ${RECEIVER_IDS} --tensor-path /run/payload.bin"
+        # Upload payload to fixed path (persists across runs)
+        local remote_size
+        remote_size=$(remote "$ip" "stat -c%s /tmp/fec-payload.bin 2>/dev/null || echo 0")
+        if [ "$remote_size" = "$PAYLOAD_BYTES" ]; then
+          log "      Payload already on source, skipping upload."
+        else
+          log "      Uploading payload to source ($ip)..."
+          upload "$PAYLOAD_FILE" "$ip" "/tmp/fec-payload.bin"
+        fi
+        role_args="--controller-config /run/controller-config.toml --receiver-ids ${RECEIVER_IDS} --tensor-path /tmp/fec-payload.bin"
         ;;
       receiver)
         role_args="--node-id ${node_id} --tensor-path /run/payload.bin --expected-bytes ${PAYLOAD_BYTES} --receive-timeout-ms ${RECV_TIMEOUT_MS}"
@@ -616,7 +625,7 @@ SRC_CONF_EOF
     remote "$ip" bash -s <<RUN_EOF
 docker rm -f fec-node-${node_id} >/dev/null 2>&1 || true
 docker run -d --name fec-node-${node_id} --network host --cap-add NET_ADMIN --device /dev/net/tun \
-  -e PYTHONUNBUFFERED=1 -e RUST_LOG=info -v ${run_dir}:/run \
+  -e PYTHONUNBUFFERED=1 -e RUST_LOG=info -v ${run_dir}:/run -v /tmp/fec-payload.bin:/tmp/fec-payload.bin:ro \
   ${node_image} \
   python /app/examples/multicast-docker/scripts/multicast_node.py \
     --role ${role} --config /run/node.toml \
@@ -748,8 +757,12 @@ for d in json.load(open('$STATE_FILE'))['droplets']:
     remote "$ip" "docker logs fec-node-${node_id} 2>&1" \
       > "$RESULTS_DIR/$name/node.log" 2>/dev/null || true
 
-    # Get artifacts
-    download "$ip" "${run_dir}/artifacts/*" "$RESULTS_DIR/$name/" 2>/dev/null || true
+    # Get artifacts (exclude large .bin files)
+    local remote_files
+    remote_files=$(remote "$ip" "find ${run_dir}/artifacts -type f ! -name '*.bin' 2>/dev/null" || true)
+    for rf in $remote_files; do
+      download "$ip" "$rf" "$RESULTS_DIR/$name/$(basename "$rf")" 2>/dev/null || true
+    done
     download "$ip" "${run_dir}/node.toml" "$RESULTS_DIR/$name/node.toml" 2>/dev/null || true
   done
 
