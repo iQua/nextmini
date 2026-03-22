@@ -1,0 +1,5 @@
+# Runtime generated
+.do-state.json
+.do-image-tag
+payload.bin
+results/
