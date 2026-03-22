@@ -1,0 +1,16 @@
+controller_addr = "$controller_addr"
+private_network_interface = "$network_interface"
+private_network_name = "fec_wan"
+private_network_addr = "$host"
+private_network_port = "8080"
+public_network_interface = "$network_interface"
+public_network_addr = "$host"
+public_network_port = "8080"
+node_id = $node_id
+channel_backpressure = true
+
+[lossless_runtime_config]
+default_block_size = $block_size
+fec_enabled = $fec_enabled
+fec_default_tree_ids = [$tree_ids]
+fec_default_symbols_per_block = $symbols_per_block
