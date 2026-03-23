@@ -1,3 +1,4 @@
+mod addr;
 mod config;
 mod db;
 mod db_sync;
@@ -28,6 +29,7 @@ use nextmini_messages::{
     ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRouteTree,
 };
 
+use crate::addr::{normalize_private_network_name, shares_private_network};
 use crate::config::{Config, get_config};
 use crate::db::{
     add_group_member, create_group, init_db, load_group_directory, load_group_members,
@@ -248,6 +250,9 @@ async fn handle_connection(
                         public_network_addr,
                         node_id: maybe_node_id,
                     } => {
+                        let current_private_network_name =
+                            normalize_private_network_name(&private_network_name);
+
                         info!(
                             "Received StartUp message from {} (public), {} (private), requested ID: {:?}.",
                             &public_network_addr, &private_network_addr, maybe_node_id
@@ -300,7 +305,7 @@ async fn handle_connection(
 
                         let new_node = Node {
                             id: node_id as i32,
-                            private_network_name: Some(private_network_name.clone()),
+                            private_network_name: current_private_network_name.clone(),
                             private_network_addr,
                             public_network_addr,
                         };
@@ -407,9 +412,10 @@ async fn handle_connection(
                                 // if two nodes share the same private network name, then we use the private
                                 // network address for this connection; otherwise, we use the public network
                                 // address.
-                                let addr = if node.private_network_name
-                                    == Some(private_network_name.clone())
-                                {
+                                let addr = if shares_private_network(
+                                    node.private_network_name.as_deref(),
+                                    current_private_network_name.as_deref(),
+                                ) {
                                     node.private_network_addr
                                 } else {
                                     node.public_network_addr
