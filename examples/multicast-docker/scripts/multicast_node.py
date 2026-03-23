@@ -360,10 +360,11 @@ def run_source(args: argparse.Namespace) -> None:
         args.quiet,
     )
 
-    tree_ids = read_fec_tree_ids(args.config) if args.controller_config else []
+    tree_ids = read_fec_tree_ids(args.config) if args.controller_config else [0]
 
-    if args.controller_config and len(tree_ids) > 1:
-        # Multi-tree: compute per-tree shortest-path DAGs from controller topology.
+    if args.controller_config:
+        # When a controller topology is available, derive route trees from it for
+        # both single-tree plain runs and multi-tree FEC runs.
         topo_edges = read_controller_topology_edges(args.controller_config)
         trees: list[tuple[int, list[tuple[int, int]]]] = []
         for tid in tree_ids:
@@ -375,8 +376,13 @@ def run_source(args: argparse.Namespace) -> None:
             if not tedges:
                 raise SystemExit(f"No shortest-path edges for tree_id={tid}; check topology.")
             trees.append((tid, tedges))
-        log(f"Installing multicast trees={trees}", args.quiet)
-        dataplane.set_group_routes_multi(group_id, trees)
+        if len(trees) > 1:
+            log(f"Installing multicast trees={trees}", args.quiet)
+            dataplane.set_group_routes_multi(group_id, trees)
+        else:
+            edges = trees[0][1]
+            log(f"Installing multicast DAG edges={edges}", args.quiet)
+            dataplane.set_group_routes(group_id, edges)
     else:
         # Single-tree or no controller config: use star topology.
         edges = build_star_edges(source_node_id, receiver_ids)
