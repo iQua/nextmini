@@ -18,24 +18,6 @@ use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topology::topo;
 
-fn normalized_private_network_name(name: Option<&str>) -> Option<&str> {
-    name.map(str::trim).filter(|name| !name.is_empty())
-}
-
-pub fn normalize_private_network_name(name: &str) -> Option<String> {
-    normalized_private_network_name(Some(name)).map(str::to_owned)
-}
-
-pub fn shares_private_network(a: Option<&str>, b: Option<&str>) -> bool {
-    matches!(
-        (
-            normalized_private_network_name(a),
-            normalized_private_network_name(b),
-        ),
-        (Some(a), Some(b)) if a == b
-    )
-}
-
 /// Describes a directed path between two nodes as a list of edges.
 pub type RoutePath = Vec<(u32, u32)>;
 /// Aggregates route metadata: source node, destination node, and the path edges.
@@ -1176,31 +1158,6 @@ mod tests {
 
         let addr = allocate_multicast_ip(base, mask, 0);
         assert_eq!(addr, base);
-    }
-
-    #[test]
-    fn test_shares_private_network_requires_non_empty_matching_names() {
-        assert!(shares_private_network(Some("cluster-a"), Some("cluster-a")));
-        assert!(shares_private_network(
-            Some("  cluster-a  "),
-            Some("cluster-a")
-        ));
-        assert!(!shares_private_network(Some(""), Some("")));
-        assert!(!shares_private_network(
-            Some("cluster-a"),
-            Some("cluster-b")
-        ));
-        assert!(!shares_private_network(Some("cluster-a"), None));
-    }
-
-    #[test]
-    fn test_normalize_private_network_name_drops_empty_values() {
-        assert_eq!(
-            normalize_private_network_name("  cluster-a  "),
-            Some("cluster-a".to_string())
-        );
-        assert_eq!(normalize_private_network_name(""), None);
-        assert_eq!(normalize_private_network_name("   "), None);
     }
 
     #[test]

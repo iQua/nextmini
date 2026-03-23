@@ -15,9 +15,10 @@ use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 
 use crate::NodeWriterMap;
 use crate::WebSocketWriter;
+use crate::addr::shares_private_network;
 use crate::config::Config;
 use crate::models::{DbFlow, DbFlowRoute, Node};
-use crate::utils::{build_flows_for_node, shares_private_network};
+use crate::utils::build_flows_for_node;
 
 // Event to be sent when a new node has connected to the controller.
 #[derive(Debug, Clone)]

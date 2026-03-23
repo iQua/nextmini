@@ -1,3 +1,4 @@
+mod addr;
 mod config;
 mod db;
 mod db_sync;
@@ -28,6 +29,7 @@ use nextmini_messages::{
     ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRouteTree,
 };
 
+use crate::addr::{normalize_private_network_name, shares_private_network};
 use crate::config::{Config, get_config};
 use crate::db::{
     add_group_member, create_group, init_db, load_group_directory, load_group_members,
@@ -39,8 +41,7 @@ use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, TopologyEvent, new_node_connected};
 use crate::utils::{
     StartupResponseParams, build_group_routes_for_node_multitree, build_routes_for_node,
-    build_startup_response, canonicalize_group_route_trees, normalize_private_network_name,
-    shares_private_network,
+    build_startup_response, canonicalize_group_route_trees,
 };
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
