@@ -251,7 +251,7 @@ async fn handle_connection(
                         node_id: maybe_node_id,
                     } => {
                         let private_network_name =
-                            (!private_network_name.is_empty()).then_some(private_network_name);
+                            normalize_private_network_name(&private_network_name);
 
                         info!(
                             "Received StartUp message from {} (public), {} (private), requested ID: {:?}.",
@@ -412,7 +412,10 @@ async fn handle_connection(
                                 // if two nodes share the same private network name, then we use the private
                                 // network address for this connection; otherwise, we use the public network
                                 // address.
-                                let addr = if node.private_network_name == private_network_name {
+                                let addr = if shares_private_network(
+                                    node.private_network_name.as_deref(),
+                                    private_network_name.as_deref(),
+                                ) {
                                     node.private_network_addr
                                 } else {
                                     node.public_network_addr
