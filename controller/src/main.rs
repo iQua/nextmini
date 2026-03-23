@@ -248,6 +248,9 @@ async fn handle_connection(
                         public_network_addr,
                         node_id: maybe_node_id,
                     } => {
+                        let private_network_name =
+                            (!private_network_name.is_empty()).then_some(private_network_name);
+
                         info!(
                             "Received StartUp message from {} (public), {} (private), requested ID: {:?}.",
                             &public_network_addr, &private_network_addr, maybe_node_id
@@ -300,7 +303,7 @@ async fn handle_connection(
 
                         let new_node = Node {
                             id: node_id as i32,
-                            private_network_name: Some(private_network_name.clone()),
+                            private_network_name: private_network_name.clone(),
                             private_network_addr,
                             public_network_addr,
                         };
@@ -407,9 +410,7 @@ async fn handle_connection(
                                 // if two nodes share the same private network name, then we use the private
                                 // network address for this connection; otherwise, we use the public network
                                 // address.
-                                let addr = if node.private_network_name
-                                    == Some(private_network_name.clone())
-                                {
+                                let addr = if node.private_network_name == private_network_name {
                                     node.private_network_addr
                                 } else {
                                     node.public_network_addr
