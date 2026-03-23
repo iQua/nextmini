@@ -274,9 +274,8 @@ async fn run_receiver(
         ));
     }
 
-    let result = lossless_runtime
-        .completed_receiver_result(session_id, true)
-        .await
+    let result = session
+        .take_completed_result()
         .ok_or_else(|| format!("receiver session {session_id} produced no completed result"))?;
     let sink_bytes = result.payload;
     if sink_bytes.is_empty() {
@@ -291,13 +290,9 @@ async fn run_receiver(
         config.node_id,
         IntegrationNodeRole::Receiver,
         sink_bytes.len() as u64,
-        Duration::from_millis(
-            result.payload_phase_duration_ms.ok_or_else(|| {
-                format!(
-                    "receiver session {session_id} completed without payload-phase timing"
-                )
-            })?,
-        ),
+        Duration::from_millis(result.payload_phase_duration_ms.ok_or_else(|| {
+            format!("receiver session {session_id} completed without payload-phase timing")
+        })?),
     )?;
     write_status(
         harness_cfg,

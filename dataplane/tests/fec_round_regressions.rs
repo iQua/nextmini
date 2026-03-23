@@ -296,9 +296,8 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
         }
     );
 
-    let result = runtime
-        .completed_receiver_result(session_id, true)
-        .await
+    let result = session
+        .take_completed_result()
         .expect("receiver should retain completed result");
     assert_eq!(&result.payload[..], &[1, 2, 3, 4, 5, 6, 7, 8]);
 }

@@ -62,6 +62,8 @@ impl SessionAbortHandle {
 pub struct LosslessSessionHandle {
     session_id: SessionId,
     state_receiver: watch::Receiver<SessionState>,
+    completed_result_receiver: Option<oneshot::Receiver<Option<CompletedReceiverResult>>>,
+    completed_result: Option<CompletedReceiverResult>,
     // abort remains part of the public session API can be called
     #[allow(dead_code)]
     abort_handle: SessionAbortHandle,
@@ -71,11 +73,14 @@ impl LosslessSessionHandle {
     pub(super) fn new(
         session_id: SessionId,
         state_receiver: watch::Receiver<SessionState>,
+        completed_result_receiver: Option<oneshot::Receiver<Option<CompletedReceiverResult>>>,
         abort_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
     ) -> Self {
         Self {
             session_id,
             state_receiver,
+            completed_result_receiver,
+            completed_result: None,
             abort_handle: SessionAbortHandle::new(abort_sender),
         }
     }
@@ -86,15 +91,38 @@ impl LosslessSessionHandle {
 
     pub async fn wait(&mut self) -> SessionOutcome {
         loop {
-            match &*self.state_receiver.borrow() {
-                SessionState::Running => {}
-                SessionState::Finished(outcome) => return outcome.clone(),
+            let finished_outcome = {
+                let state = self.state_receiver.borrow();
+                match &*state {
+                    SessionState::Running => None,
+                    SessionState::Finished(outcome) => Some(outcome.clone()),
+                }
+            };
+            if let Some(outcome) = finished_outcome {
+                self.store_completed_result().await;
+                return outcome;
             }
 
             if self.state_receiver.changed().await.is_err() {
+                self.store_completed_result().await;
                 return SessionOutcome::Aborted;
             }
         }
+    }
+
+    async fn store_completed_result(&mut self) {
+        if self.completed_result.is_some() {
+            return;
+        }
+        let Some(receiver) = self.completed_result_receiver.take() else {
+            return;
+        };
+        self.completed_result = receiver.await.unwrap_or(None);
+    }
+
+    #[allow(dead_code)]
+    pub fn take_completed_result(&mut self) -> Option<CompletedReceiverResult> {
+        self.completed_result.take()
     }
 
     #[allow(dead_code)]
@@ -181,15 +209,7 @@ pub(super) enum LosslessRuntimeMessage {
     ReceiverCompleted {
         session_id: SessionId,
         replay: CompletedReceiverReplay,
-        result: Option<CompletedReceiverResult>,
         ack: oneshot::Sender<()>,
-    },
-    /// Query one completed receiver result, optionally consuming it.
-    #[cfg_attr(not(feature = "python-extension"), allow(dead_code))]
-    GetCompletedReceiverResult {
-        session_id: SessionId,
-        consume: bool,
-        reply: oneshot::Sender<Option<CompletedReceiverResult>>,
     },
     /// Report one child session exit back into the runtime actor.
     SessionExited {
