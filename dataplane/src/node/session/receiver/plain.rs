@@ -37,6 +37,7 @@ impl PlainReceiver {
             return;
         }
 
+        shared.mark_first_payload_unit();
         shared.write_block(data.block_id, payload).await;
         shared.complete_blocks.insert(data.block_id);
     }

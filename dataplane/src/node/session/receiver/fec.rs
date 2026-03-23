@@ -56,6 +56,10 @@ impl FecReceiver {
         }
 
         let state = self.blocks.entry(symbol.block_id).or_default();
+        if state.symbols.contains_key(&symbol.symbol_id) {
+            return;
+        }
+        shared.mark_first_payload_unit();
         state.symbols.insert(symbol.symbol_id, payload.to_vec());
 
         let _ = self
