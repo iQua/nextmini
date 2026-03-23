@@ -119,6 +119,7 @@ impl SessionReceiver {
 
         if self.is_complete() {
             self.register_completed_replay(runtime_sender).await;
+            self.shared.mark_completed();
         }
 
         debug!(
@@ -295,6 +296,13 @@ impl ReceiverShared {
     pub(super) fn mark_first_payload_unit(&self) {
         if let Some(progress) = &self.cfg.progress {
             progress.mark_first_payload_unit();
+        }
+    }
+
+    /// Record when the receiver session completes successfully.
+    fn mark_completed(&self) {
+        if let Some(progress) = &self.cfg.progress {
+            progress.mark_completed();
         }
     }
 

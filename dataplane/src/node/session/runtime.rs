@@ -83,6 +83,7 @@ pub struct ReceiverRequest {
 #[derive(Debug, Default)]
 pub struct ReceiverProgress {
     first_payload_unit_at: OnceLock<Instant>,
+    completed_at: OnceLock<Instant>,
 }
 
 impl ReceiverProgress {
@@ -91,10 +92,21 @@ impl ReceiverProgress {
         let _ = self.first_payload_unit_at.set(Instant::now());
     }
 
+    /// Record when the receiver session completed successfully.
+    pub fn mark_completed(&self) {
+        let _ = self.completed_at.set(Instant::now());
+    }
+
     /// Return the timestamp of the first payload unit, if any.
     #[allow(dead_code)]
     pub fn first_payload_unit_at(&self) -> Option<Instant> {
         self.first_payload_unit_at.get().copied()
+    }
+
+    /// Return the completion timestamp, if any.
+    #[allow(dead_code)]
+    pub fn completed_at(&self) -> Option<Instant> {
+        self.completed_at.get().copied()
     }
 }
 
