@@ -1,3 +1,4 @@
+mod addr;
 mod config;
 mod db;
 mod db_sync;
@@ -28,6 +29,7 @@ use nextmini_messages::{
     ControllerToDataplane, DataplaneToController, GroupDirectoryEntry, GroupRouteTree,
 };
 
+use crate::addr::{normalize_private_network_name, shares_private_network};
 use crate::config::{Config, get_config};
 use crate::db::{
     add_group_member, create_group, init_db, load_group_directory, load_group_members,

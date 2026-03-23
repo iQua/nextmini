@@ -15,6 +15,7 @@ use nextmini_messages::{ControllerToDataplane, FlowTransport, TokenBucketSpec};
 
 use crate::NodeWriterMap;
 use crate::WebSocketWriter;
+use crate::addr::shares_private_network;
 use crate::config::Config;
 use crate::models::{DbFlow, DbFlowRoute, Node};
 use crate::utils::build_flows_for_node;
@@ -324,7 +325,10 @@ async fn send_node_addresses(config: Config, node_ws: NodeWriterMap, db_pool: Ar
             .collect();
 
         for node in remote_nodes {
-            let remote_addr = if node.private_network_name == current_node.private_network_name {
+            let remote_addr = if shares_private_network(
+                node.private_network_name.as_deref(),
+                current_node.private_network_name.as_deref(),
+            ) {
                 node.private_network_addr.clone()
             } else {
                 node.public_network_addr.clone()
