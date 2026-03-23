@@ -6,7 +6,6 @@
     "ns-lossless",
     "ns-public",
     "multicast-flow",
-    "multicast-docker",
-    "fec-wan"
+    "multicast-docker"
   ]
 }
