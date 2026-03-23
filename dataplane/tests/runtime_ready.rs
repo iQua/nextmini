@@ -205,7 +205,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             session_id,
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
-            sink_buffer: None,
+            capture_result: false,
             progress: None,
         })
         .await
@@ -216,7 +216,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             session_id,
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
-            sink_buffer: None,
+            capture_result: false,
             progress: None,
         })
         .await;
@@ -257,7 +257,7 @@ async fn completed_receiver_replays_complete_on_late_eot() {
             session_id,
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
-            sink_buffer: None,
+            capture_result: false,
             progress: None,
         })
         .await
@@ -303,7 +303,7 @@ async fn completed_receiver_replays_complete_on_late_duplicate_block_data() {
             session_id,
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
-            sink_buffer: None,
+            capture_result: false,
             progress: None,
         })
         .await

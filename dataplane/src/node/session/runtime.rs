@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tracing::warn;
 
 use nextmini_messages::TokenBucketSpec;
@@ -16,8 +16,8 @@ use crate::node::config::LosslessConfig;
 use crate::node::packet::{LosslessTransportMeta, Packet};
 use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
 use crate::node::session::api::{
-    CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage, LosslessSessionHandle,
-    SessionId, SessionOutcome, SessionState, StartError,
+    CompletedReceiverReplay, CompletedReceiverResult, InboundFrame, LosslessRuntimeMessage,
+    LosslessSessionHandle, SessionId, SessionOutcome, SessionState, StartError,
 };
 pub use crate::node::session::fec_policy::PreflightError;
 use crate::node::session::plan::BlockPlan;
@@ -73,15 +73,16 @@ pub struct ReceiverRequest {
     pub route: TransportRoute,
     /// Local node identifier advertised in READY.
     pub local_node_id: usize,
-    /// Optional in-memory sink populated with completed blocks.
-    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Whether to retain the completed object for later retrieval.
+    pub capture_result: bool,
     /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
 }
 
 /// Shared receiver-side progress markers exported to integration harnesses.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct ReceiverProgress {
+    started_at: Instant,
     first_payload_unit_at: OnceLock<Instant>,
     completed_at: OnceLock<Instant>,
 }
@@ -107,6 +108,37 @@ impl ReceiverProgress {
     #[allow(dead_code)]
     pub fn completed_at(&self) -> Option<Instant> {
         self.completed_at.get().copied()
+    }
+
+    /// Return the elapsed time from receiver start to the first payload unit.
+    pub fn first_payload_offset_ms(&self) -> Option<u64> {
+        let first_payload_at = self.first_payload_unit_at()?;
+        Some(
+            first_payload_at
+                .saturating_duration_since(self.started_at)
+                .as_millis() as u64,
+        )
+    }
+
+    /// Return the elapsed time between first payload arrival and completion.
+    pub fn payload_phase_duration_ms(&self) -> Option<u64> {
+        let first_payload_at = self.first_payload_unit_at()?;
+        let completed_at = self.completed_at()?;
+        Some(
+            completed_at
+                .saturating_duration_since(first_payload_at)
+                .as_millis() as u64,
+        )
+    }
+}
+
+impl Default for ReceiverProgress {
+    fn default() -> Self {
+        Self {
+            started_at: Instant::now(),
+            first_payload_unit_at: OnceLock::new(),
+            completed_at: OnceLock::new(),
+        }
     }
 }
 
@@ -140,8 +172,8 @@ pub struct ReceiverConfig {
     pub route: TransportRoute,
     /// Local node identifier advertised in READY.
     pub local_node_id: usize,
-    /// Optional in-memory sink populated with completed blocks.
-    pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Whether to retain the completed object for later retrieval.
+    pub capture_result: bool,
     /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
     /// Whether FEC manifests are accepted by this runtime.
@@ -215,6 +247,28 @@ impl LosslessRuntimeHandle {
             .unwrap_or(Err(StartError::RuntimeChannelClosed))
     }
 
+    /// Query one completed receiver result, optionally consuming it.
+    #[cfg_attr(not(feature = "python-extension"), allow(dead_code))]
+    pub async fn completed_receiver_result(
+        &self,
+        session_id: SessionId,
+        consume: bool,
+    ) -> Option<CompletedReceiverResult> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .message_sender
+            .send(LosslessRuntimeMessage::GetCompletedReceiverResult {
+                session_id,
+                consume,
+                reply: reply_tx,
+            })
+            .is_err()
+        {
+            return None;
+        }
+        reply_rx.await.unwrap_or(None)
+    }
+
     /// Deliver one already-decoded frame to a running session task.
     pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
         let _ = self
@@ -236,6 +290,7 @@ struct LosslessRuntime {
     config: LosslessConfig,
     sessions: AHashMap<SessionId, SessionEntry>,
     completed_receivers: AHashMap<SessionId, CompletedReceiverReplay>,
+    completed_results: AHashMap<SessionId, CompletedReceiverResult>,
     topology_ready_sender: watch::Sender<bool>,
     topology_ready: bool,
     message_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
@@ -257,6 +312,7 @@ impl LosslessRuntime {
             config,
             sessions: AHashMap::default(),
             completed_receivers: AHashMap::default(),
+            completed_results: AHashMap::default(),
             topology_ready_sender,
             topology_ready: false,
             message_sender,
@@ -283,10 +339,26 @@ impl LosslessRuntime {
                 LosslessRuntimeMessage::ReceiverCompleted {
                     session_id,
                     replay,
+                    result,
                     ack,
                 } => {
                     self.completed_receivers.insert(session_id, replay);
+                    if let Some(result) = result {
+                        self.completed_results.insert(session_id, result);
+                    }
                     let _ = ack.send(());
+                }
+                LosslessRuntimeMessage::GetCompletedReceiverResult {
+                    session_id,
+                    consume,
+                    reply,
+                } => {
+                    let result = if consume {
+                        self.completed_results.remove(&session_id)
+                    } else {
+                        self.completed_results.get(&session_id).cloned()
+                    };
+                    let _ = reply.send(result);
                 }
                 LosslessRuntimeMessage::SessionExited {
                     session_id,
@@ -332,15 +404,21 @@ impl LosslessRuntime {
                 .send(SessionState::Finished(SessionOutcome::Aborted));
         }
         self.completed_receivers.remove(&session_id);
+        self.completed_results.remove(&session_id);
     }
 
     fn finish_session(&mut self, session_id: SessionId, outcome: SessionOutcome) {
         let keep_completed_replay = outcome == SessionOutcome::Completed;
         if let Some(entry) = self.sessions.remove(&session_id) {
-            let _ = entry.state_sender.send(SessionState::Finished(outcome));
+            let _ = entry
+                .state_sender
+                .send(SessionState::Finished(outcome.clone()));
         }
         if !keep_completed_replay {
             self.completed_receivers.remove(&session_id);
+        }
+        if outcome != SessionOutcome::Completed {
+            self.completed_results.remove(&session_id);
         }
     }
 
@@ -354,6 +432,7 @@ impl LosslessRuntime {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
         self.completed_receivers.remove(&sid);
+        self.completed_results.remove(&sid);
 
         let block_size = fec_policy::validate_block_size(req.session.block_size)?;
         let plan = BlockPlan::new(req.total_bytes, req.session.block_size).map_err(|_| {
@@ -464,12 +543,13 @@ impl LosslessRuntime {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
         self.completed_receivers.remove(&sid);
+        self.completed_results.remove(&sid);
 
         let cfg = ReceiverConfig {
             session_id: req.session_id,
             route: req.route,
             local_node_id: req.local_node_id,
-            sink_buffer: req.sink_buffer,
+            capture_result: req.capture_result,
             progress: req.progress,
             fec_enabled: self.config.fec_enabled,
         };
@@ -488,7 +568,7 @@ impl LosslessRuntime {
         let abort_handle = task.abort_handle();
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(()) => SessionOutcome::Completed,
+                Ok(_) => SessionOutcome::Completed,
                 Err(_) => SessionOutcome::Aborted,
             };
             let _ = message_sender.send(LosslessRuntimeMessage::SessionExited {

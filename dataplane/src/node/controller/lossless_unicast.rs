@@ -207,7 +207,7 @@ impl LosslessUnicastFlowManager {
                 session_id,
                 route,
                 local_node_id: cfg.node_id,
-                sink_buffer: None,
+                capture_result: false,
                 progress: None,
             };
 
