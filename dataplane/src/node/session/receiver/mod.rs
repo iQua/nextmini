@@ -291,12 +291,15 @@ impl ReceiverShared {
         self.complete_blocks.len() as u64 == plan.total_blocks()
     }
 
+    /// Record when the first payload unit arrives for this receiver session.
+    pub(super) fn mark_first_payload_unit(&self) {
+        if let Some(progress) = &self.cfg.progress {
+            progress.mark_first_payload_unit();
+        }
+    }
+
     /// Copy one completed block payload into the optional sink buffer.
     pub(super) async fn write_block(&self, block_id: u64, payload: &[u8]) {
-        if let Some(progress) = &self.cfg.progress {
-            progress.mark_first_completed_block();
-        }
-
         let Some(plan) = self.plan else {
             return;
         };
@@ -735,7 +738,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn write_block_marks_first_completed_block_progress() {
+    async fn mark_first_payload_unit_records_progress() {
         let progress = Arc::new(crate::node::session::runtime::ReceiverProgress::default());
         let shared = ReceiverShared {
             session_id: 9,
@@ -770,9 +773,9 @@ mod tests {
             complete_blocks: BTreeSet::new(),
         };
 
-        shared.write_block(0, b"abcdefgh").await;
+        shared.mark_first_payload_unit();
 
-        assert!(progress.first_completed_block_at().is_some());
+        assert!(progress.first_payload_unit_at().is_some());
     }
 
     #[tokio::test]

@@ -277,8 +277,8 @@ async fn run_receiver(
     }
 
     let transfer_finished_at = Instant::now();
-    let transfer_started_at = progress.first_completed_block_at().ok_or_else(|| {
-        format!("receiver session {session_id} completed without recording a completed block")
+    let transfer_started_at = progress.first_payload_unit_at().ok_or_else(|| {
+        format!("receiver session {session_id} completed without recording payload arrival")
     })?;
 
     let sink_bytes = sink.lock().await.clone();

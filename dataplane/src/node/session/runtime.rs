@@ -75,26 +75,26 @@ pub struct ReceiverRequest {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
-    /// Optional progress tracker updated when the first logical block completes.
+    /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
 }
 
 /// Shared receiver-side progress markers exported to integration harnesses.
 #[derive(Debug, Default)]
 pub struct ReceiverProgress {
-    first_completed_block_at: OnceLock<Instant>,
+    first_payload_unit_at: OnceLock<Instant>,
 }
 
 impl ReceiverProgress {
-    /// Record when the first logical block completed at the receiver.
-    pub fn mark_first_completed_block(&self) {
-        let _ = self.first_completed_block_at.set(Instant::now());
+    /// Record when the first payload unit arrived at the receiver.
+    pub fn mark_first_payload_unit(&self) {
+        let _ = self.first_payload_unit_at.set(Instant::now());
     }
 
-    /// Return the timestamp of the first completed block, if any.
+    /// Return the timestamp of the first payload unit, if any.
     #[allow(dead_code)]
-    pub fn first_completed_block_at(&self) -> Option<Instant> {
-        self.first_completed_block_at.get().copied()
+    pub fn first_payload_unit_at(&self) -> Option<Instant> {
+        self.first_payload_unit_at.get().copied()
     }
 }
 
@@ -130,7 +130,7 @@ pub struct ReceiverConfig {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
-    /// Optional progress tracker updated when the first logical block completes.
+    /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
     /// Whether FEC manifests are accepted by this runtime.
     pub fec_enabled: bool,
