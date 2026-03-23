@@ -1,0 +1,13 @@
+[topology]
+n_nodes = $n_nodes
+edges = [$edges]
+
+[routing]
+protocol = "shortest_path"
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "postgres"
+database = "nextmini"
+port = "5432"

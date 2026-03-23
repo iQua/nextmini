@@ -1,0 +1,79 @@
+[[nodes]]
+role = "trainer"
+node_id = 1
+host = "trainer.example.com"
+
+[[nodes]]
+role = "worker"
+node_id = 2
+host = "worker-a.example.com"
+
+[[nodes]]
+role = "worker"
+node_id = 3
+host = "worker-b.example.com"
+
+[[nodes]]
+role = "relay"
+node_id = 5
+host = "relay-a.example.com"
+
+[[nodes]]
+role = "relay"
+node_id = 6
+host = "relay-b.example.com"
+
+[[nodes]]
+role = "relay"
+node_id = 7
+host = "relay-c.example.com"
+
+[[nodes]]
+role = "relay"
+node_id = 8
+host = "relay-d.example.com"
+
+[[cases]]
+name = "plain-a"
+mode = "plain"
+receiver_ids = [2, 3]
+relay_ids = [5, 6]
+tree_ids = [0]
+block_size = 8192
+symbols_per_block = 1
+
+[[cases]]
+name = "plain-b"
+mode = "plain"
+receiver_ids = [2, 3]
+relay_ids = [7, 8]
+tree_ids = [1]
+block_size = 8192
+symbols_per_block = 1
+
+[[cases]]
+name = "fec-ab"
+mode = "fec"
+receiver_ids = [2, 3]
+relay_ids = [5, 6, 7, 8]
+tree_ids = [0, 1]
+block_size = 131072
+symbols_per_block = 16
+
+[defaults]
+user = "ubuntu"
+identity_file = "~/.ssh/id_rsa"
+network_interface = "ens3"
+payload_size = "100MiB"
+
+[controller]
+host = "controller.example.com"
+user = "runner"
+identity_file = "~/.ssh/id_rsa"
+
+[images]
+controller = "registry.example.com:5000/nextmini-controller:latest"
+node = "registry.example.com:5000/nextmini-fec:latest"
+
+[paths]
+remote_run_root = "~/fec-runs"
