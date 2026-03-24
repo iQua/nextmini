@@ -566,38 +566,25 @@ impl Dataplane {
     }
 
     #[cfg(feature = "python-extension")]
-    fn receiver_first_payload_offset_ms(&self, session_id: u64) -> PyResult<Option<u64>> {
+    fn receiver_timing_ms(&self, session_id: u64) -> PyResult<(Option<u64>, Option<u64>)> {
         let guard = rt().block_on(self.buffer_registry.lock());
         let Some(entry) = guard.get(&session_id) else {
-            return Ok(None);
+            return Ok((None, None));
         };
         let Some(first_payload_at) = entry.progress.first_payload_unit_at() else {
-            return Ok(None);
+            return Ok((None, None));
         };
-        Ok(Some(
+        let first_payload_offset_ms = Some(
             first_payload_at
                 .saturating_duration_since(entry.started_at)
                 .as_millis() as u64,
-        ))
-    }
-
-    #[cfg(feature = "python-extension")]
-    fn receiver_payload_phase_duration_ms(&self, session_id: u64) -> PyResult<Option<u64>> {
-        let guard = rt().block_on(self.buffer_registry.lock());
-        let Some(entry) = guard.get(&session_id) else {
-            return Ok(None);
-        };
-        let Some(first_payload_at) = entry.progress.first_payload_unit_at() else {
-            return Ok(None);
-        };
-        let Some(completed_at) = entry.progress.completed_at() else {
-            return Ok(None);
-        };
-        Ok(Some(
+        );
+        let payload_phase_duration_ms = entry.progress.completed_at().map(|completed_at| {
             completed_at
                 .saturating_duration_since(first_payload_at)
-                .as_millis() as u64,
-        ))
+                .as_millis() as u64
+        });
+        Ok((first_payload_offset_ms, payload_phase_duration_ms))
     }
 
     #[new]

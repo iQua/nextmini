@@ -498,8 +498,7 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     log(f"Receive completion: {ok}.", args.quiet)
 
-    first_payload_offset_ms = dataplane.receiver_first_payload_offset_ms(sid)
-    payload_phase_duration_ms = dataplane.receiver_payload_phase_duration_ms(sid)
+    first_payload_offset_ms, payload_phase_duration_ms = dataplane.receiver_timing_ms(sid)
 
     view = dataplane.get_data_buffer(sid)
     payload_bytes = bytes(view.read())
@@ -513,9 +512,9 @@ def run_receiver(args: argparse.Namespace) -> None:
     else:
         throughput_bytes = len(payload_bytes)
     if first_payload_offset_ms is None:
-        raise RuntimeError("receiver_first_payload_offset_ms returned no timing")
+        raise RuntimeError("receiver_timing_ms returned no first-payload timing")
     if payload_phase_duration_ms is None or payload_phase_duration_ms <= 0:
-        raise RuntimeError("receiver_payload_phase_duration_ms returned no timing")
+        raise RuntimeError("receiver_timing_ms returned no payload-phase timing")
 
     payload_phase_seconds = payload_phase_duration_ms / 1000.0
     log(
