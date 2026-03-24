@@ -35,9 +35,7 @@ use nextmini::node::python::interface::{
 #[cfg(feature = "python-extension")]
 use nextmini::node::session;
 #[cfg(feature = "python-extension")]
-use nextmini::node::session::api::{
-    CompletedReceiverResult, LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome,
-};
+use nextmini::node::session::api::{LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome};
 use nextmini::node::{NodeId, NodeIdExt};
 #[cfg(feature = "python-extension")]
 use nextmini_messages::DataplaneToController;
@@ -48,15 +46,7 @@ static RUNTIME: OnceCell<tokio::runtime::Runtime> = OnceCell::new();
 static TRACING: OnceCell<()> = OnceCell::new();
 
 #[cfg(feature = "python-extension")]
-type SessionRegistry = Arc<Mutex<HashMap<u64, SessionRecord>>>;
-
-#[cfg(feature = "python-extension")]
-#[derive(Debug)]
-struct SessionRecord {
-    handle: Option<LosslessSessionHandle>,
-    outcome: Option<SessionOutcome>,
-    completed_result: Option<CompletedReceiverResult>,
-}
+type SessionRegistry = Arc<Mutex<HashMap<u64, LosslessSessionHandle>>>;
 
 #[cfg(feature = "python-extension")]
 async fn store_session_handle(
@@ -65,14 +55,7 @@ async fn store_session_handle(
 ) -> u64 {
     let session_id = session.id();
     let mut guard = session_registry.lock().await;
-    guard.insert(
-        session_id,
-        SessionRecord {
-            handle: Some(session),
-            outcome: None,
-            completed_result: None,
-        },
-    );
+    guard.insert(session_id, session);
     session_id
 }
 
@@ -80,73 +63,18 @@ async fn store_session_handle(
 async fn wait_for_session_handle(
     mut session: LosslessSessionHandle,
     timeout_ms: Option<u64>,
-) -> (SessionOutcome, Option<CompletedReceiverResult>) {
-    let outcome = if let Some(ms) = timeout_ms {
+) -> bool {
+    if let Some(ms) = timeout_ms {
         match tokio::time::timeout(Duration::from_millis(ms), session.wait()).await {
-            Ok(outcome) => outcome,
+            Ok(outcome) => outcome == SessionOutcome::Completed,
             Err(_) => {
                 session.abort();
-                session.wait().await
+                let _ = session.wait().await;
+                false
             }
         }
     } else {
-        session.wait().await
-    };
-    let completed_result = session.take_completed_result();
-    (outcome, completed_result)
-}
-
-#[cfg(feature = "python-extension")]
-async fn take_session_handle(
-    session_registry: &SessionRegistry,
-    session_id: u64,
-) -> Option<LosslessSessionHandle> {
-    let mut guard = session_registry.lock().await;
-    guard
-        .get_mut(&session_id)
-        .and_then(|record| record.handle.take())
-}
-
-#[cfg(feature = "python-extension")]
-async fn store_session_completion(
-    session_registry: &SessionRegistry,
-    session_id: u64,
-    outcome: SessionOutcome,
-    completed_result: Option<CompletedReceiverResult>,
-) {
-    let mut guard = session_registry.lock().await;
-    let record = guard.entry(session_id).or_insert(SessionRecord {
-        handle: None,
-        outcome: None,
-        completed_result: None,
-    });
-    record.outcome = Some(outcome);
-    record.completed_result = completed_result;
-}
-
-#[cfg(feature = "python-extension")]
-async fn session_outcome(
-    session_registry: &SessionRegistry,
-    session_id: u64,
-) -> Option<SessionOutcome> {
-    let guard = session_registry.lock().await;
-    guard
-        .get(&session_id)
-        .and_then(|record| record.outcome.clone())
-}
-
-#[cfg(feature = "python-extension")]
-async fn take_completed_result(
-    session_registry: &SessionRegistry,
-    session_id: u64,
-    consume: bool,
-) -> Option<CompletedReceiverResult> {
-    let mut guard = session_registry.lock().await;
-    let record = guard.get_mut(&session_id)?;
-    if consume {
-        record.completed_result.take()
-    } else {
-        record.completed_result.clone()
+        session.wait().await == SessionOutcome::Completed
     }
 }
 
@@ -522,22 +450,12 @@ impl Dataplane {
     fn lossless_wait(&self, session_id: u64, timeout_ms: Option<u64>) -> PyResult<bool> {
         #[cfg(feature = "python-extension")]
         {
-            let session = rt().block_on(take_session_handle(&self.session_registry, session_id));
+            let session = rt().block_on(async {
+                let mut guard = self.session_registry.lock().await;
+                guard.remove(&session_id)
+            });
             if let Some(session) = session {
-                let (outcome, completed_result) =
-                    rt().block_on(wait_for_session_handle(session, timeout_ms));
-                rt().block_on(store_session_completion(
-                    &self.session_registry,
-                    session_id,
-                    outcome.clone(),
-                    completed_result,
-                ));
-                return Ok(outcome == SessionOutcome::Completed);
-            }
-            if let Some(outcome) =
-                rt().block_on(session_outcome(&self.session_registry, session_id))
-            {
-                return Ok(outcome == SessionOutcome::Completed);
+                return Ok(rt().block_on(wait_for_session_handle(session, timeout_ms)));
             }
         }
         // feature disabled ⇒ nothing to wait for
@@ -557,23 +475,13 @@ impl Dataplane {
             if self.lossless_runtime.is_some() {
                 let session_registry = self.session_registry.clone();
                 return future_into_py(py, async move {
-                    let session = take_session_handle(&session_registry, session_id).await;
+                    let session = {
+                        let mut guard = session_registry.lock().await;
+                        guard.remove(&session_id)
+                    };
                     let ok = match session {
-                        Some(session) => {
-                            let (outcome, completed_result) =
-                                wait_for_session_handle(session, timeout_ms).await;
-                            store_session_completion(
-                                &session_registry,
-                                session_id,
-                                outcome.clone(),
-                                completed_result,
-                            )
-                            .await;
-                            outcome == SessionOutcome::Completed
-                        }
-                        None => session_outcome(&session_registry, session_id)
-                            .await
-                            .is_some_and(|outcome| outcome == SessionOutcome::Completed),
+                        Some(session) => wait_for_session_handle(session, timeout_ms).await,
+                        None => false,
                     };
 
                     Ok(ok)
@@ -590,11 +498,12 @@ impl Dataplane {
     #[cfg(feature = "python-extension")]
     #[pyo3(signature = (session_id, consume=true))]
     fn get_data_buffer(&self, session_id: u64, consume: bool) -> PyResult<PacketView> {
-        let Some(result) = rt().block_on(take_completed_result(
-            &self.session_registry,
-            session_id,
-            consume,
-        )) else {
+        let handle = self
+            .lossless_runtime
+            .as_ref()
+            .ok_or_else(|| PyKeyError::new_err("lossless runtime unavailable"))?;
+        let Some(result) = rt().block_on(handle.completed_receiver_result(session_id, consume))
+        else {
             return Err(PyKeyError::new_err(format!(
                 "no completed receiver result for session {session_id}"
             )));
@@ -604,23 +513,21 @@ impl Dataplane {
 
     #[cfg(feature = "python-extension")]
     fn receiver_first_payload_offset_ms(&self, session_id: u64) -> PyResult<Option<u64>> {
+        let Some(handle) = &self.lossless_runtime else {
+            return Ok(None);
+        };
         Ok(rt()
-            .block_on(take_completed_result(
-                &self.session_registry,
-                session_id,
-                false,
-            ))
+            .block_on(handle.completed_receiver_result(session_id, false))
             .and_then(|result| result.first_payload_offset_ms))
     }
 
     #[cfg(feature = "python-extension")]
     fn receiver_payload_phase_duration_ms(&self, session_id: u64) -> PyResult<Option<u64>> {
+        let Some(handle) = &self.lossless_runtime else {
+            return Ok(None);
+        };
         Ok(rt()
-            .block_on(take_completed_result(
-                &self.session_registry,
-                session_id,
-                false,
-            ))
+            .block_on(handle.completed_receiver_result(session_id, false))
             .and_then(|result| result.payload_phase_duration_ms))
     }
 

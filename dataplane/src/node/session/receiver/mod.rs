@@ -124,7 +124,8 @@ impl SessionReceiver {
         let result = if self.is_complete() {
             self.shared.mark_completed();
             let result = self.completed_result();
-            self.register_completed_replay(runtime_sender).await;
+            self.register_completed_replay(runtime_sender, result.clone())
+                .await;
             result
         } else {
             None
@@ -252,6 +253,7 @@ impl SessionReceiver {
     async fn register_completed_replay(
         &self,
         runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+        result: Option<CompletedReceiverResult>,
     ) {
         let Some(runtime_sender) = runtime_sender else {
             return;
@@ -265,6 +267,7 @@ impl SessionReceiver {
             .send(LosslessRuntimeMessage::ReceiverCompleted {
                 session_id: self.shared.session_id,
                 replay,
+                result,
                 ack: ack_tx,
             })
             .is_ok()
@@ -903,12 +906,15 @@ mod tests {
 
         let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
         let register_task = tokio::spawn(async move {
-            receiver.register_completed_replay(Some(runtime_tx)).await;
+            receiver
+                .register_completed_replay(Some(runtime_tx), None)
+                .await;
         });
 
         let LosslessRuntimeMessage::ReceiverCompleted {
             session_id,
             replay,
+            result,
             ack,
         } = timeout(Duration::from_secs(2), runtime_rx.recv())
             .await
@@ -925,6 +931,7 @@ mod tests {
                 status: FecStatus::Complete,
             }
         );
+        assert!(result.is_none());
         ack.send(())
             .expect("replay registration should still await ack");
 
