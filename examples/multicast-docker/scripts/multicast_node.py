@@ -498,8 +498,6 @@ def run_receiver(args: argparse.Namespace) -> None:
 
     log(f"Receive completion: {ok}.", args.quiet)
 
-    first_payload_offset_ms, payload_phase_duration_ms = dataplane.receiver_timing_ms(sid)
-
     view = dataplane.get_data_buffer(sid)
     payload_bytes = bytes(view.read())
     log(f"Retrieved {len(payload_bytes)} bytes into PacketView.", args.quiet)
@@ -508,23 +506,8 @@ def run_receiver(args: argparse.Namespace) -> None:
             f"Expected {args.expected_bytes} bytes from metadata; received {len(payload_bytes)} bytes.",
             args.quiet,
         )
-        throughput_bytes = args.expected_bytes
     else:
-        throughput_bytes = len(payload_bytes)
-    if first_payload_offset_ms is None:
-        raise RuntimeError("receiver_timing_ms returned no first-payload timing")
-    if payload_phase_duration_ms is None or payload_phase_duration_ms <= 0:
-        raise RuntimeError("receiver_timing_ms returned no payload-phase timing")
-
-    payload_phase_seconds = payload_phase_duration_ms / 1000.0
-    log(
-        f"First payload unit arrived at {first_payload_offset_ms / 1000.0:.3f}s.",
-        args.quiet,
-    )
-    log(
-        f"Reception completed in {payload_phase_seconds:.3f}s. Throughput: {format_throughput(throughput_bytes, payload_phase_seconds)}.",
-        args.quiet,
-    )
+        log(f"Received {len(payload_bytes)} bytes.", args.quiet)
     log(
         f"Reception full-session wall time was {elapsed:.3f}s.",
         args.quiet,
