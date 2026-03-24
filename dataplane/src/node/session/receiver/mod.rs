@@ -118,6 +118,7 @@ impl SessionReceiver {
         }
 
         if self.is_complete() {
+            self.shared.log_payload_phase_throughput();
             self.register_completed_replay(runtime_sender).await;
         }
 
@@ -296,6 +297,33 @@ impl ReceiverShared {
         if let Some(progress) = &self.cfg.progress {
             progress.mark_first_payload_unit();
         }
+    }
+
+    /// Log payload-phase receiver throughput when first-payload timing is available.
+    fn log_payload_phase_throughput(&self) {
+        let Some(progress) = &self.cfg.progress else {
+            return;
+        };
+        let Some(first_payload_at) = progress.first_payload_unit_at() else {
+            return;
+        };
+        let Some(manifest) = &self.manifest else {
+            return;
+        };
+        let payload_phase = first_payload_at.elapsed();
+        if payload_phase.is_zero() {
+            return;
+        }
+        let receiver_mbps =
+            manifest.total_bytes as f64 * 8.0 / payload_phase.as_secs_f64() / 1_000_000.0;
+        info!(
+            session_id = self.session_id,
+            local_node_id = self.local_node_id,
+            total_bytes = manifest.total_bytes,
+            payload_phase_ms = payload_phase.as_millis() as u64,
+            receiver_mbps,
+            "Lossless receiver payload-phase throughput"
+        );
     }
 
     /// Copy one completed block payload into the optional sink buffer.

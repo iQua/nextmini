@@ -506,11 +506,10 @@ def run_receiver(args: argparse.Namespace) -> None:
             f"Expected {args.expected_bytes} bytes from metadata; received {len(payload_bytes)} bytes.",
             args.quiet,
         )
-        throughput_bytes = args.expected_bytes
     else:
-        throughput_bytes = len(payload_bytes)
+        log(f"Received {len(payload_bytes)} bytes.", args.quiet)
     log(
-        f"Reception completed in {elapsed:.3f}s. Throughput: {format_throughput(throughput_bytes, elapsed)}.",
+        f"Reception full-session wall time was {elapsed:.3f}s.",
         args.quiet,
     )
 

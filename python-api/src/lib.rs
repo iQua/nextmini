@@ -251,14 +251,14 @@ struct Dataplane {
 
 impl Dataplane {
     #[cfg(feature = "python-extension")]
-    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
-        let mut guard = rt().block_on(self.buffer_registry.lock());
-        guard.insert(session_id, buf);
+    fn remember_session(&self, session: LosslessSessionHandle) -> u64 {
+        rt().block_on(store_session_handle(&self.session_registry, session))
     }
 
     #[cfg(feature = "python-extension")]
-    fn remember_session(&self, session: LosslessSessionHandle) -> u64 {
-        rt().block_on(store_session_handle(&self.session_registry, session))
+    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
+        let mut guard = rt().block_on(self.buffer_registry.lock());
+        guard.insert(session_id, buf);
     }
 }
 
@@ -372,7 +372,7 @@ impl Dataplane {
                     route,
                     local_node_id: self.cfg.node_id,
                     sink_buffer: Some(sink_buf.clone()),
-                    progress: None,
+                    progress: Some(Arc::new(session::runtime::ReceiverProgress::default())),
                 };
                 // Direct registration - both sender and receiver compute same session_id
                 let session = rt().block_on(handle.start_receiver(cfg)).map_err(|err| {
@@ -431,7 +431,7 @@ impl Dataplane {
                         route,
                         local_node_id,
                         sink_buffer: Some(sink_buf.clone()),
-                        progress: None,
+                        progress: Some(Arc::new(session::runtime::ReceiverProgress::default())),
                     };
 
                     // Direct registration - both sender and receiver compute same session_id
@@ -576,6 +576,7 @@ impl Dataplane {
 
         #[cfg(feature = "python-extension")]
         let session_registry = Arc::new(Mutex::new(HashMap::new()));
+        #[cfg(feature = "python-extension")]
         let buffer_registry = Arc::new(Mutex::new(HashMap::new()));
 
         Ok(Self {
