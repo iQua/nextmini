@@ -2,7 +2,6 @@
 
 use std::fmt::{Display, Formatter};
 
-use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use nextmini_messages::lossless_session::{FecStatus, PlainStatus};
@@ -148,15 +147,6 @@ pub(crate) enum CompletedReceiverReplay {
     },
 }
 
-/// Final receiver-side artifacts retained for bindings or harnesses.
-#[cfg_attr(not(feature = "python-extension"), allow(dead_code))]
-#[derive(Clone, Debug)]
-pub struct CompletedReceiverResult {
-    pub payload: Bytes,
-    pub first_payload_offset_ms: Option<u64>,
-    pub payload_phase_duration_ms: Option<u64>,
-}
-
 /// Messages sent to the background lossless runtime task.
 pub(super) enum LosslessRuntimeMessage {
     /// Start a sender task for the provided session request.
@@ -181,15 +171,7 @@ pub(super) enum LosslessRuntimeMessage {
     ReceiverCompleted {
         session_id: SessionId,
         replay: CompletedReceiverReplay,
-        result: Option<CompletedReceiverResult>,
         ack: oneshot::Sender<()>,
-    },
-    /// Query one completed receiver result, optionally consuming it.
-    #[cfg_attr(not(feature = "python-extension"), allow(dead_code))]
-    GetCompletedReceiverResult {
-        session_id: SessionId,
-        consume: bool,
-        reply: oneshot::Sender<Option<CompletedReceiverResult>>,
     },
     /// Report one child session exit back into the runtime actor.
     SessionExited {

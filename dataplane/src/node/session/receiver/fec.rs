@@ -94,7 +94,7 @@ impl FecReceiver {
             self.geometry.symbol_size(),
             block_len,
         ) {
-            self.complete_block(shared, block_id, block);
+            self.complete_block(shared, block_id, block).await;
             return true;
         }
 
@@ -158,17 +158,17 @@ impl FecReceiver {
         }
         block.truncate(block_len);
 
-        self.complete_block(shared, block_id, block);
+        self.complete_block(shared, block_id, block).await;
         true
     }
 
-    fn complete_block(
+    async fn complete_block(
         &mut self,
         shared: &mut super::ReceiverShared,
         block_id: u64,
         block: Vec<u8>,
     ) {
-        shared.write_block(block_id, &block);
+        shared.write_block(block_id, &block).await;
         shared.complete_blocks.insert(block_id);
         self.blocks.remove(&block_id);
     }

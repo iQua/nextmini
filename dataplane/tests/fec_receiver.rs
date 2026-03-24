@@ -1,7 +1,8 @@
 use std::net::Ipv4Addr;
+use std::sync::Arc;
 use std::time::Duration;
 
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
 use nextmini::node::NodeIdExt;
@@ -26,8 +27,8 @@ const DST_PORT: u16 = 4600;
 struct ReceiverHarness {
     tx: mpsc::Sender<InboundFrame>,
     packet_rx: mpsc::Receiver<Packet>,
-    receiver_task:
-        tokio::task::JoinHandle<Option<nextmini::node::session::api::CompletedReceiverResult>>,
+    receiver_task: tokio::task::JoinHandle<()>,
+    sink: Arc<Mutex<Vec<u8>>>,
 }
 
 async fn build_receiver_harness() -> ReceiverHarness {
@@ -59,6 +60,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
     processors.connect_user_space_sender(flow_id, packet_tx);
     tokio::time::sleep(Duration::from_millis(50)).await;
 
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: SESSION_ID,
         route: TransportRoute {
@@ -68,7 +70,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
             dst_port: DST_PORT,
         },
         local_node_id: RECEIVER_NODE_ID,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: true,
     };
@@ -80,6 +82,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
         tx,
         packet_rx,
         receiver_task,
+        sink,
     }
 }
 
@@ -117,7 +120,7 @@ async fn recv_control(packet_rx: &mut mpsc::Receiver<Packet>) -> (Packet, Lossle
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_reports_complete_after_eot_and_captures_payload() {
+async fn receiver_reports_complete_after_eot_and_writes_sink() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -179,13 +182,13 @@ async fn receiver_reports_complete_after_eot_and_captures_payload() {
 
     drop(harness.tx);
 
-    let result = timeout(Duration::from_secs(2), harness.receiver_task)
+    timeout(Duration::from_secs(2), harness.receiver_task)
         .await
         .expect("receiver task should stop after block completion")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(result.payload[..payload.len()], payload);
+    let sink = harness.sink.lock().await.clone();
+    assert_eq!(sink[..payload.len()], payload);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

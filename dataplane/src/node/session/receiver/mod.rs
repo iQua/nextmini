@@ -22,9 +22,7 @@ use nextmini_messages::lossless_session::{
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::SessionId;
-use crate::node::session::api::{
-    CompletedReceiverReplay, CompletedReceiverResult, InboundFrame, LosslessRuntimeMessage,
-};
+use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
@@ -38,8 +36,8 @@ pub async fn run(
     cfg: ReceiverConfig,
     rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
-) -> Option<CompletedReceiverResult> {
-    run_with_runtime(cfg, rx, processors, None).await
+) {
+    run_with_runtime(cfg, rx, processors, None).await;
 }
 
 pub(super) async fn run_with_runtime(
@@ -47,9 +45,9 @@ pub(super) async fn run_with_runtime(
     mut rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
     runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
-) -> Option<CompletedReceiverResult> {
+) {
     let mut receiver = SessionReceiver::new(cfg, processors);
-    receiver.run(&mut rx, runtime_sender).await
+    receiver.run(&mut rx, runtime_sender).await;
 }
 
 /// Stateful receiver loop shared by plain and FEC transfer modes.
@@ -68,7 +66,6 @@ pub(super) struct ReceiverShared {
     pub(super) manifest: Option<LosslessSessionManifest>,
     pub(super) plan: Option<BlockPlan>,
     pub(super) complete_blocks: BTreeSet<u64>,
-    pub(super) captured_payload: Option<Vec<u8>>,
 }
 
 /// Concrete receiver mode selected after the manifest is installed.
@@ -90,7 +87,6 @@ impl SessionReceiver {
                 manifest: None,
                 plan: None,
                 complete_blocks: BTreeSet::new(),
-                captured_payload: None,
             },
             mode: None,
         }
@@ -101,7 +97,7 @@ impl SessionReceiver {
         &mut self,
         rx: &mut mpsc::Receiver<InboundFrame>,
         runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
-    ) -> Option<CompletedReceiverResult> {
+    ) {
         info!(
             session_id = self.shared.session_id,
             "Lossless receiver started"
@@ -121,22 +117,16 @@ impl SessionReceiver {
             }
         }
 
-        let result = if self.is_complete() {
+        if self.is_complete() {
+            self.register_completed_replay(runtime_sender).await;
             self.shared.mark_completed();
-            let result = self.completed_result();
-            self.register_completed_replay(runtime_sender, result.clone())
-                .await;
-            result
-        } else {
-            None
-        };
+        }
 
         debug!(
             session_id = self.shared.session_id,
             complete = self.is_complete(),
             "Lossless receiver finished"
         );
-        result
     }
 
     /// Return whether the receiver has completed every planned block.
@@ -241,7 +231,7 @@ impl SessionReceiver {
             );
             return;
         };
-        if !self.shared.ensure_output_buffers_len(object_len) {
+        if !self.shared.ensure_sink_buffer_len(object_len).await {
             return;
         }
         self.shared.plan = Some(plan);
@@ -253,7 +243,6 @@ impl SessionReceiver {
     async fn register_completed_replay(
         &self,
         runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
-        result: Option<CompletedReceiverResult>,
     ) {
         let Some(runtime_sender) = runtime_sender else {
             return;
@@ -267,7 +256,6 @@ impl SessionReceiver {
             .send(LosslessRuntimeMessage::ReceiverCompleted {
                 session_id: self.shared.session_id,
                 replay,
-                result,
                 ack: ack_tx,
             })
             .is_ok()
@@ -292,28 +280,6 @@ impl SessionReceiver {
             }
             _ => None,
         }
-    }
-
-    fn completed_result(&mut self) -> Option<CompletedReceiverResult> {
-        if !self.shared.cfg.capture_result {
-            return None;
-        }
-        let payload = self.shared.captured_payload.take()?;
-        Some(CompletedReceiverResult {
-            payload: payload.into(),
-            first_payload_offset_ms: self
-                .shared
-                .cfg
-                .progress
-                .as_ref()
-                .and_then(|progress| progress.first_payload_offset_ms()),
-            payload_phase_duration_ms: self
-                .shared
-                .cfg
-                .progress
-                .as_ref()
-                .and_then(|progress| progress.payload_phase_duration_ms()),
-        })
     }
 }
 
@@ -340,43 +306,49 @@ impl ReceiverShared {
         }
     }
 
-    /// Copy one completed block payload into the optional captured output.
-    pub(super) fn write_block(&mut self, block_id: u64, payload: &[u8]) {
+    /// Copy one completed block payload into the optional sink buffer.
+    pub(super) async fn write_block(&self, block_id: u64, payload: &[u8]) {
         let Some(plan) = self.plan else {
             return;
         };
         let Some(span) = plan.block_span(block_id) else {
             return;
         };
-        let Some(object_len) = plan.total_bytes_usize() else {
+        let Some(sink) = &self.cfg.sink_buffer else {
             return;
         };
 
+        let mut guard = sink.lock().await;
+        let Some(object_len) = plan.total_bytes_usize() else {
+            return;
+        };
+        if guard.len() < object_len {
+            guard.resize(object_len, 0);
+        }
+
         let start = usize::try_from(span.offset()).unwrap_or(0);
         let end = start + payload.len().min(span.len());
-        if let Some(captured_payload) = self.captured_payload.as_mut() {
-            if captured_payload.len() < object_len {
-                captured_payload.resize(object_len, 0);
-            }
-            if end <= captured_payload.len() {
-                captured_payload[start..end].copy_from_slice(&payload[..end - start]);
-            }
+        if end <= guard.len() {
+            guard[start..end].copy_from_slice(&payload[..end - start]);
         }
     }
 
-    /// Ensure any configured captured output is large enough for the full object.
-    fn ensure_output_buffers_len(&mut self, object_len: usize) -> bool {
-        if self.cfg.capture_result && self.captured_payload.is_none() {
-            let mut payload = Vec::new();
-            if payload.try_reserve_exact(object_len).is_err() {
+    /// Ensure the optional sink buffer is large enough for the full object.
+    async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
+        let Some(sink) = &self.cfg.sink_buffer else {
+            return true;
+        };
+        let mut guard = sink.lock().await;
+        if guard.len() < object_len {
+            let additional = object_len - guard.len();
+            if guard.try_reserve_exact(additional).is_err() {
                 warn!(
                     session_id = self.session_id,
-                    object_len, "Lossless receiver failed to reserve capture buffer for manifest"
+                    object_len, "Lossless receiver failed to reserve sink buffer for manifest"
                 );
                 return false;
             }
-            payload.resize(object_len, 0);
-            self.captured_payload = Some(payload);
+            guard.resize(object_len, 0);
         }
         true
     }
@@ -513,7 +485,7 @@ mod tests {
                     dst_port: 2,
                 },
                 local_node_id: 1,
-                capture_result: false,
+                sink_buffer: None,
                 progress: None,
                 fec_enabled: true,
             },
@@ -531,7 +503,6 @@ mod tests {
             }),
             plan: BlockPlan::new(16, 8).ok(),
             complete_blocks: BTreeSet::new(),
-            captured_payload: None,
         };
         let mut receiver = FecReceiver::new(
             BlockPlan::new(16, 8)
@@ -572,7 +543,7 @@ mod tests {
                     dst_port: 2,
                 },
                 local_node_id: 1,
-                capture_result: false,
+                sink_buffer: None,
                 progress: None,
                 fec_enabled: true,
             },
@@ -590,7 +561,6 @@ mod tests {
             }),
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
-            captured_payload: None,
         };
         let receiver = FecReceiver::new(geometry);
 
@@ -624,7 +594,7 @@ mod tests {
                         dst_port: 2,
                     },
                     local_node_id: 1,
-                    capture_result: false,
+                    sink_buffer: None,
                     progress: None,
                     fec_enabled: false,
                 },
@@ -637,7 +607,6 @@ mod tests {
                 }),
                 plan: BlockPlan::new(16, 8).ok(),
                 complete_blocks: BTreeSet::from([0, 1]),
-                captured_payload: None,
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
         };
@@ -797,7 +766,7 @@ mod tests {
                     dst_port: 2,
                 },
                 local_node_id: 1,
-                capture_result: false,
+                sink_buffer: None,
                 progress: Some(progress.clone()),
                 fec_enabled: false,
             },
@@ -810,7 +779,6 @@ mod tests {
             }),
             plan: BlockPlan::new(8, 8).ok(),
             complete_blocks: BTreeSet::new(),
-            captured_payload: None,
         };
 
         shared.mark_first_payload_unit();
@@ -865,7 +833,7 @@ mod tests {
                     session_id: 9,
                     route,
                     local_node_id: RECEIVER_NODE_ID,
-                    capture_result: false,
+                    sink_buffer: None,
                     progress: None,
                     fec_enabled: true,
                 },
@@ -883,7 +851,6 @@ mod tests {
                 }),
                 plan: BlockPlan::new(8, 8).ok(),
                 complete_blocks: BTreeSet::from([0]),
-                captured_payload: None,
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
         };
@@ -906,15 +873,12 @@ mod tests {
 
         let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
         let register_task = tokio::spawn(async move {
-            receiver
-                .register_completed_replay(Some(runtime_tx), None)
-                .await;
+            receiver.register_completed_replay(Some(runtime_tx)).await;
         });
 
         let LosslessRuntimeMessage::ReceiverCompleted {
             session_id,
             replay,
-            result,
             ack,
         } = timeout(Duration::from_secs(2), runtime_rx.recv())
             .await
@@ -931,7 +895,6 @@ mod tests {
                 status: FecStatus::Complete,
             }
         );
-        assert!(result.is_none());
         ack.send(())
             .expect("replay registration should still await ack");
 
@@ -986,7 +949,7 @@ mod tests {
                         session_id: 8,
                         route,
                         local_node_id: RECEIVER_NODE_ID,
-                        capture_result: false,
+                        sink_buffer: None,
                         progress: None,
                         fec_enabled: false,
                     },
@@ -999,7 +962,6 @@ mod tests {
                     }),
                     plan: BlockPlan::new(total_blocks * 8, 8).ok(),
                     complete_blocks,
-                    captured_payload: None,
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             },

@@ -1,9 +1,10 @@
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
 use nextmini::node::session::api::InboundFrame;
@@ -21,7 +22,7 @@ const SRC_PORT: u16 = 4700;
 const DST_PORT: u16 = 5700;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_reports_complete_on_eot_and_captures_payload() {
+async fn plain_receiver_reports_complete_on_eot_and_writes_sink() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -31,11 +32,12 @@ async fn plain_receiver_reports_complete_on_eot_and_captures_payload() {
         2048,
     )
     .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: SESSION_ID,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: false,
     };
@@ -102,17 +104,17 @@ async fn plain_receiver_reports_complete_on_eot_and_captures_payload() {
         }
     );
 
-    let result = timeout(Duration::from_secs(2), receiver_task)
+    timeout(Duration::from_secs(2), receiver_task)
         .await
         .expect("receiver task should stop")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(&result.payload[..16], b"abcdefghijklmnop");
+    let sink = sink.lock().await;
+    assert_eq!(&sink[..16], b"abcdefghijklmnop");
     assert_eq!(
-        result.payload.len(),
+        sink.len(),
         16,
-        "receiver payload should size itself from the manifest"
+        "receiver sink should size itself from the manifest"
     );
 }
 
@@ -127,11 +129,12 @@ async fn plain_receiver_waits_for_eot_before_completion() {
         2048,
     )
     .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: SESSION_ID + 2,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: false,
     };
@@ -205,13 +208,12 @@ async fn plain_receiver_waits_for_eot_before_completion() {
         }
     );
 
-    let result = timeout(Duration::from_secs(2), receiver_task)
+    timeout(Duration::from_secs(2), receiver_task)
         .await
         .expect("receiver task should stop after Eot confirms completion")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(&result.payload[..], b"abcdefghijklmnop");
+    assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -229,7 +231,7 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
         session_id: SESSION_ID + 4,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: false,
+        sink_buffer: None,
         progress: None,
         fec_enabled: false,
     };
@@ -283,11 +285,12 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         2048,
     )
     .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: SESSION_ID + 5,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: false,
     };
@@ -371,13 +374,12 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         }
     );
 
-    let result = timeout(Duration::from_secs(2), receiver_task)
+    timeout(Duration::from_secs(2), receiver_task)
         .await
         .expect("receiver task should stop after Eot confirms completion")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(&result.payload[..], b"abcdefghijklmnop");
+    assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

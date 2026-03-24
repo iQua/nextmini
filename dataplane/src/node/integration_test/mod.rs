@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
+use tokio::sync::Mutex;
 use tracing::{error, info};
 
 use nextmini_messages::GroupRouteTree;
@@ -238,6 +239,7 @@ async fn run_receiver(
     let (group_id, _, _) = wait_for_group_info(harness_cfg, timeout).await?;
     control.join_group(group_id).await;
 
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let progress = Arc::new(ReceiverProgress::default());
     let sid = multicast_session_id(group_id as u64, harness_cfg.source_node_id);
     let mut session = lossless_runtime
@@ -252,7 +254,7 @@ async fn run_receiver(
                 dst_port: harness_cfg.dst_port,
             },
             local_node_id: config.node_id,
-            capture_result: true,
+            sink_buffer: Some(sink.clone()),
             progress: Some(progress.clone()),
         })
         .await
@@ -274,13 +276,14 @@ async fn run_receiver(
         ));
     }
 
-    let result = lossless_runtime
-        .completed_receiver_result(session_id, true)
-        .await
-        .ok_or_else(|| format!("receiver session {session_id} produced no completed result"))?;
-    let sink_bytes = result.payload;
+    let transfer_finished_at = Instant::now();
+    let transfer_started_at = progress.first_payload_unit_at().ok_or_else(|| {
+        format!("receiver session {session_id} completed without recording payload arrival")
+    })?;
+
+    let sink_bytes = sink.lock().await.clone();
     if sink_bytes.is_empty() {
-        return Err("receiver result payload is empty".to_string());
+        return Err("receiver sink is empty".to_string());
     }
     write_artifact_with_hash(
         &receiver_artifact_path(harness_cfg, config.node_id),
@@ -291,13 +294,7 @@ async fn run_receiver(
         config.node_id,
         IntegrationNodeRole::Receiver,
         sink_bytes.len() as u64,
-        Duration::from_millis(
-            result.payload_phase_duration_ms.ok_or_else(|| {
-                format!(
-                    "receiver session {session_id} completed without payload-phase timing"
-                )
-            })?,
-        ),
+        transfer_finished_at.saturating_duration_since(transfer_started_at),
     )?;
     write_status(
         harness_cfg,

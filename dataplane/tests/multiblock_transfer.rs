@@ -1,10 +1,11 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
 use nextmini::node::session::api::InboundFrame;
@@ -152,11 +153,12 @@ async fn plain_receiver_writes_and_reports_complete_after_eot() {
         2048,
     )
     .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: 0xA11C_E102,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: false,
     };
@@ -218,13 +220,12 @@ async fn plain_receiver_writes_and_reports_complete_after_eot() {
     };
     assert_eq!(status, PlainStatus::Complete);
 
-    let result = timeout(Duration::from_secs(2), receiver_task)
+    timeout(Duration::from_secs(2), receiver_task)
         .await
         .expect("receiver task should stop")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(&result.payload[..], b"abcdefghijklmnopqrstuvwx");
+    assert_eq!(&*sink.lock().await, b"abcdefghijklmnopqrstuvwx");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -314,11 +315,12 @@ async fn fec_receiver_decodes_and_reports_complete_after_eot() {
         2048,
     )
     .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
     let receiver_cfg = ReceiverConfig {
         session_id: 0xA11C_E104,
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
-        capture_result: true,
+        sink_buffer: Some(sink.clone()),
         progress: None,
         fec_enabled: true,
     };
@@ -412,11 +414,10 @@ async fn fec_receiver_decodes_and_reports_complete_after_eot() {
 
     drop(tx);
 
-    let result = timeout(Duration::from_secs(2), receiver_task)
+    timeout(Duration::from_secs(2), receiver_task)
         .await
         .expect("receiver task should stop")
-        .expect("receiver task should exit cleanly")
-        .expect("receiver task should return completed payload");
+        .expect("receiver task should exit cleanly");
 
-    assert_eq!(&result.payload[..18], &b"abcdefghijklmnopqr"[..]);
+    assert_eq!(&sink.lock().await[..18], &b"abcdefghijklmnopqr"[..]);
 }

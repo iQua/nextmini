@@ -209,12 +209,13 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     let session_id = 0xFEC6_0002;
 
+    let sink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
     let mut session = runtime
         .start_receiver(ReceiverRequest {
             session_id,
             route: capture.route(),
             local_node_id: capture.cfg.node_id,
-            capture_result: true,
+            sink_buffer: Some(sink.clone()),
             progress: None,
         })
         .await
@@ -296,11 +297,7 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
         }
     );
 
-    let result = runtime
-        .completed_receiver_result(session_id, true)
-        .await
-        .expect("receiver should retain completed result");
-    assert_eq!(&result.payload[..], &[1, 2, 3, 4, 5, 6, 7, 8]);
+    assert_eq!(&*sink.lock().await, &[1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
 async fn collect_symbols_until_eot(
