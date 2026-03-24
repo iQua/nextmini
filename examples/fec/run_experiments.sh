@@ -167,6 +167,7 @@ run_case() {
     wait_remote_file "$node_id" "~/$REMOTE_RUN_DIR/artifacts/receiver-$node_id.bin" "$((RECEIVE_TIMEOUT_MS / 1000))"
   done
   collect_logs
+  "$ROOT/collect_throughput.sh" "$RUN_DIR"
   source_hash="$(sha256sum "$PAYLOAD_PATH" | awk '{print $1}')"
   for node_id in $RECEIVER_IDS; do
     receiver_path="$RUN_DIR/receiver-$node_id.bin"
