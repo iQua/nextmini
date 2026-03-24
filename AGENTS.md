@@ -25,6 +25,13 @@
 - Modules, files, and functions use `snake_case`; types and traits use `UpperCamelCase`. Constants stay `SCREAMING_SNAKE_CASE`.
 - Add tracing via `tracing::{debug, info, warn, error}` instead of `println!`, and keep messages actionable (flow IDs, node IDs, controller IDs).
 
+## Design Principles
+
+- Prefer deleting code, reusing existing mechanisms, and simplifying ownership and control flow before adding new helpers, state, parameters, or abstractions.
+- Start from the simplest end-to-end design that can satisfy the requirement; only introduce new knobs or configuration fields when there is a concrete need that cannot be handled cleanly by the existing model.
+- When metrics or behavior naturally belong to the dataplane/runtime layer, keep them there instead of re-computing or re-exposing them through higher-level wrappers such as Python unless there is a strong reason.
+- Optimize for smaller, cleaner designs: reduce LOC when possible, avoid speculative generality, and treat “less code with clearer semantics” as the default goal.
+
 ## Testing Guidelines
 
 - Co-locate tests in the owning module with `#[cfg(test)] mod tests` and use `#[tokio::test]` for async paths such as controller I/O.
