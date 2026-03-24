@@ -314,14 +314,14 @@ impl ReceiverShared {
         if payload_phase.is_zero() {
             return;
         }
-        let receiver_mibps =
-            manifest.total_bytes as f64 / payload_phase.as_secs_f64() / (1024.0 * 1024.0);
+        let receiver_mbps =
+            manifest.total_bytes as f64 * 8.0 / payload_phase.as_secs_f64() / 1_000_000.0;
         info!(
             session_id = self.session_id,
             local_node_id = self.local_node_id,
             total_bytes = manifest.total_bytes,
             payload_phase_ms = payload_phase.as_millis() as u64,
-            receiver_mibps,
+            receiver_mbps,
             "Lossless receiver payload-phase throughput"
         );
     }
