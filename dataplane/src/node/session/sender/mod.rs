@@ -12,7 +12,7 @@ mod state;
 use bytes::Bytes;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, NeedReport,
@@ -238,8 +238,17 @@ impl SenderShared {
             return;
         }
 
+        debug!(
+            session_id = self.session.session_id,
+            "Lossless sender waiting for topology readiness"
+        );
+
         while rx.changed().await.is_ok() {
             if *rx.borrow() {
+                debug!(
+                    session_id = self.session.session_id,
+                    "Lossless sender observed topology readiness"
+                );
                 break;
             }
         }
@@ -339,6 +348,12 @@ impl SenderShared {
                 }
 
                 if self.quorum_liveness.should_solicit(now) {
+                    debug!(
+                        session_id = self.session.session_id,
+                        round_id,
+                        solicitation_count = self.quorum_liveness.solicitation_count() + 1,
+                        "Lossless sender is retransmitting SourceDone while waiting for quorum feedback"
+                    );
                     self.send_source_done(round_id).await;
                     self.quorum_liveness.note_solicitation(now);
                     return QuorumWaitOutcome::Solicited;
@@ -513,6 +528,10 @@ impl SenderShared {
 
     /// Emit the burst-boundary marker for the current sender round.
     pub(super) async fn send_source_done(&mut self, round_id: u32) {
+        debug!(
+            session_id = self.session.session_id,
+            round_id, "Lossless sender emitted SourceDone"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -833,6 +852,54 @@ mod tests {
                 .await
                 .expect("sender task should finish")
                 .expect("sender task should not panic"),
+            SessionOutcome::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn zero_byte_sender_completes_immediately_when_ready_grace_freezes_empty_quorum() {
+        let processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity: 8,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+        let cfg = SenderConfig {
+            session: SessionConfig {
+                session_id: 10,
+                block_size: 4,
+            },
+            route: TransportRoute {
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1111,
+                dst_port: 2222,
+            },
+            pacing: None,
+            receiver_ids: vec![22],
+            source_buffer: Bytes::new(),
+            manifest: LosslessSessionManifest {
+                block_size: 4,
+                total_bytes: 0,
+                total_blocks: 0,
+                mode: LosslessSessionMode::Plain,
+            },
+            ready_grace_ms: 1,
+            topology_ready: None,
+        };
+        let sender = SessionSender::new(cfg, processors).expect("sender should build");
+        let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), async move {
+                let mut sender = sender;
+                sender.run(&mut ctrl_rx).await
+            })
+            .await
+            .expect("sender task should finish"),
             SessionOutcome::Completed
         );
     }

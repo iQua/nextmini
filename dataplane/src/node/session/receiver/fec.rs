@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use nextmini_messages::lossless_session::{self, LosslessSessionMode, NeedBlock, NeedReport};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
@@ -227,10 +227,19 @@ impl FecReceiver {
     ) {
         if let Some(last_round_id) = self.last_source_done_round_id {
             if round_id < last_round_id {
+                debug!(
+                    session_id = shared.session_id,
+                    round_id, last_round_id, "Lossless FEC receiver dropped stale SourceDone"
+                );
                 return;
             }
             if round_id == last_round_id {
                 if let Some(report) = self.last_round_need.clone() {
+                    debug!(
+                        session_id = shared.session_id,
+                        round_id,
+                        "Lossless FEC receiver replayed cached Need for duplicate SourceDone"
+                    );
                     shared.send_fec_need(last_round_id, &report).await;
                     self.complete_reported = matches!(report, NeedReport::Complete);
                 }

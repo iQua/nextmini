@@ -7,7 +7,7 @@ use std::time::Instant;
 use ahash::AHashMap;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
@@ -542,6 +542,12 @@ impl LosslessRuntime {
                 report,
             } => {
                 if round_id != *replay_round_id {
+                    debug!(
+                        session_id = session,
+                        round_id,
+                        replay_round_id,
+                        "Lossless runtime dropped stale or future replay attempt for a completed plain receiver"
+                    );
                     return false;
                 }
                 control::send_control(
@@ -568,6 +574,12 @@ impl LosslessRuntime {
                 report,
             } => {
                 if round_id != *replay_round_id {
+                    debug!(
+                        session_id = session,
+                        round_id,
+                        replay_round_id,
+                        "Lossless runtime dropped stale or future replay attempt for a completed FEC receiver"
+                    );
                     return false;
                 }
                 control::send_control(

@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use tracing::warn;
+use tracing::{debug, warn};
 
 use nextmini_messages::lossless_session::{
     self, LosslessSessionManifest, LosslessSessionMode, NeedReport,
@@ -409,15 +409,40 @@ impl super::ModeHooks for FecSender {
         round_id: u32,
         report: NeedReport,
     ) {
-        if self.phase != RoundPhase::WaitingForReports || round_id != self.current_round_id {
+        if self.phase != RoundPhase::WaitingForReports {
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id,
+                round_id,
+                current_round_id = self.current_round_id,
+                phase = ?self.phase,
+                "Lossless FEC sender dropped Need because no feedback round is open"
+            );
+            return;
+        }
+        if round_id != self.current_round_id {
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id,
+                round_id,
+                current_round_id = self.current_round_id,
+                "Lossless FEC sender dropped stale or future Need"
+            );
             return;
         }
         if let Some(existing) = self.round_reports.get(&peer_id) {
             if existing != &report {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless FEC sender rejected changed same-round Need from a quorum peer"
+                );
                 self.protocol_error = true;
             }
             return;
         }
+        let had_pending_repair = self.has_pending_repair_work();
         self.round_reports.insert(peer_id, report.clone());
         match report {
             NeedReport::Complete => {}
@@ -430,6 +455,15 @@ impl super::ModeHooks for FecSender {
                         entry.required_extra_symbols =
                             entry.required_extra_symbols.max(block.deficit_symbols);
                     }
+                }
+                if !had_pending_repair && self.has_pending_repair_work() {
+                    debug!(
+                        session_id = shared.session.session_id,
+                        peer_id,
+                        round_id,
+                        next_burst_id = self.current_round_id.saturating_add(1),
+                        "Lossless FEC sender observed the first useful Need for the open round"
+                    );
                 }
             }
             NeedReport::Plain { .. } => {

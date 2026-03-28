@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nextmini_messages::lossless_session::{MissingBlockRange, NeedReport};
 use tokio::sync::mpsc;
-use tracing::debug;
+use tracing::{debug, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::api::SessionOutcome;
@@ -29,17 +29,40 @@ pub(super) struct PlainSender {
 impl super::ModeHooks for PlainSender {
     fn on_need(
         &mut self,
-        _shared: &mut super::SenderShared,
+        shared: &mut super::SenderShared,
         peer_id: usize,
         round_id: u32,
         report: NeedReport,
     ) {
-        if !self.feedback_round_open || round_id != self.feedback_open_round_id {
+        if !self.feedback_round_open {
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id,
+                round_id,
+                open_round_id = self.feedback_open_round_id,
+                "Lossless plain sender dropped Need because no feedback round is open"
+            );
+            return;
+        }
+        if round_id != self.feedback_open_round_id {
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id,
+                round_id,
+                open_round_id = self.feedback_open_round_id,
+                "Lossless plain sender dropped stale or future Need"
+            );
             return;
         }
 
         if let Some(existing) = self.round_reports.get(&peer_id) {
             if existing != &report {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless plain sender rejected changed same-round Need from a quorum peer"
+                );
                 self.protocol_error = true;
             }
             return;
@@ -58,6 +81,15 @@ impl super::ModeHooks for PlainSender {
                     }
                 }
                 if useful {
+                    if !self.next_burst_nonempty {
+                        debug!(
+                            session_id = shared.session.session_id,
+                            peer_id,
+                            round_id,
+                            next_burst_id = self.feedback_open_round_id.saturating_add(1),
+                            "Lossless plain sender observed the first useful Need for the open round"
+                        );
+                    }
                     self.current_burst_id = self.feedback_open_round_id.saturating_add(1);
                     self.next_burst_nonempty = true;
                 }

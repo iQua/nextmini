@@ -1,4 +1,5 @@
 use nextmini_messages::lossless_session::NeedReport;
+use tracing::debug;
 
 use crate::node::session::api::InboundFrame;
 
@@ -55,10 +56,19 @@ impl PlainReceiver {
     ) {
         if let Some(last_round_id) = self.last_source_done_round_id {
             if round_id < last_round_id {
+                debug!(
+                    session_id = shared.session_id,
+                    round_id, last_round_id, "Lossless plain receiver dropped stale SourceDone"
+                );
                 return;
             }
             if round_id == last_round_id {
                 if let Some(report) = self.last_round_need.clone() {
+                    debug!(
+                        session_id = shared.session_id,
+                        round_id,
+                        "Lossless plain receiver replayed cached Need for duplicate SourceDone"
+                    );
                     shared.send_plain_need(last_round_id, &report).await;
                     self.complete_reported = matches!(report, NeedReport::Complete);
                 }
