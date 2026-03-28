@@ -511,8 +511,8 @@ mod tests {
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
     use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
 
-    #[test]
-    fn fec_sender_drops_future_round_need() {
+    #[tokio::test]
+    async fn fec_sender_drops_future_round_need() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");
         let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
@@ -537,8 +537,8 @@ mod tests {
         assert!(!sender.protocol_error);
     }
 
-    #[test]
-    fn fec_sender_drops_need_after_round_closure() {
+    #[tokio::test]
+    async fn fec_sender_drops_need_after_round_closure() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");
         let mut sender = FecSender::new(&manifest, plan).expect("sender should build");

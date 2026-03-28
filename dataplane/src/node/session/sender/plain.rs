@@ -265,8 +265,8 @@ mod tests {
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
     use nextmini_messages::lossless_session::{LosslessSessionManifest, LosslessSessionMode};
 
-    #[test]
-    fn plain_sender_drops_future_round_need() {
+    #[tokio::test]
+    async fn plain_sender_drops_future_round_need() {
         let mut sender = PlainSender {
             feedback_open_round_id: 0,
             feedback_round_open: true,
@@ -292,8 +292,8 @@ mod tests {
         assert!(!sender.protocol_error);
     }
 
-    #[test]
-    fn plain_sender_drops_need_after_round_closure() {
+    #[tokio::test]
+    async fn plain_sender_drops_need_after_round_closure() {
         let mut sender = PlainSender {
             feedback_open_round_id: 0,
             feedback_round_open: false,
