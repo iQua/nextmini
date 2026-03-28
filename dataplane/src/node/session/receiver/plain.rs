@@ -6,6 +6,8 @@ use crate::node::session::api::InboundFrame;
 #[derive(Default)]
 pub(super) struct PlainReceiver {
     complete_reported: bool,
+    last_source_done_round_id: Option<u32>,
+    last_round_status: Option<PlainStatus>,
 }
 
 impl PlainReceiver {
@@ -42,10 +44,29 @@ impl PlainReceiver {
         shared.complete_blocks.insert(data.block_id);
     }
 
-    pub(super) async fn handle_eot(&mut self, shared: &super::ReceiverShared) {
+    pub(super) async fn handle_source_done(
+        &mut self,
+        shared: &super::ReceiverShared,
+        round_id: u32,
+    ) {
+        if let Some(last_round_id) = self.last_source_done_round_id {
+            if round_id < last_round_id {
+                return;
+            }
+            if round_id == last_round_id {
+                if let Some(status) = self.last_round_status.clone() {
+                    shared.send_plain_status(&status).await;
+                    self.complete_reported = matches!(status, PlainStatus::Complete);
+                }
+                return;
+            }
+        }
+
         let Some(status) = shared.plain_status() else {
             return;
         };
+        self.last_source_done_round_id = Some(round_id);
+        self.last_round_status = Some(status.clone());
         shared.send_plain_status(&status).await;
         self.complete_reported = matches!(status, PlainStatus::Complete);
     }

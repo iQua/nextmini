@@ -528,11 +528,10 @@ impl LosslessRuntime {
         };
         match replay {
             CompletedReceiverReplay::Plain { route, status } => {
-                let should_replay = lossless_session::decode_block_data(&frame.bytes).is_some()
-                    || matches!(
-                        lossless_session::decode_control(&frame.bytes),
-                        Some((_, LosslessSessionControl::Eot))
-                    );
+                let should_replay = matches!(
+                    lossless_session::decode_control(&frame.bytes),
+                    Some((_, LosslessSessionControl::SourceDone { .. }))
+                );
                 if !should_replay {
                     return false;
                 }
@@ -555,11 +554,10 @@ impl LosslessRuntime {
                 true
             }
             CompletedReceiverReplay::Fec { route, status } => {
-                let should_replay = lossless_session::decode_block_symbol(&frame.bytes).is_some()
-                    || matches!(
-                        lossless_session::decode_control(&frame.bytes),
-                        Some((_, LosslessSessionControl::Eot))
-                    );
+                let should_replay = matches!(
+                    lossless_session::decode_control(&frame.bytes),
+                    Some((_, LosslessSessionControl::SourceDone { .. }))
+                );
                 if !should_replay {
                     return false;
                 }
@@ -604,7 +602,7 @@ mod tests {
     const RECEIVER_NODE_ID: usize = 62;
 
     #[tokio::test]
-    async fn deliver_frame_falls_back_to_completed_plain_receiver_when_inbox_is_closed() {
+    async fn deliver_frame_falls_back_to_completed_plain_receiver_on_source_done() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E401;
         let (inbox, inbox_rx) = mpsc::channel(1);
@@ -634,7 +632,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -645,7 +646,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_replays_fec_complete_for_late_symbol_and_eot() {
+    async fn deliver_frame_replays_fec_complete_for_source_done() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E402;
 
@@ -661,7 +662,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -674,7 +678,7 @@ mod tests {
                 InboundFrame {
                     bytes: lossless_session::encode_control(
                         session_id,
-                        &LosslessSessionControl::Eot,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
@@ -713,7 +717,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -753,7 +760,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )

@@ -2,8 +2,8 @@
 //!
 //! Plain mode sends complete blocks on the default tree and converges with
 //! end-of-round status feedback. FEC mode sends source symbols first, emits
-//! `Eot` after the source sweep, and only then responds to aggregate round
-//! status feedback with extra fountain symbols.
+//! `SourceDone { round_id }` after the source sweep, and only then responds to
+//! aggregate round status feedback with extra fountain symbols.
 
 mod fec;
 mod plain;
@@ -68,7 +68,12 @@ pub(super) trait ModeHooks {
 
     /// Return the frozen-quorum peers that still owe feedback for the current round.
     fn pending_feedback_peers(&self, shared: &SenderShared) -> Vec<usize> {
-        shared.active_quorum.active_members().iter().copied().collect()
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .collect()
     }
 }
 
@@ -303,6 +308,7 @@ impl SenderShared {
         &mut self,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
         mode: &mut M,
+        round_id: u32,
     ) -> QuorumWaitOutcome {
         let Some(timeout_at) = self.quorum_liveness.timeout_at() else {
             return QuorumWaitOutcome::Closed;
@@ -336,7 +342,7 @@ impl SenderShared {
                 }
 
                 if self.quorum_liveness.should_solicit(now) {
-                    self.send_eot().await;
+                    self.send_source_done(round_id).await;
                     self.quorum_liveness.note_solicitation(now);
                     return QuorumWaitOutcome::Solicited;
                 }
@@ -416,7 +422,8 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot => {}
+            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::SourceDone { .. } => {
+            }
             LosslessSessionControl::Ready { node_id } => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
@@ -508,8 +515,8 @@ impl SenderShared {
         .await;
     }
 
-    /// Emit the end-of-transmission marker for the current send round.
-    pub(super) async fn send_eot(&mut self) {
+    /// Emit the burst-boundary marker for the current sender round.
+    pub(super) async fn send_source_done(&mut self, round_id: u32) {
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -520,7 +527,7 @@ impl SenderShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::Eot,
+            &LosslessSessionControl::SourceDone { round_id },
         )
         .await;
     }
@@ -783,7 +790,7 @@ mod tests {
 
         let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(1);
         let outcome = shared
-            .wait_for_quorum_feedback(&mut ctrl_rx, &mut NoopMode)
+            .wait_for_quorum_feedback(&mut ctrl_rx, &mut NoopMode, 0)
             .await;
 
         assert_eq!(outcome, QuorumWaitOutcome::TimedOut);
@@ -940,12 +947,7 @@ mod tests {
     }
 
     impl ModeHooks for RecordingMode {
-        fn on_fec_status(
-            &mut self,
-            _shared: &mut SenderShared,
-            peer_id: usize,
-            status: FecStatus,
-        ) {
+        fn on_fec_status(&mut self, _shared: &mut SenderShared, peer_id: usize, status: FecStatus) {
             self.fec_statuses.push((peer_id, status));
         }
 

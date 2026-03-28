@@ -120,7 +120,7 @@ async fn recv_control(packet_rx: &mut mpsc::Receiver<Packet>) -> (Packet, Lossle
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_reports_complete_after_eot_and_writes_sink() {
+async fn receiver_reports_complete_after_source_done_and_writes_sink() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -161,12 +161,15 @@ async fn receiver_reports_complete_after_eot_and_writes_sink() {
         timeout(Duration::from_millis(150), harness.packet_rx.recv())
             .await
             .is_err(),
-        "receiver should not emit FEC completion before Eot"
+        "receiver should not emit FEC completion before SourceDone"
     );
 
     send_frame(
         &harness.tx,
-        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+        lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
     )
     .await;
 
@@ -177,7 +180,7 @@ async fn receiver_reports_complete_after_eot_and_writes_sink() {
         LosslessSessionControl::FecStatus {
             status: FecStatus::Complete,
         },
-        "receiver should report round completion after Eot"
+        "receiver should report round completion after SourceDone"
     );
 
     drop(harness.tx);
@@ -192,7 +195,7 @@ async fn receiver_reports_complete_after_eot_and_writes_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_reports_missing_blocks_after_eot_for_incomplete_block() {
+async fn receiver_reports_missing_blocks_after_source_done_for_incomplete_block() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -214,7 +217,10 @@ async fn receiver_reports_missing_blocks_after_eot_for_incomplete_block() {
     send_frame(&harness.tx, frame).await;
     send_frame(
         &harness.tx,
-        lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+        lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
     )
     .await;
     drop(harness.tx);
@@ -240,7 +246,7 @@ async fn receiver_reports_missing_blocks_after_eot_for_incomplete_block() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn receiver_replays_same_missing_status_on_repeated_eot() {
+async fn receiver_replays_same_missing_status_on_repeated_source_done() {
     let mut harness = build_receiver_harness().await;
 
     send_frame(
@@ -263,11 +269,14 @@ async fn receiver_replays_same_missing_status_on_repeated_eot() {
     )
     .await;
 
-    let eot = lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot);
-    send_frame(&harness.tx, eot.clone()).await;
+    let source_done = lossless_session::encode_control(
+        SESSION_ID,
+        &LosslessSessionControl::SourceDone { round_id: 0 },
+    );
+    send_frame(&harness.tx, source_done.clone()).await;
     let (_, first) = recv_control(&mut harness.packet_rx).await;
 
-    send_frame(&harness.tx, eot).await;
+    send_frame(&harness.tx, source_done).await;
     let (_, second) = recv_control(&mut harness.packet_rx).await;
 
     let expected = LosslessSessionControl::FecStatus {

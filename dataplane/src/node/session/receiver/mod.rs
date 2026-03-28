@@ -2,9 +2,9 @@
 //!
 //! The receiver accepts a manifest, records completed plain blocks locally, and
 //! optionally accumulates FEC symbols until a block can be decoded. After
-//! `Eot`, plain mode emits end-of-round status feedback while FEC mode emits
-//! one aggregate round status describing either completion or the remaining
-//! per-block deficits for the next retransmit round.
+//! `SourceDone(round_id)`, plain mode emits end-of-round status feedback while
+//! FEC mode emits one aggregate round status describing either completion or
+//! the remaining per-block deficits for the next retransmit round.
 
 mod fec;
 mod plain;
@@ -151,12 +151,12 @@ impl SessionReceiver {
             LosslessSessionControl::Ready { .. }
             | LosslessSessionControl::PlainStatus { .. }
             | LosslessSessionControl::FecStatus { .. } => {}
-            LosslessSessionControl::Eot => {
+            LosslessSessionControl::SourceDone { round_id } => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
-                    mode.handle_eot(&self.shared).await;
+                    mode.handle_source_done(&self.shared, round_id).await;
                 }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
-                    mode.handle_eot(&self.shared).await;
+                    mode.handle_source_done(&self.shared, round_id).await;
                 }
             }
         }
@@ -540,7 +540,13 @@ mod tests {
                 symbols: BTreeMap::from([(0, vec![1, 2])]),
             },
         )]);
-        receiver.eot_seen = true;
+        receiver.last_source_done_round_id = Some(0);
+        receiver.last_round_status = Some(FecStatus::MissingBlocks {
+            blocks: vec![nextmini_messages::lossless_session::BlockStatus {
+                block_id: 0,
+                deficit_symbols: 3,
+            }],
+        });
 
         assert_eq!(receiver.block_deficit(&shared, 0), 3);
     }
@@ -598,7 +604,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_receiver_only_completes_after_reporting_complete_on_eot() {
+    async fn plain_receiver_only_completes_after_reporting_complete_on_source_done() {
         let receiver = SessionReceiver {
             shared: ReceiverShared {
                 session_id: 8,
@@ -639,14 +645,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_receiver_reports_complete_on_eot() {
+    async fn plain_receiver_reports_complete_on_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0, 1])).await;
 
         receiver
             .handle_control_frame(InboundFrame {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
-                    &LosslessSessionControl::Eot,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
             })
@@ -682,7 +688,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_receiver_emits_sparse_missing_ranges_on_eot() {
+    async fn plain_receiver_emits_sparse_missing_ranges_on_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(4, BTreeSet::from([0, 2])).await;
         let expected = PlainStatus::MissingBlocks {
             ranges: vec![
@@ -701,7 +707,7 @@ mod tests {
             .handle_control_frame(InboundFrame {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
-                    &LosslessSessionControl::Eot,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
             })
@@ -712,13 +718,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn plain_receiver_keeps_missing_status_stable_across_repeated_eot() {
+    async fn plain_receiver_keeps_missing_status_stable_across_repeated_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
 
-        let eot = InboundFrame {
+        let source_done = InboundFrame {
             bytes: lossless_session::encode_control(
                 receiver.shared.session_id,
-                &LosslessSessionControl::Eot,
+                &LosslessSessionControl::SourceDone { round_id: 0 },
             ),
             peer_id: Some(SOURCE_NODE_ID),
         };
@@ -729,19 +735,69 @@ mod tests {
             }],
         };
 
-        receiver.handle_control_frame(eot.clone()).await;
+        receiver.handle_control_frame(source_done.clone()).await;
         assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
         assert!(!receiver.is_complete());
         assert_eq!(receiver.shared.plain_status(), Some(expected.clone()));
 
-        receiver.handle_control_frame(eot).await;
+        receiver
+            .handle_block_data_frame(InboundFrame {
+                bytes: lossless_session::encode_block_data(
+                    receiver.shared.session_id,
+                    1,
+                    b"ijklmnop",
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        receiver.handle_control_frame(source_done).await;
         assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
         assert!(!receiver.is_complete());
-        assert_eq!(receiver.shared.plain_status(), Some(expected));
     }
 
     #[tokio::test]
-    async fn plain_receiver_ignores_duplicate_data_before_eot() {
+    async fn plain_receiver_drops_stale_source_done() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 1 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert_eq!(
+            recv_plain_status(&mut packet_rx).await,
+            PlainStatus::MissingBlocks {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            }
+        );
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "stale SourceDone must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_ignores_duplicate_data_before_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
         let frame = InboundFrame {
             bytes: lossless_session::encode_block_data(receiver.shared.session_id, 0, b"abcdefgh"),
@@ -755,7 +811,7 @@ mod tests {
             timeout(Duration::from_millis(100), packet_rx.recv())
                 .await
                 .is_err(),
-            "plain receiver should not emit per-block feedback before Eot"
+            "plain receiver should not emit per-block feedback before SourceDone"
         );
         assert!(!receiver.is_complete());
         assert_eq!(
@@ -883,7 +939,7 @@ mod tests {
             .handle_control_frame(InboundFrame {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
-                    &LosslessSessionControl::Eot,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
             })

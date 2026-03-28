@@ -163,8 +163,12 @@ pub fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> I
     )
 }
 
-pub fn eot_frame(session_id: u64, peer_id: usize) -> InboundFrame {
-    control_frame(session_id, peer_id, LosslessSessionControl::Eot)
+pub fn source_done_frame(session_id: u64, peer_id: usize, round_id: u32) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::SourceDone { round_id },
+    )
 }
 
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {

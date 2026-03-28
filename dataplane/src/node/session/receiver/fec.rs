@@ -18,7 +18,8 @@ pub(super) struct FecBlockState {
 pub(super) struct FecReceiver {
     pub(super) geometry: SymbolGeometry,
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
-    pub(super) eot_seen: bool,
+    pub(super) last_source_done_round_id: Option<u32>,
+    pub(super) last_round_status: Option<FecStatus>,
     complete_reported: bool,
 }
 
@@ -28,7 +29,8 @@ impl FecReceiver {
         Self {
             geometry,
             blocks: BTreeMap::new(),
-            eot_seen: false,
+            last_source_done_round_id: None,
+            last_round_status: None,
             complete_reported: false,
         }
     }
@@ -214,11 +216,29 @@ impl FecReceiver {
         Some(FecStatus::MissingBlocks { blocks })
     }
 
-    pub(super) async fn handle_eot(&mut self, shared: &super::ReceiverShared) {
-        self.eot_seen = true;
+    pub(super) async fn handle_source_done(
+        &mut self,
+        shared: &super::ReceiverShared,
+        round_id: u32,
+    ) {
+        if let Some(last_round_id) = self.last_source_done_round_id {
+            if round_id < last_round_id {
+                return;
+            }
+            if round_id == last_round_id {
+                if let Some(status) = self.last_round_status.clone() {
+                    shared.send_fec_status(&status).await;
+                    self.complete_reported = matches!(status, FecStatus::Complete);
+                }
+                return;
+            }
+        }
+
         let Some(status) = self.status(shared) else {
             return;
         };
+        self.last_source_done_round_id = Some(round_id);
+        self.last_round_status = Some(status.clone());
         shared.send_fec_status(&status).await;
         self.complete_reported = matches!(status, FecStatus::Complete);
     }

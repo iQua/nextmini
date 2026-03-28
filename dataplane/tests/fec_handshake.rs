@@ -252,8 +252,8 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
     );
 
     let mut saw_block_data = false;
-    let mut saw_eot = false;
-    while !saw_block_data || !saw_eot {
+    let mut saw_source_done = false;
+    while !saw_block_data || !saw_source_done {
         let packet = common::recv_packet(&mut harness.capture.packet_rx).await;
         let payload = packet
             .tcp_payload()
@@ -262,8 +262,10 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
             saw_block_data = true;
             continue;
         }
-        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
-            saw_eot = true;
+        if let Some((_, LosslessSessionControl::SourceDone { .. })) =
+            lossless_session::decode_control(payload)
+        {
+            saw_source_done = true;
         }
     }
 

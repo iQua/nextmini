@@ -45,7 +45,7 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
     let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
     let mut saw_manifest = false;
-    let mut saw_eot = false;
+    let mut saw_source_done = false;
     let mut all_symbol_ids = Vec::new();
     let mut extra_symbol_ids = Vec::new();
 
@@ -65,8 +65,9 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
                     assert_eq!(observed_manifest, manifest);
                     saw_manifest = true;
                 }
-                LosslessSessionControl::Eot => {
-                    saw_eot = true;
+                LosslessSessionControl::SourceDone { round_id } => {
+                    assert_eq!(round_id, 0);
+                    saw_source_done = true;
                     ctrl_tx
                         .send(fec_status_frame(
                             session_id,
@@ -97,7 +98,10 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
 
         all_symbol_ids.push(symbol.symbol_id);
         if symbol.symbol_id >= 4 {
-            assert!(saw_eot, "extra symbols must not appear before EOT");
+            assert!(
+                saw_source_done,
+                "extra symbols must not appear before SourceDone(0)"
+            );
             extra_symbol_ids.push(symbol.symbol_id);
         }
     }
@@ -159,7 +163,7 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    wait_for_eot(&mut harness.packet_rx).await;
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
 
     ctrl_tx
         .send(fec_status_frame(
@@ -198,7 +202,7 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
 
     let symbol = recv_symbol(&mut harness.packet_rx).await;
     assert_eq!(symbol.symbol_id, 4);
-    wait_for_eot(&mut harness.packet_rx).await;
+    wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
         .send(fec_status_frame(session_id, 2, FecStatus::Complete))
@@ -249,7 +253,7 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    wait_for_eot(&mut harness.packet_rx).await;
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
 
     ctrl_tx
         .send(fec_status_frame(
@@ -283,7 +287,7 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         extra_symbol_ids.push(recv_symbol(&mut harness.packet_rx).await.symbol_id);
     }
     assert_eq!(extra_symbol_ids, vec![4, 5, 6]);
-    wait_for_eot(&mut harness.packet_rx).await;
+    wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
         .send(fec_status_frame(session_id, 2, FecStatus::Complete))
@@ -316,13 +320,19 @@ fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> Inbou
     }
 }
 
-async fn wait_for_eot(packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>) {
+async fn wait_for_source_done(
+    packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>,
+    expected_round_id: u32,
+) {
     loop {
         let packet = common::recv_packet(packet_rx).await;
         let payload = packet
             .tcp_payload()
             .expect("captured packet should include TCP payload");
-        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+        if let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+            lossless_session::decode_control(payload)
+        {
+            assert_eq!(round_id, expected_round_id);
             return;
         }
     }

@@ -30,7 +30,8 @@ pub(super) struct FecSender {
     next_tree_rr: usize,
     current_source_cache: Option<(u64, Vec<Bytes>)>,
     frame_scratch: Vec<u8>,
-    round_eot_sent: bool,
+    round_source_done_sent: bool,
+    current_round_id: u32,
     phase: RoundPhase,
     round_complete: bool,
     round_reports: BTreeMap<usize, FecStatus>,
@@ -74,7 +75,8 @@ impl FecSender {
             next_tree_rr: 0,
             current_source_cache: None,
             frame_scratch: Vec::new(),
-            round_eot_sent: false,
+            round_source_done_sent: false,
+            current_round_id: 0,
             phase: RoundPhase::SendingData,
             round_complete: false,
             round_reports: BTreeMap::new(),
@@ -99,7 +101,10 @@ impl FecSender {
                     self.finish_report_round(shared);
                     continue;
                 }
-                match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+                match shared
+                    .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
+                    .await
+                {
                     super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                     super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
                         return SessionOutcome::Aborted;
@@ -110,7 +115,7 @@ impl FecSender {
 
             if let Some((block_id, symbol_id)) = self.next_source_symbol(shared) {
                 if self.send_source_symbol(shared, block_id, symbol_id).await {
-                    self.round_eot_sent = false;
+                    self.round_source_done_sent = false;
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
@@ -121,7 +126,7 @@ impl FecSender {
 
             if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
                 if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    self.round_eot_sent = false;
+                    self.round_source_done_sent = false;
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
@@ -130,9 +135,9 @@ impl FecSender {
                 continue;
             }
 
-            if !self.round_eot_sent {
+            if !self.round_source_done_sent {
                 self.begin_report_round(shared).await;
-                self.round_eot_sent = true;
+                self.round_source_done_sent = true;
                 if shared.active_quorum_is_empty() {
                     self.round_complete = true;
                     break;
@@ -141,7 +146,10 @@ impl FecSender {
                 continue;
             }
 
-            match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+            match shared
+                .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
+                .await
+            {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
                     return SessionOutcome::Aborted;
@@ -332,7 +340,7 @@ impl FecSender {
         if self.phase == RoundPhase::WaitingForReports {
             return;
         }
-        shared.send_eot().await;
+        shared.send_source_done(self.current_round_id).await;
         self.round_reports.clear();
         self.phase = RoundPhase::WaitingForReports;
     }
@@ -369,7 +377,8 @@ impl FecSender {
         self.round_reports.clear();
         shared.clear_quorum_feedback_wait();
         self.phase = RoundPhase::SendingData;
-        self.round_eot_sent = false;
+        self.current_round_id = self.current_round_id.saturating_add(1);
+        self.round_source_done_sent = false;
     }
 }
 

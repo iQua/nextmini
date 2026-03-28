@@ -53,7 +53,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    let first_round = collect_symbols_until_eot(&mut harness.packet_rx).await;
+    let first_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         first_round,
         vec![
@@ -104,7 +104,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .await
         .expect("receiver C round-one status should enqueue");
 
-    let second_round = collect_symbols_until_eot(&mut harness.packet_rx).await;
+    let second_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         second_round,
         vec![(0, 4), (1, 4), (1, 5)],
@@ -148,7 +148,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .await
         .expect("receiver B round-two status should enqueue");
 
-    let third_round = collect_symbols_until_eot(&mut harness.packet_rx).await;
+    let third_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         third_round,
         vec![(1, 6)],
@@ -194,7 +194,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
+async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only() {
     let mut capture = common::packet_capture(
         RECEIVER_A,
         SOURCE_NODE_ID,
@@ -261,7 +261,10 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
             },
         );
     }
-    runtime.deliver(session_id, common::eot_frame(session_id, SOURCE_NODE_ID));
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+    );
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::FecStatus {
@@ -282,14 +285,17 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
             peer_id: Some(SOURCE_NODE_ID),
         },
     );
-    assert_eq!(
-        recv_control(&mut capture.packet_rx).await,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::Complete,
-        }
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "completed receiver replay should not trigger on late payload after T4"
     );
 
-    runtime.deliver(session_id, common::eot_frame(session_id, SOURCE_NODE_ID));
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+    );
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::FecStatus {
@@ -300,7 +306,7 @@ async fn completed_fec_receiver_replays_complete_for_late_symbol_and_eot() {
     assert_eq!(&*sink.lock().await, &[1, 2, 3, 4, 5, 6, 7, 8]);
 }
 
-async fn collect_symbols_until_eot(
+async fn collect_symbols_until_source_done(
     packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>,
 ) -> Vec<(u64, u32)> {
     let mut symbols = Vec::new();
@@ -309,7 +315,9 @@ async fn collect_symbols_until_eot(
         let payload = packet
             .tcp_payload()
             .expect("captured packet should include TCP payload");
-        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
+        if let Some((_, LosslessSessionControl::SourceDone { .. })) =
+            lossless_session::decode_control(payload)
+        {
             return symbols;
         }
         if lossless_session::decode_control(payload).is_some() {

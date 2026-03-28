@@ -47,10 +47,10 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
     let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
     let mut saw_manifest = false;
-    let mut saw_eot = false;
+    let mut saw_source_done = false;
     let mut block_ids = BTreeSet::new();
 
-    while block_ids.len() < 2 || !saw_eot {
+    while block_ids.len() < 2 || !saw_source_done {
         let packet = common::recv_packet(&mut harness.packet_rx).await;
         let payload = packet
             .tcp_payload()
@@ -69,7 +69,7 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
                         .await
                         .expect("receiver B ready should enqueue");
                 }
-                LosslessSessionControl::Eot => saw_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_source_done = true,
                 other => panic!("unexpected control frame: {other:?}"),
             }
             continue;
@@ -133,7 +133,7 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
 
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
-                LosslessSessionControl::Eot => saw_second_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_second_eot = true,
                 other => panic!("unexpected control frame during retransmit round: {other:?}"),
             }
             continue;
@@ -231,7 +231,7 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
                             .expect("ready frame should enqueue");
                     }
                 }
-                LosslessSessionControl::Eot => saw_first_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_first_eot = true,
                 other => panic!("unexpected control frame in first round: {other:?}"),
             }
             continue;
@@ -271,7 +271,7 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
 
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
-                LosslessSessionControl::Eot => saw_second_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_second_eot = true,
                 other => panic!("unexpected control frame in retransmit round: {other:?}"),
             }
             continue;
@@ -324,7 +324,7 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
 
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
-                LosslessSessionControl::Eot => saw_third_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_third_eot = true,
                 other => panic!("unexpected control frame in second retransmit round: {other:?}"),
             }
             continue;

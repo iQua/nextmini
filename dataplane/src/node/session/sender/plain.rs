@@ -13,7 +13,8 @@ use crate::node::session::control;
 pub(super) struct PlainSender {
     pending_blocks: Vec<u64>,
     cursor: usize,
-    round_eot_sent: bool,
+    round_source_done_sent: bool,
+    current_round_id: u32,
     round_reports: BTreeMap<usize, PlainStatus>,
     complete: bool,
     initialized: bool,
@@ -26,7 +27,7 @@ impl super::ModeHooks for PlainSender {
         peer_id: usize,
         status: PlainStatus,
     ) {
-        if !self.round_eot_sent {
+        if !self.round_source_done_sent {
             return;
         }
 
@@ -53,11 +54,15 @@ impl super::ModeHooks for PlainSender {
         self.complete = complete;
         self.pending_blocks = next_round.into_iter().collect();
         self.cursor = 0;
-        self.round_eot_sent = false;
+        if !self.complete && !self.pending_blocks.is_empty() {
+            self.current_round_id = self.current_round_id.saturating_add(1);
+        }
+        self.round_source_done_sent = false;
         self.round_reports.clear();
         shared.clear_quorum_feedback_wait();
         debug!(
             complete = self.complete,
+            round_id = self.current_round_id,
             retransmit_blocks = self.pending_blocks.len(),
             "Lossless plain sender processed round feedback"
         );
@@ -94,9 +99,9 @@ impl PlainSender {
                 continue;
             }
 
-            if !self.round_eot_sent {
-                shared.send_eot().await;
-                self.round_eot_sent = true;
+            if !self.round_source_done_sent {
+                shared.send_source_done(self.current_round_id).await;
+                self.round_source_done_sent = true;
                 if shared.active_quorum_is_empty() {
                     self.complete = true;
                     break;
@@ -105,7 +110,10 @@ impl PlainSender {
                 continue;
             }
 
-            match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+            match shared
+                .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
+                .await
+            {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
                     return SessionOutcome::Aborted;

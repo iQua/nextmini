@@ -22,7 +22,7 @@ const SRC_PORT: u16 = 4700;
 const DST_PORT: u16 = 5700;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_reports_complete_on_eot_and_writes_sink() {
+async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -85,11 +85,14 @@ async fn plain_receiver_reports_complete_on_eot_and_writes_sink() {
     .expect("block data should reach receiver");
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(SESSION_ID, &LosslessSessionControl::Eot),
+        bytes: lossless_session::encode_control(
+            SESSION_ID,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
-    .expect("eot should reach receiver");
+    .expect("source-done should reach receiver");
 
     let status_packet = common::recv_packet(&mut capture.packet_rx).await;
     let status_payload = status_packet
@@ -119,7 +122,7 @@ async fn plain_receiver_reports_complete_on_eot_and_writes_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn plain_receiver_waits_for_eot_before_completion() {
+async fn plain_receiver_waits_for_source_done_before_completion() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -179,21 +182,24 @@ async fn plain_receiver_waits_for_eot_before_completion() {
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
             .is_err(),
-        "plain receiver should stay quiet until Eot"
+        "plain receiver should stay quiet until SourceDone"
     );
     assert!(
         timeout(Duration::from_millis(200), &mut receiver_task)
             .await
             .is_err(),
-        "plain receiver should not finish before Eot"
+        "plain receiver should not finish before SourceDone"
     );
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(SESSION_ID + 2, &LosslessSessionControl::Eot),
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 2,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
-    .expect("eot should reach receiver");
+    .expect("source-done should reach receiver");
 
     let status_packet = common::recv_packet(&mut capture.packet_rx).await;
     let status_payload = status_packet
@@ -210,7 +216,7 @@ async fn plain_receiver_waits_for_eot_before_completion() {
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
-        .expect("receiver task should stop after Eot confirms completion")
+        .expect("receiver task should stop after SourceDone confirms completion")
         .expect("receiver task should exit cleanly");
 
     assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
@@ -436,11 +442,14 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
     .expect("block data should reach receiver");
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_control(SESSION_ID + 5, &LosslessSessionControl::Eot),
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 5,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
-    .expect("eot should reach receiver");
+    .expect("source-done should reach receiver");
 
     let status_packet = common::recv_packet(&mut capture.packet_rx).await;
     let status_payload = status_packet
@@ -457,7 +466,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
-        .expect("receiver task should stop after Eot confirms completion")
+        .expect("receiver task should stop after SourceDone confirms completion")
         .expect("receiver task should exit cleanly");
 
     assert_eq!(&*sink.lock().await, b"abcdefghijklmnop");
@@ -508,8 +517,8 @@ async fn plain_sender_completes_after_complete_status() {
         .expect("ready frame should enqueue");
 
     let mut saw_block_data = false;
-    let mut saw_eot = false;
-    while !saw_block_data || !saw_eot {
+    let mut saw_source_done = false;
+    while !saw_block_data || !saw_source_done {
         let packet = common::recv_packet(&mut capture.packet_rx).await;
         let payload = packet
             .tcp_payload()
@@ -520,8 +529,11 @@ async fn plain_sender_completes_after_complete_status() {
             saw_block_data = true;
             continue;
         }
-        if let Some((_, LosslessSessionControl::Eot)) = lossless_session::decode_control(payload) {
-            saw_eot = true;
+        if let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+            lossless_session::decode_control(payload)
+        {
+            assert_eq!(round_id, 0);
+            saw_source_done = true;
         }
     }
 

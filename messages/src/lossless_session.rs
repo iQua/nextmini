@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
 /// Single cutover protocol version for the block-first wire model.
 ///
-/// Version 4 is still the barriered `Manifest -> Ready -> payload sweep ->
-/// Eot -> round status` protocol. The simple-lossless rewrite intentionally
-/// changes those semantics in a later flag-day cutover.
+/// Version 5 is the flag-day `Manifest -> Ready -> payload sweep ->
+/// SourceDone -> round status` protocol. The simple-lossless rewrite changed
+/// the burst boundary semantics in this version bump.
 ///
 /// The normative rewrite rules live in `plans/simple-lossless.md`. Keep the
 /// message surface and nearby comments in sync with that plan instead of
 /// restating a partial copy of the protocol here.
-pub const LOSSLESS_SESSION_VERSION: u8 = 4;
+pub const LOSSLESS_SESSION_VERSION: u8 = 5;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -30,7 +30,7 @@ pub enum LosslessSessionKind {
 pub enum LosslessSessionCtrlKind {
     Manifest = 1,
     Ready = 2,
-    Eot = 5,
+    SourceDone = 5,
     PlainStatus = 6,
     FecStatus = 7,
 }
@@ -133,7 +133,7 @@ pub struct BlockStatus {
     pub deficit_symbols: u16,
 }
 
-/// End-of-round FEC feedback emitted after `Eot`.
+/// End-of-round FEC feedback emitted after `SourceDone`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FecStatus {
     Complete,
@@ -150,7 +150,7 @@ pub struct MissingBlockRange {
     pub end_block_id: u64,
 }
 
-/// End-of-round plain-mode feedback emitted after `Eot`.
+/// End-of-round plain-mode feedback emitted after `SourceDone`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlainStatus {
     Complete,
@@ -469,7 +469,9 @@ impl LosslessSessionManifest {
         control.validate()?;
         match control {
             LosslessSessionControl::Manifest { manifest } => manifest.validate(),
-            LosslessSessionControl::Ready { .. } | LosslessSessionControl::Eot => Ok(()),
+            LosslessSessionControl::Ready { .. } | LosslessSessionControl::SourceDone { .. } => {
+                Ok(())
+            }
             LosslessSessionControl::PlainStatus { status } => self.validate_plain_status(status),
             LosslessSessionControl::FecStatus { status } => self.validate_fec_status(status),
         }
@@ -584,10 +586,9 @@ pub fn peek_header(buf: &[u8]) -> Option<LosslessSessionRawHeader> {
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// The simple-lossless rewrite keeps the live version-4 variants in place
-/// until later tasks land, but the message layer already records the target
-/// semantics here so sender and receiver work stays aligned:
-/// - `SourceDone(round_id)` replaces `Eot`
+/// The simple-lossless rewrite now uses version 5, which makes `SourceDone`
+/// the live burst boundary. The message layer keeps the future `Need`
+/// semantics in comments so sender and receiver work stays aligned:
 /// - `Need(round_id, payload)` replaces both `PlainStatus` and `FecStatus`
 /// - duplicate round boundaries replay the same canonical same-round feedback
 /// - quorum freezes before round-0 payload or `SourceDone(0)` opens feedback
@@ -596,16 +597,16 @@ pub fn peek_header(buf: &[u8]) -> Option<LosslessSessionRawHeader> {
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
     Ready { node_id: u64 },
-    Eot,
+    SourceDone { round_id: u32 },
     PlainStatus { status: PlainStatus },
     FecStatus { status: FecStatus },
 }
 
-/// Rewrite note for future `SourceDone`/`Need` migration:
+/// Rewrite note for future `Need` migration:
 ///
 /// - `Ready` continues to key session admission before the active quorum freezes
-/// - `Eot` currently acts as the sender burst boundary, but the replacement
-///   boundary must still preserve deterministic replay and solicitation
+/// - `SourceDone` is the sender burst boundary, and it must preserve
+///   deterministic replay and solicitation
 /// - plain and FEC receiver reports are still mode-specific today, but the
 ///   rewrite must preserve canonical, immutable same-round feedback
 /// - dead control kinds are removed only after the round/quorum state machine is
@@ -615,7 +616,7 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready { .. } | Self::Eot => Ok(()),
+            Self::Ready { .. } | Self::SourceDone { .. } => Ok(()),
             Self::PlainStatus { status } => status.validate(),
             Self::FecStatus { status } => status.validate(),
         }
@@ -826,7 +827,7 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
             MANIFEST_FIXED_BODY_LEN + (manifest_tree_ids(&manifest.mode).len() * 2)
         }
         LosslessSessionControl::Ready { .. } => 8,
-        LosslessSessionControl::Eot => 0,
+        LosslessSessionControl::SourceDone { .. } => 4,
         LosslessSessionControl::PlainStatus { status } => match status {
             PlainStatus::Complete => PLAIN_STATUS_FIXED_BODY_LEN,
             PlainStatus::MissingBlocks { ranges } => {
@@ -897,7 +898,11 @@ pub fn encode_control_into<'a>(
             buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
             LosslessSessionCtrlKind::Ready as u8
         }
-        LosslessSessionControl::Eot => LosslessSessionCtrlKind::Eot as u8,
+        LosslessSessionControl::SourceDone { round_id } => {
+            let body_start = LosslessSessionHeader::LEN;
+            buf[body_start..body_start + 4].copy_from_slice(&round_id.to_be_bytes());
+            LosslessSessionCtrlKind::SourceDone as u8
+        }
         LosslessSessionControl::PlainStatus { status } => {
             let body_start = LosslessSessionHeader::LEN;
             match status {
@@ -1038,11 +1043,12 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
             LosslessSessionControl::Ready { node_id }
         }
-        x if x == LosslessSessionCtrlKind::Eot as u8 => {
-            if !body.is_empty() {
+        x if x == LosslessSessionCtrlKind::SourceDone as u8 => {
+            if body.len() != 4 {
                 return None;
             }
-            LosslessSessionControl::Eot
+            let round_id = u32::from_be_bytes(body[0..4].try_into().ok()?);
+            LosslessSessionControl::SourceDone { round_id }
         }
         x if x == LosslessSessionCtrlKind::PlainStatus as u8 => {
             if body.len() < PLAIN_STATUS_FIXED_BODY_LEN {
@@ -1246,7 +1252,7 @@ mod tests {
                     ],
                 },
             },
-            LosslessSessionControl::Eot,
+            LosslessSessionControl::SourceDone { round_id: 7 },
         ];
 
         for ctrl in ctrls {
@@ -1290,7 +1296,7 @@ mod tests {
                     }],
                 },
             },
-            LosslessSessionControl::Eot,
+            LosslessSessionControl::SourceDone { round_id: 11 },
         ];
 
         for ctrl in ctrls {
@@ -1501,10 +1507,11 @@ mod tests {
 
     #[test]
     fn decode_control_rejects_removed_legacy_control_ids() {
-        let mut legacy_block_ack = encode_control(16, &LosslessSessionControl::Eot);
-        legacy_block_ack[6] = 3;
+        let mut legacy_source_done =
+            encode_control(16, &LosslessSessionControl::SourceDone { round_id: 16 });
+        legacy_source_done[6] = 3;
         assert!(
-            decode_control(&legacy_block_ack).is_none(),
+            decode_control(&legacy_source_done).is_none(),
             "removed ctrl_kind=3 must not be reinterpreted as a live control"
         );
 
