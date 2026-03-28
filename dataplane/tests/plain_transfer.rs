@@ -123,6 +123,190 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_receiver_replies_complete_on_later_source_done_after_local_completion() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 20,
+        DST_PORT + 20,
+        1,
+        2048,
+    )
+    .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let receiver_cfg = ReceiverConfig {
+        session_id: SESSION_ID + 20,
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
+        sink_buffer: Some(sink.clone()),
+        progress: None,
+        fec_enabled: false,
+    };
+    let (tx, rx) = mpsc::channel::<InboundFrame>(64);
+    let mut receiver_task =
+        tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 20,
+            &LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 16,
+                    total_bytes: 16,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Plain,
+                },
+            },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("manifest should reach receiver");
+
+    let ready_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let ready_payload = ready_packet
+        .tcp_payload()
+        .expect("ready packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(ready_payload),
+        Some((_, LosslessSessionControl::Ready { .. }))
+    ));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_block_data(SESSION_ID + 20, 0, b"abcdefghijklmnop"),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("block data should reach receiver");
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 20,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("first source-done should reach receiver");
+
+    let first_need = common::recv_packet(&mut capture.packet_rx).await;
+    let first_payload = first_need
+        .tcp_payload()
+        .expect("first need packet should include payload");
+    let (_, first_control) =
+        lossless_session::decode_control(first_payload).expect("first need should decode");
+    assert_eq!(
+        first_control,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
+        }
+    );
+
+    assert!(
+        timeout(Duration::from_millis(10), &mut receiver_task)
+            .await
+            .is_err(),
+        "receiver must stay alive in passive-complete state for later rounds"
+    );
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 20,
+            &LosslessSessionControl::SourceDone { round_id: 1 },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("second source-done should reach receiver");
+
+    let second_need = common::recv_packet(&mut capture.packet_rx).await;
+    let second_payload = second_need
+        .tcp_payload()
+        .expect("second need packet should include payload");
+    let (_, second_control) =
+        lossless_session::decode_control(second_payload).expect("second need should decode");
+    assert_eq!(
+        second_control,
+        LosslessSessionControl::Need {
+            round_id: 1,
+            report: NeedReport::Complete,
+        }
+    );
+
+    drop(tx);
+    timeout(Duration::from_secs(2), &mut receiver_task)
+        .await
+        .expect("receiver task should stop")
+        .expect("receiver task should exit cleanly");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 21,
+        DST_PORT + 21,
+        1,
+        2048,
+    )
+    .await;
+    let receiver_cfg = ReceiverConfig {
+        session_id: SESSION_ID + 21,
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
+        sink_buffer: Some(Arc::new(Mutex::new(Vec::new()))),
+        progress: None,
+        fec_enabled: false,
+    };
+    let (tx, rx) = mpsc::channel::<InboundFrame>(64);
+    let mut receiver_task =
+        tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 21,
+            &LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 16,
+                    total_bytes: 16,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Plain,
+                },
+            },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("manifest should reach receiver");
+    let _ = common::recv_packet(&mut capture.packet_rx).await;
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_block_data(SESSION_ID + 21, 0, b"abcdefghijklmnop"),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("block data should reach receiver");
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 21,
+            &LosslessSessionControl::SourceDone { round_id: 0 },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("source-done should reach receiver");
+    let _ = common::recv_packet(&mut capture.packet_rx).await;
+
+    timeout(Duration::from_secs(2), &mut receiver_task)
+        .await
+        .expect("receiver should eventually GC after passive-complete idle timeout")
+        .expect("receiver task should exit cleanly");
+
+    drop(tx);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plain_receiver_waits_for_source_done_before_completion() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,

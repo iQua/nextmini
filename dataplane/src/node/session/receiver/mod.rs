@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
@@ -29,6 +30,11 @@ use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
+
+#[cfg(test)]
+const SESSION_FINISH_TIMEOUT: Duration = Duration::from_millis(50);
+#[cfg(not(test))]
+const SESSION_FINISH_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Run one receiver session until the transfer is complete or the channel closes.
 #[allow(dead_code)]
@@ -54,6 +60,14 @@ pub(super) async fn run_with_runtime(
 struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
+    lifecycle: ReceiverLifecycle,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ReceiverLifecycle {
+    Active,
+    PassiveComplete,
+    SessionFinished,
 }
 
 /// Receiver state that is truly common across plain and FEC modes.
@@ -89,6 +103,7 @@ impl SessionReceiver {
                 complete_blocks: BTreeSet::new(),
             },
             mode: None,
+            lifecycle: ReceiverLifecycle::Active,
         }
     }
 
@@ -103,7 +118,24 @@ impl SessionReceiver {
             "Lossless receiver started"
         );
 
-        while let Some(frame) = rx.recv().await {
+        loop {
+            let frame = if self.is_passive_complete() {
+                tokio::select! {
+                    maybe_frame = rx.recv() => maybe_frame,
+                    _ = tokio::time::sleep(SESSION_FINISH_TIMEOUT) => {
+                        self.finish_session();
+                        break;
+                    }
+                }
+            } else {
+                rx.recv().await
+            };
+
+            let Some(frame) = frame else {
+                self.finish_session();
+                break;
+            };
+
             if lossless_session::decode_control(&frame.bytes).is_some() {
                 self.handle_control_frame(frame).await;
             } else if lossless_session::decode_block_data(&frame.bytes).is_some() {
@@ -112,30 +144,59 @@ impl SessionReceiver {
                 self.handle_block_symbol_frame(frame).await;
             }
 
-            if self.is_complete() {
-                break;
+            if self.reported_complete() {
+                self.enter_passive_complete();
             }
         }
 
-        if self.is_complete() {
+        if self.reported_complete() {
             self.shared.log_payload_phase_throughput();
             self.register_completed_replay(runtime_sender).await;
         }
 
         debug!(
             session_id = self.shared.session_id,
-            complete = self.is_complete(),
+            complete = self.reported_complete(),
+            lifecycle = ?self.lifecycle,
             "Lossless receiver finished"
         );
     }
 
-    /// Return whether the receiver has completed every planned block.
-    fn is_complete(&self) -> bool {
+    fn reported_complete(&self) -> bool {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
             Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
             None => false,
         }
+    }
+
+    #[cfg(test)]
+    fn is_complete(&self) -> bool {
+        self.reported_complete()
+    }
+
+    fn object_complete(&self) -> bool {
+        self.shared.has_all_blocks()
+    }
+
+    fn is_passive_complete(&self) -> bool {
+        self.lifecycle == ReceiverLifecycle::PassiveComplete
+    }
+
+    fn finish_session(&mut self) {
+        self.lifecycle = ReceiverLifecycle::SessionFinished;
+    }
+
+    fn enter_passive_complete(&mut self) {
+        if self.lifecycle == ReceiverLifecycle::PassiveComplete {
+            return;
+        }
+        self.lifecycle = ReceiverLifecycle::PassiveComplete;
+        debug!(
+            session_id = self.shared.session_id,
+            object_complete = self.object_complete(),
+            "Lossless receiver entered passive-complete state"
+        );
     }
 
     /// Handle one inbound control frame.
@@ -262,13 +323,13 @@ impl SessionReceiver {
 
     fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
         match self.mode.as_ref() {
-            Some(ReceiverMode::Plain(_)) if self.is_complete() => {
+            Some(ReceiverMode::Plain(_)) if self.reported_complete() => {
                 Some(CompletedReceiverReplay::Plain {
                     route: self.shared.route,
                     report: NeedReport::Complete,
                 })
             }
-            Some(ReceiverMode::Fec(_)) if self.is_complete() => {
+            Some(ReceiverMode::Fec(_)) if self.reported_complete() => {
                 Some(CompletedReceiverReplay::Fec {
                     route: self.shared.route,
                     report: NeedReport::Complete,
@@ -679,6 +740,7 @@ mod tests {
                 complete_blocks: BTreeSet::from([0, 1]),
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
+            lifecycle: ReceiverLifecycle::Active,
         };
 
         assert!(!receiver.is_complete());
@@ -1052,6 +1114,7 @@ mod tests {
                 complete_blocks: BTreeSet::from([0]),
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
+            lifecycle: ReceiverLifecycle::Active,
         };
 
         receiver
@@ -1163,6 +1226,7 @@ mod tests {
                     complete_blocks,
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
+                lifecycle: ReceiverLifecycle::Active,
             },
             packet_rx,
         )
@@ -1244,6 +1308,7 @@ mod tests {
                     complete_blocks,
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
+                lifecycle: ReceiverLifecycle::Active,
             },
             packet_rx,
         )
