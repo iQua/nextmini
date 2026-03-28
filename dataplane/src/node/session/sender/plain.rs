@@ -11,11 +11,16 @@ use crate::node::session::control;
 /// Plain-mode sender state machine.
 #[derive(Default)]
 pub(super) struct PlainSender {
-    pending_blocks: Vec<u64>,
-    cursor: usize,
-    round_source_done_sent: bool,
-    current_round_id: u32,
+    source_blocks: Vec<u64>,
+    source_cursor: usize,
+    feedback_open_round_id: u32,
+    current_burst_id: u32,
+    feedback_round_open: bool,
     round_reports: BTreeMap<usize, NeedReport>,
+    required_blocks: BTreeSet<u64>,
+    emitted_blocks: BTreeSet<u64>,
+    queued_retransmit_blocks: BTreeSet<u64>,
+    next_burst_nonempty: bool,
     protocol_error: bool,
     complete: bool,
     initialized: bool,
@@ -24,12 +29,12 @@ pub(super) struct PlainSender {
 impl super::ModeHooks for PlainSender {
     fn on_need(
         &mut self,
-        shared: &mut super::SenderShared,
+        _shared: &mut super::SenderShared,
         peer_id: usize,
         round_id: u32,
         report: NeedReport,
     ) {
-        if !self.round_source_done_sent || round_id != self.current_round_id {
+        if !self.feedback_round_open || round_id != self.feedback_open_round_id {
             return;
         }
 
@@ -40,44 +45,28 @@ impl super::ModeHooks for PlainSender {
             return;
         }
         self.round_reports.insert(peer_id, report);
-        if self.round_reports.len() < shared.active_quorum.active_members().len() {
-            return;
-        }
-
-        let mut next_round = BTreeSet::new();
-        let mut complete = true;
-        for receiver_id in shared.active_quorum.active_members() {
-            let Some(status) = self.round_reports.get(receiver_id) else {
-                return;
-            };
-            match status {
-                NeedReport::Complete => {}
-                NeedReport::Plain { ranges } => {
-                    complete = false;
-                    collect_missing_blocks(&mut next_round, ranges);
+        match self.round_reports.get(&peer_id) {
+            Some(NeedReport::Complete) => {}
+            Some(NeedReport::Plain { ranges }) => {
+                let mut useful = false;
+                for block_id in missing_blocks(ranges) {
+                    if self.required_blocks.insert(block_id) {
+                        useful = true;
+                        if !self.emitted_blocks.contains(&block_id) {
+                            self.queued_retransmit_blocks.insert(block_id);
+                        }
+                    }
                 }
-                NeedReport::Fec { .. } => {
-                    self.protocol_error = true;
-                    return;
+                if useful {
+                    self.current_burst_id = self.feedback_open_round_id.saturating_add(1);
+                    self.next_burst_nonempty = true;
                 }
             }
+            Some(NeedReport::Fec { .. }) => {
+                self.protocol_error = true;
+            }
+            None => {}
         }
-
-        self.complete = complete;
-        self.pending_blocks = next_round.into_iter().collect();
-        self.cursor = 0;
-        if !self.complete && !self.pending_blocks.is_empty() {
-            self.current_round_id = self.current_round_id.saturating_add(1);
-        }
-        self.round_source_done_sent = false;
-        self.round_reports.clear();
-        shared.clear_quorum_feedback_wait();
-        debug!(
-            complete = self.complete,
-            round_id = self.current_round_id,
-            retransmit_blocks = self.pending_blocks.len(),
-            "Lossless plain sender processed round feedback"
-        );
     }
 
     fn pending_feedback_peers(&self, shared: &super::SenderShared) -> Vec<usize> {
@@ -109,14 +98,19 @@ impl PlainSender {
                 break;
             }
 
-            if let Some(block_id) = self.next_block() {
-                self.send_block(shared, block_id).await;
+            if let Some(block_id) = self.next_source_block() {
+                self.send_source_block(shared, block_id).await;
                 continue;
             }
 
-            if !self.round_source_done_sent {
-                shared.send_source_done(self.current_round_id).await;
-                self.round_source_done_sent = true;
+            if let Some(block_id) = self.next_retransmit_block() {
+                self.send_retransmit_block(shared, block_id).await;
+                continue;
+            }
+
+            if !self.feedback_round_open {
+                shared.send_source_done(self.feedback_open_round_id).await;
+                self.feedback_round_open = true;
                 if shared.active_quorum_is_empty() {
                     self.complete = true;
                     break;
@@ -125,8 +119,29 @@ impl PlainSender {
                 continue;
             }
 
+            if self.round_can_close(shared) {
+                if self
+                    .round_reports
+                    .values()
+                    .all(|report| matches!(report, NeedReport::Complete))
+                {
+                    self.complete = true;
+                    shared.clear_quorum_feedback_wait();
+                    debug!(
+                        round_id = self.feedback_open_round_id,
+                        "Lossless plain sender completed after an all-complete feedback round"
+                    );
+                    break;
+                }
+
+                if self.next_burst_nonempty {
+                    self.advance_round(shared);
+                    continue;
+                }
+            }
+
             match shared
-                .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
+                .wait_for_quorum_feedback(ctrl_rx, self, self.feedback_open_round_id)
                 .await
             {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
@@ -141,22 +156,62 @@ impl PlainSender {
 
         SessionOutcome::Completed
     }
-    /// Return the next plain block that still needs to be sent.
-    fn next_block(&mut self) -> Option<u64> {
-        while self.cursor < self.pending_blocks.len() {
-            let block_id = self.pending_blocks[self.cursor];
-            self.cursor += 1;
-            return Some(block_id);
-        }
-        None
-    }
 
     fn ensure_initial_round(&mut self, shared: &super::SenderShared) {
         if self.initialized {
             return;
         }
-        self.pending_blocks = (0..shared.plan.total_blocks()).collect();
+        self.source_blocks = (0..shared.plan.total_blocks()).collect();
         self.initialized = true;
+    }
+
+    fn next_source_block(&mut self) -> Option<u64> {
+        if self.source_cursor >= self.source_blocks.len() {
+            return None;
+        }
+        let block_id = self.source_blocks[self.source_cursor];
+        self.source_cursor += 1;
+        Some(block_id)
+    }
+
+    fn next_retransmit_block(&mut self) -> Option<u64> {
+        self.queued_retransmit_blocks.pop_first()
+    }
+
+    fn round_can_close(&self, shared: &super::SenderShared) -> bool {
+        self.round_reports.len() == shared.active_quorum.active_members().len()
+            && self
+                .required_blocks
+                .iter()
+                .all(|block_id| self.emitted_blocks.contains(block_id))
+    }
+
+    fn advance_round(&mut self, shared: &mut super::SenderShared) {
+        shared.clear_quorum_feedback_wait();
+        self.feedback_open_round_id = self.feedback_open_round_id.saturating_add(1);
+        self.current_burst_id = self.feedback_open_round_id;
+        self.feedback_round_open = false;
+        self.round_reports.clear();
+        self.required_blocks.clear();
+        self.emitted_blocks.clear();
+        self.queued_retransmit_blocks.clear();
+        self.next_burst_nonempty = false;
+        debug!(
+            open_round_id = self.feedback_open_round_id,
+            current_burst_id = self.current_burst_id,
+            "Lossless plain sender advanced to the next feedback-open round"
+        );
+    }
+
+    /// Encode and send one source block from burst 0.
+    async fn send_source_block(&mut self, shared: &mut super::SenderShared, block_id: u64) {
+        self.send_block(shared, block_id).await;
+    }
+
+    /// Encode and send one retransmitted block from burst r + 1.
+    async fn send_retransmit_block(&mut self, shared: &mut super::SenderShared, block_id: u64) {
+        self.send_block(shared, block_id).await;
+        self.emitted_blocks.insert(block_id);
     }
 
     /// Encode and send one plain data block.
@@ -188,10 +243,8 @@ impl PlainSender {
     }
 }
 
-fn collect_missing_blocks(out: &mut BTreeSet<u64>, ranges: &[MissingBlockRange]) {
-    for range in ranges {
-        for block_id in range.start_block_id..range.end_block_id {
-            out.insert(block_id);
-        }
-    }
+fn missing_blocks(ranges: &[MissingBlockRange]) -> impl Iterator<Item = u64> + '_ {
+    ranges
+        .iter()
+        .flat_map(|range| range.start_block_id..range.end_block_id)
 }
