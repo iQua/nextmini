@@ -201,9 +201,7 @@ impl FecReceiver {
     }
 
     pub(super) fn need_report(&self, shared: &super::ReceiverShared) -> Option<NeedReport> {
-        let Some(plan) = shared.plan else {
-            return None;
-        };
+        let plan = shared.plan?;
         if plan.total_blocks() == 0 || shared.has_all_blocks() {
             return Some(NeedReport::Complete);
         }

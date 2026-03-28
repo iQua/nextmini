@@ -326,7 +326,7 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
 
     let mut second_retransmit_block_ids = BTreeSet::new();
     let mut saw_third_eot = false;
-    while second_retransmit_block_ids.len() < 1 || !saw_third_eot {
+    while second_retransmit_block_ids.is_empty() || !saw_third_eot {
         let packet = common::recv_packet(&mut harness.packet_rx).await;
         let payload = packet
             .tcp_payload()

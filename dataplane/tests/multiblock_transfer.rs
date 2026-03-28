@@ -116,7 +116,7 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
 
     let mut retransmit_block_ids = BTreeSet::new();
     let mut saw_second_source_done = false;
-    while retransmit_block_ids.len() < 1 || !saw_second_source_done {
+    while retransmit_block_ids.is_empty() || !saw_second_source_done {
         let packet = common::recv_packet(&mut capture.packet_rx).await;
         let payload = packet
             .tcp_payload()

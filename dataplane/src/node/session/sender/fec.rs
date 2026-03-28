@@ -126,16 +126,16 @@ impl FecSender {
                 continue;
             }
 
-            if self.has_pending_repair_work() {
-                if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
-                    if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                        continue;
-                    }
-                    if !shared.wait_for_signal(ctrl_rx, self).await {
-                        return SessionOutcome::Aborted;
-                    }
+            if self.has_pending_repair_work()
+                && let Some((block_id, symbol_id)) = self.next_extra_symbol(shared)
+            {
+                if self.send_extra_symbol(shared, block_id, symbol_id).await {
                     continue;
                 }
+                if !shared.wait_for_signal(ctrl_rx, self).await {
+                    return SessionOutcome::Aborted;
+                }
+                continue;
             }
 
             if !self.round_source_done_sent {

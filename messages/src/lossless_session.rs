@@ -218,7 +218,7 @@ pub const MAX_NEED_BLOCKS: usize = u16::MAX as usize;
 impl NeedReport {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
-            Self::Complete => return Ok(()),
+            Self::Complete => Ok(()),
             Self::Plain { ranges } => {
                 if ranges.len() > MAX_NEED_RANGES {
                     return Err(LosslessSessionValidationError::TooManyNeedRanges {
@@ -578,16 +578,15 @@ pub enum LosslessSessionControl {
     Need { round_id: u32, report: NeedReport },
 }
 
-/// Rewrite note for future `Need` migration:
-///
-/// - `Ready` continues to key session admission before the active quorum freezes
-/// - `SourceDone` is the sender burst boundary, and it must preserve
-///   deterministic replay and solicitation
-/// - plain and FEC receiver reports are still mode-specific today, but the
-///   rewrite must preserve canonical, immutable same-round feedback
-/// - dead control kinds are removed only after the round/quorum state machine is
-///   explicit and covered by tests
-
+// Rewrite note for future `Need` migration:
+//
+// - `Ready` continues to key session admission before the active quorum freezes
+// - `SourceDone` is the sender burst boundary, and it must preserve
+//   deterministic replay and solicitation
+// - plain and FEC receiver reports are still mode-specific today, but the
+//   rewrite must preserve canonical, immutable same-round feedback
+// - dead control kinds are removed only after the round/quorum state machine is
+//   explicit and covered by tests
 impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
