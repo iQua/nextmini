@@ -527,7 +527,7 @@ impl LosslessRuntime {
             return false;
         };
         match replay {
-            CompletedReceiverReplay::Plain { route, status } => {
+            CompletedReceiverReplay::Plain { route, report } => {
                 let should_replay = matches!(
                     lossless_session::decode_control(&frame.bytes),
                     Some((_, LosslessSessionControl::SourceDone { .. }))
@@ -535,6 +535,11 @@ impl LosslessRuntime {
                 if !should_replay {
                     return false;
                 }
+                let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+                    lossless_session::decode_control(&frame.bytes)
+                else {
+                    return false;
+                };
 
                 control::send_control(
                     &self.processors,
@@ -546,14 +551,15 @@ impl LosslessRuntime {
                         dst_ip: route.dst_ip,
                         dst_port: route.dst_port,
                     },
-                    &LosslessSessionControl::PlainStatus {
-                        status: status.clone(),
+                    &LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
                     },
                 )
                 .await;
                 true
             }
-            CompletedReceiverReplay::Fec { route, status } => {
+            CompletedReceiverReplay::Fec { route, report } => {
                 let should_replay = matches!(
                     lossless_session::decode_control(&frame.bytes),
                     Some((_, LosslessSessionControl::SourceDone { .. }))
@@ -561,6 +567,11 @@ impl LosslessRuntime {
                 if !should_replay {
                     return false;
                 }
+                let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+                    lossless_session::decode_control(&frame.bytes)
+                else {
+                    return false;
+                };
 
                 control::send_control(
                     &self.processors,
@@ -572,8 +583,9 @@ impl LosslessRuntime {
                         dst_ip: route.dst_ip,
                         dst_port: route.dst_port,
                     },
-                    &LosslessSessionControl::FecStatus {
-                        status: status.clone(),
+                    &LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
                     },
                 )
                 .await;
@@ -591,7 +603,7 @@ mod tests {
     use tokio::sync::watch;
     use tokio::time::timeout;
 
-    use nextmini_messages::lossless_session::{self, FecStatus, PlainStatus};
+    use nextmini_messages::lossless_session::{self, NeedReport};
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
@@ -624,7 +636,7 @@ mod tests {
             session_id,
             CompletedReceiverReplay::Plain {
                 route,
-                status: PlainStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -654,7 +666,7 @@ mod tests {
             session_id,
             CompletedReceiverReplay::Fec {
                 route,
-                status: FecStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -709,7 +721,7 @@ mod tests {
             session_id,
             CompletedReceiverReplay::Plain {
                 route,
-                status: PlainStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -752,7 +764,7 @@ mod tests {
             session_id,
             CompletedReceiverReplay::Fec {
                 route,
-                status: FecStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -877,8 +889,9 @@ mod tests {
             lossless_session::decode_control(payload).expect("plain status should decode");
         assert_eq!(
             control,
-            LosslessSessionControl::PlainStatus {
-                status: PlainStatus::Complete,
+            LosslessSessionControl::Need {
+                round_id: 0,
+                report: NeedReport::Complete,
             }
         );
     }
@@ -895,8 +908,9 @@ mod tests {
             lossless_session::decode_control(payload).expect("fec status should decode");
         assert_eq!(
             control,
-            LosslessSessionControl::FecStatus {
-                status: FecStatus::Complete,
+            LosslessSessionControl::Need {
+                round_id: 0,
+                report: NeedReport::Complete,
             }
         );
     }

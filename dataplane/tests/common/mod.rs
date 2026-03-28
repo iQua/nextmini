@@ -13,8 +13,8 @@ use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionHeader, LosslessSessionKind,
-    LosslessSessionManifest, LosslessSessionMode, PlainStatus,
+    self, LosslessSessionControl, LosslessSessionHeader, LosslessSessionKind,
+    LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -147,19 +147,29 @@ pub fn block_data_frame(
     }
 }
 
-pub fn plain_status_frame(session_id: u64, peer_id: usize, status: PlainStatus) -> InboundFrame {
+pub fn plain_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    report: NeedReport,
+) -> InboundFrame {
     control_frame(
         session_id,
         peer_id,
-        LosslessSessionControl::PlainStatus { status },
+        LosslessSessionControl::Need { round_id, report },
     )
 }
 
-pub fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+pub fn fec_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    report: NeedReport,
+) -> InboundFrame {
     control_frame(
         session_id,
         peer_id,
-        LosslessSessionControl::FecStatus { status },
+        LosslessSessionControl::Need { round_id, report },
     )
 }
 

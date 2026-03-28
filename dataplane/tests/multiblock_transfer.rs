@@ -13,8 +13,8 @@ use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode, MissingBlockRange, PlainStatus,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, MissingBlockRange, NeedReport,
 };
 
 const SOURCE_NODE_ID: usize = 21;
@@ -89,7 +89,8 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
         .send(common::plain_status_frame(
             0xA11C_E101,
             RECEIVER_NODE_ID,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -102,7 +103,8 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
         .send(common::plain_status_frame(
             0xA11C_E101,
             RECEIVER_NODE_ID,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -135,7 +137,8 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
         .send(common::plain_status_frame(
             0xA11C_E101,
             RECEIVER_NODE_ID,
-            PlainStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("plain complete status should enqueue");
@@ -222,10 +225,11 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         .expect("plain status packet should include payload");
     let (_, control) =
         lossless_session::decode_control(status_payload).expect("plain status should decode");
-    let LosslessSessionControl::PlainStatus { status } = control else {
+    let LosslessSessionControl::Need { round_id, report } = control else {
         panic!("unexpected receiver control frame: {control:?}");
     };
-    assert_eq!(status, PlainStatus::Complete);
+    assert_eq!(round_id, 0);
+    assert_eq!(report, NeedReport::Complete);
 
     timeout(Duration::from_secs(2), receiver_task)
         .await
@@ -302,7 +306,8 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
         .send(common::fec_status_frame(
             0xA11C_E103,
             RECEIVER_NODE_ID,
-            FecStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("completion status should enqueue");
@@ -419,8 +424,9 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         lossless_session::decode_control(payload).expect("control packet should decode");
     assert_eq!(
         control,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 

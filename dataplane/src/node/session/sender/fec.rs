@@ -4,7 +4,7 @@ use tokio::sync::mpsc;
 use tracing::warn;
 
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 
 use crate::node::processor::SendOutcome;
@@ -34,7 +34,8 @@ pub(super) struct FecSender {
     current_round_id: u32,
     phase: RoundPhase,
     round_complete: bool,
-    round_reports: BTreeMap<usize, FecStatus>,
+    round_reports: BTreeMap<usize, NeedReport>,
+    protocol_error: bool,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -80,6 +81,7 @@ impl FecSender {
             phase: RoundPhase::SendingData,
             round_complete: false,
             round_reports: BTreeMap::new(),
+            protocol_error: false,
         })
     }
 
@@ -95,6 +97,9 @@ impl FecSender {
     ) -> SessionOutcome {
         while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
+            if self.protocol_error {
+                return SessionOutcome::Aborted;
+            }
 
             if self.phase == RoundPhase::WaitingForReports {
                 if self.round_reports.len() == shared.active_quorum.active_members().len() {
@@ -109,6 +114,9 @@ impl FecSender {
                     super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
                         return SessionOutcome::Aborted;
                     }
+                }
+                if self.protocol_error {
+                    return SessionOutcome::Aborted;
                 }
                 continue;
             }
@@ -351,8 +359,8 @@ impl FecSender {
 
         for status in self.round_reports.values() {
             match status {
-                FecStatus::Complete => {}
-                FecStatus::MissingBlocks { blocks } => {
+                NeedReport::Complete => {}
+                NeedReport::Fec { blocks } => {
                     all_complete = false;
                     for block in blocks {
                         let Some(entry) = aggregated
@@ -362,6 +370,10 @@ impl FecSender {
                         };
                         *entry = (*entry).max(block.deficit_symbols);
                     }
+                }
+                NeedReport::Plain { .. } => {
+                    self.protocol_error = true;
+                    return;
                 }
             }
         }
@@ -383,16 +395,23 @@ impl FecSender {
 }
 
 impl super::ModeHooks for FecSender {
-    fn on_fec_status(
+    fn on_need(
         &mut self,
         shared: &mut super::SenderShared,
         peer_id: usize,
-        status: FecStatus,
+        round_id: u32,
+        report: NeedReport,
     ) {
-        if self.phase != RoundPhase::WaitingForReports {
+        if self.phase != RoundPhase::WaitingForReports || round_id != self.current_round_id {
             return;
         }
-        self.round_reports.insert(peer_id, status);
+        if let Some(existing) = self.round_reports.get(&peer_id) {
+            if existing != &report {
+                self.protocol_error = true;
+            }
+            return;
+        }
+        self.round_reports.insert(peer_id, report);
         if self.round_reports.len() == shared.active_quorum.active_members().len() {
             self.finish_report_round(shared);
         }

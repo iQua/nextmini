@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use nextmini_messages::lossless_session::{MissingBlockRange, PlainStatus};
+use nextmini_messages::lossless_session::{MissingBlockRange, NeedReport};
 use tokio::sync::mpsc;
 use tracing::debug;
 
@@ -15,23 +15,31 @@ pub(super) struct PlainSender {
     cursor: usize,
     round_source_done_sent: bool,
     current_round_id: u32,
-    round_reports: BTreeMap<usize, PlainStatus>,
+    round_reports: BTreeMap<usize, NeedReport>,
+    protocol_error: bool,
     complete: bool,
     initialized: bool,
 }
 
 impl super::ModeHooks for PlainSender {
-    fn on_plain_status(
+    fn on_need(
         &mut self,
         shared: &mut super::SenderShared,
         peer_id: usize,
-        status: PlainStatus,
+        round_id: u32,
+        report: NeedReport,
     ) {
-        if !self.round_source_done_sent {
+        if !self.round_source_done_sent || round_id != self.current_round_id {
             return;
         }
 
-        self.round_reports.insert(peer_id, status);
+        if let Some(existing) = self.round_reports.get(&peer_id) {
+            if existing != &report {
+                self.protocol_error = true;
+            }
+            return;
+        }
+        self.round_reports.insert(peer_id, report);
         if self.round_reports.len() < shared.active_quorum.active_members().len() {
             return;
         }
@@ -43,10 +51,14 @@ impl super::ModeHooks for PlainSender {
                 return;
             };
             match status {
-                PlainStatus::Complete => {}
-                PlainStatus::MissingBlocks { ranges } => {
+                NeedReport::Complete => {}
+                NeedReport::Plain { ranges } => {
                     complete = false;
                     collect_missing_blocks(&mut next_round, ranges);
+                }
+                NeedReport::Fec { .. } => {
+                    self.protocol_error = true;
+                    return;
                 }
             }
         }
@@ -90,6 +102,9 @@ impl PlainSender {
 
         while !self.complete {
             shared.drain_controls(ctrl_rx, self);
+            if self.protocol_error {
+                return SessionOutcome::Aborted;
+            }
             if self.complete {
                 break;
             }
@@ -118,6 +133,9 @@ impl PlainSender {
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
                     return SessionOutcome::Aborted;
                 }
+            }
+            if self.protocol_error {
+                return SessionOutcome::Aborted;
             }
         }
 

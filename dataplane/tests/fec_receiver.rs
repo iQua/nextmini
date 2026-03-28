@@ -13,8 +13,8 @@ use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionFecMode,
-    LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, NeedBlock, NeedReport,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -177,8 +177,9 @@ async fn receiver_reports_complete_after_source_done_and_writes_sink() {
     assert_eq!(ack_packet.lossless_session_id(), Some(SESSION_ID));
     assert_eq!(
         ack,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         },
         "receiver should report round completion after SourceDone"
     );
@@ -228,9 +229,10 @@ async fn receiver_reports_missing_blocks_after_source_done_for_incomplete_block(
     let (_, status) = recv_control(&mut harness.packet_rx).await;
     assert_eq!(
         status,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 3,
                 }],
@@ -279,9 +281,10 @@ async fn receiver_replays_same_missing_status_on_repeated_source_done() {
     send_frame(&harness.tx, source_done).await;
     let (_, second) = recv_control(&mut harness.packet_rx).await;
 
-    let expected = LosslessSessionControl::FecStatus {
-        status: FecStatus::MissingBlocks {
-            blocks: vec![BlockStatus {
+    let expected = LosslessSessionControl::Need {
+        round_id: 0,
+        report: NeedReport::Fec {
+            blocks: vec![NeedBlock {
                 block_id: 0,
                 deficit_symbols: 3,
             }],

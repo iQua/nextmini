@@ -10,8 +10,8 @@ use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionFecMode,
-    LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, NeedBlock, NeedReport,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -72,8 +72,9 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
                         .send(fec_status_frame(
                             session_id,
                             2,
-                            FecStatus::MissingBlocks {
-                                blocks: vec![BlockStatus {
+                            0,
+                            NeedReport::Fec {
+                                blocks: vec![NeedBlock {
                                     block_id: 0,
                                     deficit_symbols: 2,
                                 }],
@@ -119,7 +120,7 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
     );
 
     ctrl_tx
-        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .send(fec_status_frame(session_id, 2, 0, NeedReport::Complete))
         .await
         .expect("completion status should enqueue");
 
@@ -169,8 +170,9 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
         .send(fec_status_frame(
             session_id,
             2,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 1,
                 }],
@@ -190,8 +192,9 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
         .send(fec_status_frame(
             session_id,
             3,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 1,
                 }],
@@ -205,11 +208,11 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
     wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
-        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .send(fec_status_frame(session_id, 2, 1, NeedReport::Complete))
         .await
         .unwrap();
     ctrl_tx
-        .send(fec_status_frame(session_id, 3, FecStatus::Complete))
+        .send(fec_status_frame(session_id, 3, 1, NeedReport::Complete))
         .await
         .unwrap();
 
@@ -259,8 +262,9 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .send(fec_status_frame(
             session_id,
             2,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 1,
                 }],
@@ -272,8 +276,9 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .send(fec_status_frame(
             session_id,
             3,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 3,
                 }],
@@ -290,7 +295,7 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
     wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
-        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
+        .send(fec_status_frame(session_id, 2, 1, NeedReport::Complete))
         .await
         .unwrap();
     assert!(
@@ -300,7 +305,7 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         "sender should not complete until every receiver reports complete"
     );
     ctrl_tx
-        .send(fec_status_frame(session_id, 3, FecStatus::Complete))
+        .send(fec_status_frame(session_id, 3, 1, NeedReport::Complete))
         .await
         .unwrap();
 
@@ -310,11 +315,16 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .expect("sender task failed");
 }
 
-fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+fn fec_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    report: NeedReport,
+) -> InboundFrame {
     InboundFrame {
         bytes: lossless_session::encode_control(
             session_id,
-            &LosslessSessionControl::FecStatus { status },
+            &LosslessSessionControl::Need { round_id, report },
         ),
         peer_id: Some(peer_id),
     }

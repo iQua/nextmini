@@ -1,4 +1,4 @@
-use nextmini_messages::lossless_session::PlainStatus;
+use nextmini_messages::lossless_session::NeedReport;
 
 use crate::node::session::api::InboundFrame;
 
@@ -7,7 +7,7 @@ use crate::node::session::api::InboundFrame;
 pub(super) struct PlainReceiver {
     complete_reported: bool,
     last_source_done_round_id: Option<u32>,
-    last_round_status: Option<PlainStatus>,
+    last_round_need: Option<NeedReport>,
 }
 
 impl PlainReceiver {
@@ -54,21 +54,21 @@ impl PlainReceiver {
                 return;
             }
             if round_id == last_round_id {
-                if let Some(status) = self.last_round_status.clone() {
-                    shared.send_plain_status(&status).await;
-                    self.complete_reported = matches!(status, PlainStatus::Complete);
+                if let Some(report) = self.last_round_need.clone() {
+                    shared.send_plain_need(last_round_id, &report).await;
+                    self.complete_reported = matches!(report, NeedReport::Complete);
                 }
                 return;
             }
         }
 
-        let Some(status) = shared.plain_status() else {
+        let Some(report) = shared.plain_need() else {
             return;
         };
         self.last_source_done_round_id = Some(round_id);
-        self.last_round_status = Some(status.clone());
-        shared.send_plain_status(&status).await;
-        self.complete_reported = matches!(status, PlainStatus::Complete);
+        self.last_round_need = Some(report.clone());
+        shared.send_plain_need(round_id, &report).await;
+        self.complete_reported = matches!(report, NeedReport::Complete);
     }
 
     pub(super) fn is_complete(&self) -> bool {

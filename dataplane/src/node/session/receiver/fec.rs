@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use nextmini_messages::lossless_session::{self, BlockStatus, FecStatus, LosslessSessionMode};
+use nextmini_messages::lossless_session::{self, LosslessSessionMode, NeedBlock, NeedReport};
 use tracing::warn;
 
 use crate::node::session::api::InboundFrame;
@@ -19,7 +19,7 @@ pub(super) struct FecReceiver {
     pub(super) geometry: SymbolGeometry,
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
     pub(super) last_source_done_round_id: Option<u32>,
-    pub(super) last_round_status: Option<FecStatus>,
+    pub(super) last_round_need: Option<NeedReport>,
     complete_reported: bool,
 }
 
@@ -30,7 +30,7 @@ impl FecReceiver {
             geometry,
             blocks: BTreeMap::new(),
             last_source_done_round_id: None,
-            last_round_status: None,
+            last_round_need: None,
             complete_reported: false,
         }
     }
@@ -196,24 +196,24 @@ impl FecReceiver {
         }
     }
 
-    pub(super) fn status(&self, shared: &super::ReceiverShared) -> Option<FecStatus> {
+    pub(super) fn need_report(&self, shared: &super::ReceiverShared) -> Option<NeedReport> {
         let Some(plan) = shared.plan else {
             return None;
         };
         if plan.total_blocks() == 0 || shared.has_all_blocks() {
-            return Some(FecStatus::Complete);
-        };
+            return Some(NeedReport::Complete);
+        }
         let mut blocks = Vec::new();
         for block_id in 0..plan.total_blocks() {
             if shared.complete_blocks.contains(&block_id) {
                 continue;
             }
-            blocks.push(BlockStatus {
+            blocks.push(NeedBlock {
                 block_id,
                 deficit_symbols: self.block_deficit(shared, block_id),
             });
         }
-        Some(FecStatus::MissingBlocks { blocks })
+        Some(NeedReport::Fec { blocks })
     }
 
     pub(super) async fn handle_source_done(
@@ -226,21 +226,21 @@ impl FecReceiver {
                 return;
             }
             if round_id == last_round_id {
-                if let Some(status) = self.last_round_status.clone() {
-                    shared.send_fec_status(&status).await;
-                    self.complete_reported = matches!(status, FecStatus::Complete);
+                if let Some(report) = self.last_round_need.clone() {
+                    shared.send_fec_need(last_round_id, &report).await;
+                    self.complete_reported = matches!(report, NeedReport::Complete);
                 }
                 return;
             }
         }
 
-        let Some(status) = self.status(shared) else {
+        let Some(report) = self.need_report(shared) else {
             return;
         };
         self.last_source_done_round_id = Some(round_id);
-        self.last_round_status = Some(status.clone());
-        shared.send_fec_status(&status).await;
-        self.complete_reported = matches!(status, FecStatus::Complete);
+        self.last_round_need = Some(report.clone());
+        shared.send_fec_need(round_id, &report).await;
+        self.complete_reported = matches!(report, NeedReport::Complete);
     }
 
     pub(super) fn is_complete(&self) -> bool {

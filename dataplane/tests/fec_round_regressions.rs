@@ -10,8 +10,8 @@ use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle, SessionO
 use nextmini::node::session::runtime::{ReceiverRequest, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, BlockStatus, FecStatus, LosslessSessionControl, LosslessSessionFecMode,
-    LosslessSessionManifest, LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, NeedBlock, NeedReport,
 };
 
 const SOURCE_NODE_ID: usize = 71;
@@ -73,8 +73,9 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_A,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 0,
                     deficit_symbols: 1,
                 }],
@@ -86,8 +87,9 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_B,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 1,
                     deficit_symbols: 2,
                 }],
@@ -99,7 +101,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_C,
-            FecStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver C round-one status should enqueue");
@@ -115,7 +118,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_A,
-            FecStatus::Complete,
+            1,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver A round-two complete should enqueue");
@@ -123,7 +127,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_C,
-            FecStatus::Complete,
+            1,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver C round-two complete should enqueue");
@@ -138,8 +143,9 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_B,
-            FecStatus::MissingBlocks {
-                blocks: vec![BlockStatus {
+            1,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
                     block_id: 1,
                     deficit_symbols: 1,
                 }],
@@ -159,7 +165,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_A,
-            FecStatus::Complete,
+            2,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver A final complete should enqueue");
@@ -167,7 +174,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_C,
-            FecStatus::Complete,
+            2,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver C final complete should enqueue");
@@ -182,7 +190,8 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .send(common::fec_status_frame(
             session_id,
             RECEIVER_B,
-            FecStatus::Complete,
+            2,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver B final complete should enqueue");
@@ -267,8 +276,9 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     );
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
     assert_eq!(
@@ -298,8 +308,9 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     );
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
-        LosslessSessionControl::FecStatus {
-            status: FecStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 

@@ -2,9 +2,9 @@
 //!
 //! The receiver accepts a manifest, records completed plain blocks locally, and
 //! optionally accumulates FEC symbols until a block can be decoded. After
-//! `SourceDone(round_id)`, plain mode emits end-of-round status feedback while
-//! FEC mode emits one aggregate round status describing either completion or
-//! the remaining per-block deficits for the next retransmit round.
+//! `SourceDone(round_id)`, plain mode emits end-of-round `Need` feedback while
+//! FEC mode emits one aggregate `Need` describing either completion or the
+//! remaining per-block deficits for the next retransmit round.
 
 mod fec;
 mod plain;
@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    MissingBlockRange, PlainStatus,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+    NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -148,9 +148,7 @@ impl SessionReceiver {
             LosslessSessionControl::Manifest { manifest } => {
                 self.install_manifest(manifest).await;
             }
-            LosslessSessionControl::Ready { .. }
-            | LosslessSessionControl::PlainStatus { .. }
-            | LosslessSessionControl::FecStatus { .. } => {}
+            LosslessSessionControl::Ready { .. } | LosslessSessionControl::Need { .. } => {}
             LosslessSessionControl::SourceDone { round_id } => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
@@ -267,13 +265,13 @@ impl SessionReceiver {
             Some(ReceiverMode::Plain(_)) if self.is_complete() => {
                 Some(CompletedReceiverReplay::Plain {
                     route: self.shared.route,
-                    status: PlainStatus::Complete,
+                    report: NeedReport::Complete,
                 })
             }
             Some(ReceiverMode::Fec(_)) if self.is_complete() => {
                 Some(CompletedReceiverReplay::Fec {
                     route: self.shared.route,
-                    status: FecStatus::Complete,
+                    report: NeedReport::Complete,
                 })
             }
             _ => None,
@@ -390,7 +388,7 @@ impl ReceiverShared {
         .await;
     }
 
-    async fn send_fec_status(&self, status: &FecStatus) {
+    async fn send_fec_need(&self, round_id: u32, report: &NeedReport) {
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -401,20 +399,21 @@ impl ReceiverShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::FecStatus {
-                status: status.clone(),
+            &LosslessSessionControl::Need {
+                round_id,
+                report: report.clone(),
             },
         )
         .await;
     }
 
-    fn plain_status(&self) -> Option<PlainStatus> {
+    fn plain_need(&self) -> Option<NeedReport> {
         let total_blocks = self.plan?.total_blocks();
         if total_blocks == 0 {
-            return Some(PlainStatus::Complete);
+            return Some(NeedReport::Complete);
         }
         if self.complete_blocks.len() as u64 == total_blocks {
-            return Some(PlainStatus::Complete);
+            return Some(NeedReport::Complete);
         }
 
         let mut ranges = Vec::new();
@@ -439,10 +438,10 @@ impl ReceiverShared {
             next_missing = end_block_id;
         }
 
-        Some(PlainStatus::MissingBlocks { ranges })
+        Some(NeedReport::Plain { ranges })
     }
 
-    async fn send_plain_status(&self, status: &PlainStatus) {
+    async fn send_plain_need(&self, round_id: u32, report: &NeedReport) {
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -453,8 +452,9 @@ impl ReceiverShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::PlainStatus {
-                status: status.clone(),
+            &LosslessSessionControl::Need {
+                round_id,
+                report: report.clone(),
             },
         )
         .await;
@@ -471,6 +471,7 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio::time::timeout;
 
+    use nextmini_messages::lossless_session::NeedBlock;
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
@@ -541,8 +542,8 @@ mod tests {
             },
         )]);
         receiver.last_source_done_round_id = Some(0);
-        receiver.last_round_status = Some(FecStatus::MissingBlocks {
-            blocks: vec![nextmini_messages::lossless_session::BlockStatus {
+        receiver.last_round_need = Some(NeedReport::Fec {
+            blocks: vec![NeedBlock {
                 block_id: 0,
                 deficit_symbols: 3,
             }],
@@ -594,7 +595,7 @@ mod tests {
         };
         let receiver = FecReceiver::new(geometry);
 
-        let FecStatus::MissingBlocks { blocks } = receiver.status(&shared).expect("status") else {
+        let NeedReport::Fec { blocks } = receiver.need_report(&shared).expect("status") else {
             panic!("expected missing-block status");
         };
 
@@ -658,12 +659,9 @@ mod tests {
             })
             .await;
 
-        assert_eq!(
-            recv_plain_status(&mut packet_rx).await,
-            PlainStatus::Complete
-        );
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
         assert!(receiver.is_complete());
-        assert_eq!(receiver.shared.plain_status(), Some(PlainStatus::Complete));
+        assert_eq!(receiver.shared.plain_need(), Some(NeedReport::Complete));
     }
 
     #[tokio::test]
@@ -671,8 +669,8 @@ mod tests {
         let (receiver, _packet_rx) = plain_test_receiver(4, BTreeSet::from([0, 2])).await;
 
         assert_eq!(
-            receiver.shared.plain_status(),
-            Some(PlainStatus::MissingBlocks {
+            receiver.shared.plain_need(),
+            Some(NeedReport::Plain {
                 ranges: vec![
                     MissingBlockRange {
                         start_block_id: 1,
@@ -690,7 +688,7 @@ mod tests {
     #[tokio::test]
     async fn plain_receiver_emits_sparse_missing_ranges_on_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(4, BTreeSet::from([0, 2])).await;
-        let expected = PlainStatus::MissingBlocks {
+        let expected = NeedReport::Plain {
             ranges: vec![
                 MissingBlockRange {
                     start_block_id: 1,
@@ -713,7 +711,7 @@ mod tests {
             })
             .await;
 
-        assert_eq!(recv_plain_status(&mut packet_rx).await, expected);
+        assert_eq!(recv_plain_need(&mut packet_rx).await, expected);
         assert!(!receiver.is_complete());
     }
 
@@ -728,7 +726,7 @@ mod tests {
             ),
             peer_id: Some(SOURCE_NODE_ID),
         };
-        let expected = PlainStatus::MissingBlocks {
+        let expected = NeedReport::Plain {
             ranges: vec![MissingBlockRange {
                 start_block_id: 1,
                 end_block_id: 2,
@@ -736,9 +734,9 @@ mod tests {
         };
 
         receiver.handle_control_frame(source_done.clone()).await;
-        assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
+        assert_eq!(recv_plain_need(&mut packet_rx).await, expected.clone());
         assert!(!receiver.is_complete());
-        assert_eq!(receiver.shared.plain_status(), Some(expected.clone()));
+        assert_eq!(receiver.shared.plain_need(), Some(expected.clone()));
 
         receiver
             .handle_block_data_frame(InboundFrame {
@@ -752,7 +750,7 @@ mod tests {
             .await;
 
         receiver.handle_control_frame(source_done).await;
-        assert_eq!(recv_plain_status(&mut packet_rx).await, expected.clone());
+        assert_eq!(recv_plain_need(&mut packet_rx).await, expected.clone());
         assert!(!receiver.is_complete());
     }
 
@@ -770,8 +768,8 @@ mod tests {
             })
             .await;
         assert_eq!(
-            recv_plain_status(&mut packet_rx).await,
-            PlainStatus::MissingBlocks {
+            recv_plain_need(&mut packet_rx).await,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -815,8 +813,8 @@ mod tests {
         );
         assert!(!receiver.is_complete());
         assert_eq!(
-            receiver.shared.plain_status(),
-            Some(PlainStatus::MissingBlocks {
+            receiver.shared.plain_need(),
+            Some(NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -945,8 +943,8 @@ mod tests {
             })
             .await;
         assert_eq!(
-            recv_fec_status(&mut packet_rx).await,
-            FecStatus::Complete,
+            recv_fec_need(&mut packet_rx).await,
+            NeedReport::Complete,
             "completed FEC receivers should report complete at the round boundary"
         );
         assert!(receiver.is_complete());
@@ -972,7 +970,7 @@ mod tests {
             replay,
             CompletedReceiverReplay::Fec {
                 route,
-                status: FecStatus::Complete,
+                report: NeedReport::Complete,
             }
         );
         ack.send(())
@@ -1049,35 +1047,35 @@ mod tests {
         )
     }
 
-    async fn recv_plain_status(packet_rx: &mut mpsc::Receiver<Packet>) -> PlainStatus {
+    async fn recv_plain_need(packet_rx: &mut mpsc::Receiver<Packet>) -> NeedReport {
         let packet = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
-            .expect("timed out waiting for plain status")
+            .expect("timed out waiting for plain need")
             .expect("packet capture closed unexpectedly");
         let payload = packet
             .tcp_payload()
-            .expect("plain status packet should include payload");
+            .expect("plain need packet should include payload");
         let (_, control) =
-            lossless_session::decode_control(payload).expect("plain status should decode");
-        let LosslessSessionControl::PlainStatus { status } = control else {
+            lossless_session::decode_control(payload).expect("plain need should decode");
+        let LosslessSessionControl::Need { report, .. } = control else {
             panic!("unexpected control frame: {control:?}");
         };
-        status
+        report
     }
 
-    async fn recv_fec_status(packet_rx: &mut mpsc::Receiver<Packet>) -> FecStatus {
+    async fn recv_fec_need(packet_rx: &mut mpsc::Receiver<Packet>) -> NeedReport {
         let packet = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
-            .expect("timed out waiting for fec status")
+            .expect("timed out waiting for fec need")
             .expect("packet capture closed unexpectedly");
         let payload = packet
             .tcp_payload()
-            .expect("fec status packet should include payload");
+            .expect("fec need packet should include payload");
         let (_, control) =
-            lossless_session::decode_control(payload).expect("fec status should decode");
-        let LosslessSessionControl::FecStatus { status } = control else {
+            lossless_session::decode_control(payload).expect("fec need should decode");
+        let LosslessSessionControl::Need { report, .. } = control else {
             panic!("unexpected control frame: {control:?}");
         };
-        status
+        report
     }
 }

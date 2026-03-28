@@ -11,7 +11,7 @@ use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
-    PlainStatus,
+    NeedReport,
 };
 
 const SOURCE_NODE_ID: usize = 31;
@@ -87,7 +87,8 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
         .send(common::plain_status_frame(
             SESSION_ID,
             RECEIVER_A,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -100,7 +101,8 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
         .send(common::plain_status_frame(
             SESSION_ID,
             RECEIVER_A,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -113,7 +115,8 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
         .send(common::plain_status_frame(
             SESSION_ID,
             RECEIVER_B,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 0,
                     end_block_id: 1,
@@ -150,7 +153,8 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
         .send(common::plain_status_frame(
             SESSION_ID,
             RECEIVER_A,
-            PlainStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver A complete report should enqueue");
@@ -165,7 +169,8 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
         .send(common::plain_status_frame(
             SESSION_ID,
             RECEIVER_B,
-            PlainStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver B complete report should enqueue");
@@ -250,7 +255,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
             .send(common::plain_status_frame(
                 session_id,
                 peer_id,
-                PlainStatus::MissingBlocks {
+                0,
+                NeedReport::Plain {
                     ranges: vec![MissingBlockRange {
                         start_block_id: block_id,
                         end_block_id: block_id + 1,
@@ -288,7 +294,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
         .send(common::plain_status_frame(
             session_id,
             RECEIVER_A,
-            PlainStatus::Complete,
+            1,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver A complete should enqueue");
@@ -296,7 +303,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
         .send(common::plain_status_frame(
             session_id,
             receiver_c,
-            PlainStatus::Complete,
+            1,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver C complete should enqueue");
@@ -304,7 +312,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
         .send(common::plain_status_frame(
             session_id,
             RECEIVER_B,
-            PlainStatus::MissingBlocks {
+            1,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -341,7 +350,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
             .send(common::plain_status_frame(
                 session_id,
                 peer_id,
-                PlainStatus::Complete,
+                1,
+                NeedReport::Complete,
             ))
             .await
             .expect("complete status should enqueue");
@@ -357,7 +367,8 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
         .send(common::plain_status_frame(
             session_id,
             RECEIVER_B,
-            PlainStatus::Complete,
+            1,
+            NeedReport::Complete,
         ))
         .await
         .expect("receiver B complete should enqueue");

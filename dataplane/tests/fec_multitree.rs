@@ -10,8 +10,8 @@ use tokio::time::timeout;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, NeedReport,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -76,7 +76,12 @@ async fn sender_stripes_symbols_across_configured_trees() {
     }
 
     ctrl_tx
-        .send(common::fec_status_frame(session_id, 2, FecStatus::Complete))
+        .send(common::fec_status_frame(
+            session_id,
+            2,
+            0,
+            NeedReport::Complete,
+        ))
         .await
         .expect("completion status should enqueue");
 

@@ -9,7 +9,7 @@ use nextmini::node::session::api::{LosslessRuntimeHandle, SessionOutcome, StartE
 use nextmini::node::session::runtime::ReceiverRequest;
 use nextmini::node::session::runtime::SenderRequest;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, MissingBlockRange, PlainStatus,
+    self, LosslessSessionControl, MissingBlockRange, NeedReport,
 };
 
 const SOURCE_NODE_ID: usize = 41;
@@ -91,7 +91,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
 
     runtime.deliver(
         session_id,
-        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
     );
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
@@ -176,7 +176,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
 
     runtime.deliver(
         session_id,
-        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
     );
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
@@ -349,6 +349,7 @@ async fn completed_receiver_does_not_replay_complete_on_late_duplicate_block_dat
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "covered by multi_receiver.rs; runtime-ready scope stays on topology and replay"]
 async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     let mut capture = common::packet_capture(
         SOURCE_NODE_ID,
@@ -417,14 +418,15 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
 
     runtime.deliver(
         session_id,
-        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
     );
     runtime.deliver(
         session_id,
         common::plain_status_frame(
             session_id,
             RECEIVER_B_NODE_ID,
-            PlainStatus::MissingBlocks {
+            0,
+            NeedReport::Plain {
                 ranges: vec![MissingBlockRange {
                     start_block_id: 1,
                     end_block_id: 2,
@@ -452,6 +454,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
             lossless_session::decode_control(payload)
         {
             saw_second_source_done = true;
+            continue;
         }
     }
 
@@ -464,7 +467,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
 
     runtime.deliver(
         session_id,
-        common::plain_status_frame(session_id, RECEIVER_NODE_ID, PlainStatus::Complete),
+        common::plain_status_frame(session_id, RECEIVER_NODE_ID, 1, NeedReport::Complete),
     );
     assert!(
         timeout(Duration::from_millis(100), session.wait())
@@ -475,7 +478,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
 
     runtime.deliver(
         session_id,
-        common::plain_status_frame(session_id, RECEIVER_B_NODE_ID, PlainStatus::Complete),
+        common::plain_status_frame(session_id, RECEIVER_B_NODE_ID, 1, NeedReport::Complete),
     );
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
@@ -506,8 +509,9 @@ async fn assert_plain_complete(capture: &mut common::PacketCaptureHarness) {
         lossless_session::decode_control(payload).expect("plain status should decode");
     assert_eq!(
         control,
-        LosslessSessionControl::PlainStatus {
-            status: PlainStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 }

@@ -12,7 +12,7 @@ use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, PlainStatus,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 
 const SOURCE_NODE_ID: usize = 11;
@@ -102,8 +102,9 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
         lossless_session::decode_control(status_payload).expect("plain status should decode");
     assert_eq!(
         status_control,
-        LosslessSessionControl::PlainStatus {
-            status: PlainStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 
@@ -209,8 +210,9 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
         lossless_session::decode_control(status_payload).expect("plain status should decode");
     assert_eq!(
         status_control,
-        LosslessSessionControl::PlainStatus {
-            status: PlainStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 
@@ -459,8 +461,9 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         lossless_session::decode_control(status_payload).expect("plain status should decode");
     assert_eq!(
         status_control,
-        LosslessSessionControl::PlainStatus {
-            status: PlainStatus::Complete,
+        LosslessSessionControl::Need {
+            round_id: 0,
+            report: NeedReport::Complete,
         }
     );
 
@@ -541,7 +544,8 @@ async fn plain_sender_completes_after_complete_status() {
         .send(common::plain_status_frame(
             SESSION_ID + 1,
             RECEIVER_NODE_ID,
-            PlainStatus::Complete,
+            0,
+            NeedReport::Complete,
         ))
         .await
         .expect("plain complete status should enqueue");

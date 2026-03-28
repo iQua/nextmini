@@ -15,8 +15,7 @@ use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    PlainStatus,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -54,15 +53,13 @@ pub async fn run(
 
 /// Mode-specific sender hooks invoked by the shared control path.
 pub(super) trait ModeHooks {
-    /// Observe FEC-mode end-of-round feedback from a receiver.
-    fn on_fec_status(&mut self, _shared: &mut SenderShared, _peer_id: usize, _status: FecStatus) {}
-
-    /// Observe plain-mode end-of-round feedback from a receiver.
-    fn on_plain_status(
+    /// Observe end-of-round Need feedback from a receiver.
+    fn on_need(
         &mut self,
         _shared: &mut SenderShared,
         _peer_id: usize,
-        _status: PlainStatus,
+        _round_id: u32,
+        _report: NeedReport,
     ) {
     }
 
@@ -459,39 +456,38 @@ impl SenderShared {
                 }
                 self.active_quorum.record_ready(peer_id);
             }
-            LosslessSessionControl::FecStatus { status } => {
+            LosslessSessionControl::Need { round_id, report } => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
                         session_id = self.session.session_id,
-                        "Lossless sender dropped FEC status without transport peer_id"
+                        "Lossless sender dropped Need without transport peer_id"
                     );
                     return;
                 };
                 if !self.active_quorum.active_members().contains(&peer_id) {
                     warn!(
                         session_id = self.session.session_id,
-                        peer_id, "Lossless sender ignored FEC status from non-quorum peer"
+                        peer_id, "Lossless sender ignored Need from non-quorum peer"
                     );
                     return;
                 }
-                mode.on_fec_status(self, peer_id, status);
-            }
-            LosslessSessionControl::PlainStatus { status } => {
-                let Some(peer_id) = frame.peer_id else {
+                if let Err(err) = self
+                    .manifest
+                    .validate_control(&LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
+                    })
+                {
                     warn!(
                         session_id = self.session.session_id,
-                        "Lossless sender dropped plain status without transport peer_id"
-                    );
-                    return;
-                };
-                if !self.active_quorum.active_members().contains(&peer_id) {
-                    warn!(
-                        session_id = self.session.session_id,
-                        peer_id, "Lossless sender ignored plain status from non-quorum peer"
+                        ?err,
+                        peer_id,
+                        round_id,
+                        "Lossless sender dropped invalid Need for the current manifest"
                     );
                     return;
                 }
-                mode.on_plain_status(self, peer_id, status);
+                mode.on_need(self, peer_id, round_id, report);
             }
         }
     }
@@ -675,7 +671,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn non_quorum_plain_status_is_ignored_after_freeze() {
+    async fn non_quorum_need_is_ignored_after_freeze() {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
@@ -694,8 +690,9 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(
                     7,
-                    &LosslessSessionControl::PlainStatus {
-                        status: PlainStatus::Complete,
+                    &LosslessSessionControl::Need {
+                        round_id: 0,
+                        report: NeedReport::Complete,
                     },
                 ),
                 peer_id: Some(23),
@@ -703,11 +700,11 @@ mod tests {
             &mut mode,
         );
 
-        assert!(mode.plain_statuses.is_empty());
+        assert!(mode.needs.is_empty());
     }
 
     #[tokio::test]
-    async fn plain_status_without_transport_peer_identity_is_ignored() {
+    async fn need_without_transport_peer_identity_is_ignored() {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
@@ -726,8 +723,9 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(
                     7,
-                    &LosslessSessionControl::PlainStatus {
-                        status: PlainStatus::Complete,
+                    &LosslessSessionControl::Need {
+                        round_id: 0,
+                        report: NeedReport::Complete,
                     },
                 ),
                 peer_id: None,
@@ -735,39 +733,7 @@ mod tests {
             &mut mode,
         );
 
-        assert!(mode.plain_statuses.is_empty());
-    }
-
-    #[tokio::test]
-    async fn fec_status_without_transport_peer_identity_is_ignored() {
-        let mut shared = test_sender_shared();
-        shared.handle_control(
-            InboundFrame {
-                bytes: lossless_session::encode_control(
-                    7,
-                    &LosslessSessionControl::Ready { node_id: 22 },
-                ),
-                peer_id: Some(22),
-            },
-            &mut NoopMode,
-        );
-        shared.freeze_active_quorum();
-
-        let mut mode = RecordingMode::default();
-        shared.handle_control(
-            InboundFrame {
-                bytes: lossless_session::encode_control(
-                    7,
-                    &LosslessSessionControl::FecStatus {
-                        status: FecStatus::Complete,
-                    },
-                ),
-                peer_id: None,
-            },
-            &mut mode,
-        );
-
-        assert!(mode.fec_statuses.is_empty());
+        assert!(mode.needs.is_empty());
     }
 
     #[tokio::test]
@@ -852,14 +818,15 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(
                     9,
-                    &LosslessSessionControl::PlainStatus {
-                        status: PlainStatus::Complete,
+                    &LosslessSessionControl::Need {
+                        round_id: 0,
+                        report: NeedReport::Complete,
                     },
                 ),
                 peer_id: Some(22),
             })
             .await
-            .expect("plain status should enqueue");
+            .expect("need should enqueue");
 
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), sender_task)
@@ -942,22 +909,18 @@ mod tests {
 
     #[derive(Default)]
     struct RecordingMode {
-        plain_statuses: Vec<(usize, PlainStatus)>,
-        fec_statuses: Vec<(usize, FecStatus)>,
+        needs: Vec<(usize, u32, NeedReport)>,
     }
 
     impl ModeHooks for RecordingMode {
-        fn on_fec_status(&mut self, _shared: &mut SenderShared, peer_id: usize, status: FecStatus) {
-            self.fec_statuses.push((peer_id, status));
-        }
-
-        fn on_plain_status(
+        fn on_need(
             &mut self,
             _shared: &mut SenderShared,
             peer_id: usize,
-            status: PlainStatus,
+            round_id: u32,
+            report: NeedReport,
         ) {
-            self.plain_statuses.push((peer_id, status));
+            self.needs.push((peer_id, round_id, report));
         }
     }
 }
