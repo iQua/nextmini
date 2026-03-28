@@ -123,7 +123,7 @@ impl SessionReceiver {
                 tokio::select! {
                     maybe_frame = rx.recv() => maybe_frame,
                     _ = tokio::time::sleep(SESSION_FINISH_TIMEOUT) => {
-                        self.finish_session();
+                        self.finish_session("session_finish_timeout");
                         break;
                     }
                 }
@@ -132,7 +132,7 @@ impl SessionReceiver {
             };
 
             let Some(frame) = frame else {
-                self.finish_session();
+                self.finish_session("receiver_channel_closed");
                 break;
             };
 
@@ -183,8 +183,14 @@ impl SessionReceiver {
         self.lifecycle == ReceiverLifecycle::PassiveComplete
     }
 
-    fn finish_session(&mut self) {
+    fn finish_session(&mut self, reason: &'static str) {
         self.lifecycle = ReceiverLifecycle::SessionFinished;
+        debug!(
+            session_id = self.shared.session_id,
+            reason,
+            object_complete = self.object_complete(),
+            "Lossless receiver entered session-finished state"
+        );
     }
 
     fn enter_passive_complete(&mut self) {
