@@ -530,21 +530,20 @@ impl LosslessRuntime {
         let Some(replay) = self.completed_receivers.get(&session) else {
             return false;
         };
+        let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+            lossless_session::decode_control(&frame.bytes)
+        else {
+            return false;
+        };
         match replay {
-            CompletedReceiverReplay::Plain { route, report } => {
-                let should_replay = matches!(
-                    lossless_session::decode_control(&frame.bytes),
-                    Some((_, LosslessSessionControl::SourceDone { .. }))
-                );
-                if !should_replay {
+            CompletedReceiverReplay::Plain {
+                round_id: replay_round_id,
+                route,
+                report,
+            } => {
+                if round_id != *replay_round_id {
                     return false;
                 }
-                let Some((_, LosslessSessionControl::SourceDone { round_id })) =
-                    lossless_session::decode_control(&frame.bytes)
-                else {
-                    return false;
-                };
-
                 control::send_control(
                     &self.processors,
                     control::FrameRoute {
@@ -563,20 +562,14 @@ impl LosslessRuntime {
                 .await;
                 true
             }
-            CompletedReceiverReplay::Fec { route, report } => {
-                let should_replay = matches!(
-                    lossless_session::decode_control(&frame.bytes),
-                    Some((_, LosslessSessionControl::SourceDone { .. }))
-                );
-                if !should_replay {
+            CompletedReceiverReplay::Fec {
+                round_id: replay_round_id,
+                route,
+                report,
+            } => {
+                if round_id != *replay_round_id {
                     return false;
                 }
-                let Some((_, LosslessSessionControl::SourceDone { round_id })) =
-                    lossless_session::decode_control(&frame.bytes)
-                else {
-                    return false;
-                };
-
                 control::send_control(
                     &self.processors,
                     control::FrameRoute {
@@ -662,6 +655,7 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Plain {
+                round_id: 0,
                 route,
                 report: NeedReport::Complete,
             },
@@ -692,6 +686,7 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Fec {
+                round_id: 0,
                 route,
                 report: NeedReport::Complete,
             },
@@ -727,6 +722,59 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn deliver_frame_does_not_replay_completed_receiver_for_stale_or_future_rounds() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E40A;
+
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Plain {
+                round_id: 1,
+                route,
+                report: NeedReport::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "stale round replay must be dropped"
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 2 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "future round replay must be dropped"
+        );
+    }
+
+    #[tokio::test]
     async fn deliver_frame_prefers_live_plain_inbox_over_completed_replay_during_handoff() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E403;
@@ -747,6 +795,7 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Plain {
+                round_id: 0,
                 route,
                 report: NeedReport::Complete,
             },
@@ -803,6 +852,7 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Fec {
+                round_id: 0,
                 route,
                 report: NeedReport::Complete,
             },

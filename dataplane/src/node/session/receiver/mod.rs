@@ -323,14 +323,18 @@ impl SessionReceiver {
 
     fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
         match self.mode.as_ref() {
-            Some(ReceiverMode::Plain(_)) if self.reported_complete() => {
+            Some(ReceiverMode::Plain(mode)) if self.reported_complete() => {
+                let round_id = mode.last_source_done_round_id()?;
                 Some(CompletedReceiverReplay::Plain {
+                    round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,
                 })
             }
-            Some(ReceiverMode::Fec(_)) if self.reported_complete() => {
+            Some(ReceiverMode::Fec(mode)) if self.reported_complete() => {
+                let round_id = mode.last_source_done_round_id()?;
                 Some(CompletedReceiverReplay::Fec {
+                    round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,
                 })
@@ -1153,6 +1157,7 @@ mod tests {
         assert_eq!(
             replay,
             CompletedReceiverReplay::Fec {
+                round_id: 0,
                 route,
                 report: NeedReport::Complete,
             }
@@ -1296,6 +1301,7 @@ mod tests {
         assert_eq!(
             replay,
             CompletedReceiverReplay::Plain {
+                round_id: 1,
                 route,
                 report: NeedReport::Complete,
             }

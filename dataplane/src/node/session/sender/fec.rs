@@ -494,3 +494,120 @@ fn fec_block_ref(fec: &FecSender, block_id: u64) -> Option<&FecBlockState> {
     let idx = usize::try_from(block_id).ok()?;
     fec.blocks.get(idx)
 }
+
+#[cfg(test)]
+mod tests {
+    use std::net::Ipv4Addr;
+    use std::time::Duration;
+
+    use bytes::Bytes;
+
+    use super::*;
+    use crate::node::config::LocalConfig;
+    use crate::node::processor::ProcessorHandle;
+    use crate::node::session::plan::BlockPlan;
+    use crate::node::session::runtime::{SessionConfig, TransportRoute};
+    use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
+    use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
+    use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
+
+    #[test]
+    fn fec_sender_drops_future_round_need() {
+        let manifest = test_manifest();
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        sender.phase = RoundPhase::WaitingForReports;
+        sender.current_round_id = 0;
+        let mut shared = test_sender_shared(manifest.clone());
+
+        sender.on_need(
+            &mut shared,
+            22,
+            1,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        );
+
+        assert!(sender.round_reports.is_empty());
+        assert!(!sender.has_pending_repair_work());
+        assert!(!sender.protocol_error);
+    }
+
+    #[test]
+    fn fec_sender_drops_need_after_round_closure() {
+        let manifest = test_manifest();
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        sender.phase = RoundPhase::SendingData;
+        sender.current_round_id = 0;
+        let mut shared = test_sender_shared(manifest.clone());
+
+        sender.on_need(
+            &mut shared,
+            22,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        );
+
+        assert!(sender.round_reports.is_empty());
+        assert!(!sender.has_pending_repair_work());
+        assert!(!sender.protocol_error);
+    }
+
+    fn test_manifest() -> LosslessSessionManifest {
+        LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+        }
+    }
+
+    fn test_sender_shared(manifest: LosslessSessionManifest) -> SenderShared {
+        let processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity: 8,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+
+        SenderShared {
+            session: SessionConfig {
+                session_id: 7,
+                block_size: 16,
+            },
+            route: TransportRoute {
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1111,
+                dst_port: 2222,
+            },
+            processors,
+            manifest,
+            receiver_ids: vec![22],
+            active_quorum: ActiveSessionQuorum::new([22]),
+            quorum_liveness: QuorumLiveness::new(
+                Duration::from_millis(10),
+                Duration::from_millis(30),
+            ),
+            plan: BlockPlan::new(16, 16).expect("valid plan"),
+            source: BlockSource::new(Bytes::from_static(b"abcdefghijklmnop")),
+            ready_grace: Duration::from_millis(1),
+            topology_ready: None,
+            pacer: None,
+            payload_emitted: false,
+        }
+    }
+}

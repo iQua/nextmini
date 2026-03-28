@@ -138,10 +138,12 @@ impl Display for StartError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompletedReceiverReplay {
     Plain {
+        round_id: u32,
         route: TransportRoute,
         report: NeedReport,
     },
     Fec {
+        round_id: u32,
         route: TransportRoute,
         report: NeedReport,
     },

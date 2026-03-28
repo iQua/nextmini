@@ -24,6 +24,10 @@ pub(super) struct FecReceiver {
 }
 
 impl FecReceiver {
+    pub(super) fn last_source_done_round_id(&self) -> Option<u32> {
+        self.last_source_done_round_id
+    }
+
     /// Build receiver-side FEC state from the negotiated symbol geometry.
     pub(super) fn new(geometry: SymbolGeometry) -> Self {
         Self {

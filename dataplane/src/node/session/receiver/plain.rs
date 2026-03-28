@@ -11,6 +11,10 @@ pub(super) struct PlainReceiver {
 }
 
 impl PlainReceiver {
+    pub(super) fn last_source_done_round_id(&self) -> Option<u32> {
+        self.last_source_done_round_id
+    }
+
     /// Handle one plain data block.
     pub(super) async fn handle_block_data_frame(
         &mut self,

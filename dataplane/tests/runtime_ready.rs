@@ -292,8 +292,8 @@ async fn completed_receiver_replays_complete_on_late_eot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn passive_complete_receiver_answers_later_round_before_handoff_then_runtime_replays_after_finish(
-) {
+async fn passive_complete_receiver_answers_later_round_before_handoff_then_runtime_replays_only_the_cached_round_after_finish()
+ {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
         SOURCE_NODE_ID,
@@ -358,9 +358,31 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
 
     runtime.deliver(
         session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
+    );
+    assert_plain_complete_round(&mut capture, 1).await;
+
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+    );
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "runtime replay must drop stale SourceDone after handoff"
+    );
+
+    runtime.deliver(
+        session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 2),
     );
-    assert_plain_complete_round(&mut capture, 2).await;
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "runtime replay must not synthesize future-round Need after handoff"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -417,6 +439,75 @@ async fn completed_receiver_does_not_replay_complete_on_late_duplicate_block_dat
             .await
             .is_err(),
         "completed receiver replay should only trigger on duplicate SourceDone after T4"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_complete_receiver_ignores_duplicate_payload_after_later_round_begins() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 7,
+        DST_PORT + 7,
+        1,
+        2048,
+    )
+    .await;
+    let runtime = LosslessRuntimeHandle::new(
+        capture.processors.clone(),
+        capture.cfg.lossless_runtime_config.clone(),
+    );
+    let session_id = 0xA11C_E308;
+
+    let mut session = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+            progress: None,
+        })
+        .await
+        .expect("receiver should start");
+
+    runtime.deliver(
+        session_id,
+        common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
+    );
+    assert_ready(&mut capture).await;
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+    );
+    assert_plain_complete_round(&mut capture, 0).await;
+
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
+    );
+    assert_plain_complete_round(&mut capture, 1).await;
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "duplicate payload must not trigger wrong-round replay after a later round begins"
+    );
+
+    assert_eq!(
+        timeout(Duration::from_secs(3), session.wait())
+            .await
+            .expect("receiver should eventually finish"),
+        SessionOutcome::Completed
     );
 }
 

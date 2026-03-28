@@ -691,6 +691,178 @@ async fn sender_resumes_same_round_plain_retransmit_when_late_need_arrives() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_ignores_future_and_stale_plain_need_rounds() {
+    let mut harness = common::packet_capture(
+        SOURCE_NODE_ID,
+        RECEIVER_A,
+        SRC_PORT + 12,
+        DST_PORT + 12,
+        1,
+        2048,
+    )
+    .await;
+
+    let session_id = SESSION_ID + 12;
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![RECEIVER_A, RECEIVER_B],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456"),
+        manifest: LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 32,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Plain,
+        },
+        ready_grace_ms: 500,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    let mut saw_source_done = false;
+    let mut block_ids = BTreeSet::new();
+    while block_ids.len() < 2 || !saw_source_done {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include a TCP payload");
+
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            match control {
+                LosslessSessionControl::Manifest { .. } => {
+                    ctrl_tx
+                        .send(common::ready_frame(session_id, RECEIVER_A))
+                        .await
+                        .expect("receiver A ready should enqueue");
+                    ctrl_tx
+                        .send(common::ready_frame(session_id, RECEIVER_B))
+                        .await
+                        .expect("receiver B ready should enqueue");
+                }
+                LosslessSessionControl::SourceDone { round_id } => {
+                    assert_eq!(round_id, 0);
+                    saw_source_done = true;
+                }
+                other => panic!("unexpected control frame: {other:?}"),
+            }
+            continue;
+        }
+
+        let (_, data, _) =
+            lossless_session::decode_block_data(payload).expect("expected plain block data");
+        block_ids.insert(data.block_id);
+    }
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_A,
+            1,
+            NeedReport::Plain {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
+        .await
+        .expect("future-round Need should enqueue");
+
+    assert!(
+        timeout(Duration::from_millis(100), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "future-round Need must not trigger retransmit while round 0 is still open"
+    );
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_A,
+            0,
+            NeedReport::Plain {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
+        .await
+        .expect("current-round Need should enqueue");
+
+    let retransmit = common::recv_packet(&mut harness.packet_rx).await;
+    let retransmit_payload = retransmit
+        .tcp_payload()
+        .expect("captured packet should include a TCP payload");
+    let (_, retransmit_data, _) =
+        lossless_session::decode_block_data(retransmit_payload).expect("expected retransmit");
+    assert_eq!(retransmit_data.block_id, 1);
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_B,
+            0,
+            NeedReport::Complete,
+        ))
+        .await
+        .expect("current-round completion should enqueue");
+
+    let next_round = common::recv_packet(&mut harness.packet_rx).await;
+    let next_round_payload = next_round
+        .tcp_payload()
+        .expect("captured packet should include a TCP payload");
+    let (_, next_round_control) =
+        lossless_session::decode_control(next_round_payload).expect("expected next round marker");
+    assert_eq!(
+        next_round_control,
+        LosslessSessionControl::SourceDone { round_id: 1 }
+    );
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_B,
+            0,
+            NeedReport::Plain {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 0,
+                    end_block_id: 1,
+                }],
+            },
+        ))
+        .await
+        .expect("stale closed-round Need should enqueue");
+
+    assert!(
+        timeout(Duration::from_millis(100), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "stale closed-round Need must be ignored after advancing"
+    );
+
+    for peer_id in [RECEIVER_A, RECEIVER_B] {
+        ctrl_tx
+            .send(common::plain_status_frame(
+                session_id,
+                peer_id,
+                1,
+                NeedReport::Complete,
+            ))
+            .await
+            .expect("round 1 completion should enqueue");
+    }
+
+    timeout(Duration::from_secs(5), sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sender_aborts_on_changed_same_round_plain_need_from_one_peer() {
     let mut harness = common::packet_capture(
         SOURCE_NODE_ID,
