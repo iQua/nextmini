@@ -7,6 +7,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use nextmini::node::session::api::InboundFrame;
+use nextmini::node::session::api::SessionOutcome;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
@@ -313,6 +314,70 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_aborts_on_changed_same_round_fec_need_from_one_peer() {
+    let mut harness = common::packet_capture(1, 2, 4104, 5204, 1, 2048).await;
+    let session_id = 0xFEC5_0004;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2, 3],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest,
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(common::ready_frame(session_id, 3))
+        .await
+        .unwrap();
+
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            2,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, 0, NeedReport::Complete))
+        .await
+        .unwrap();
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), sender_task)
+            .await
+            .expect("sender task timed out")
+            .expect("sender task failed"),
+        SessionOutcome::Aborted,
+        "sender must abort when one peer changes its same-round Need snapshot"
+    );
 }
 
 fn fec_status_frame(

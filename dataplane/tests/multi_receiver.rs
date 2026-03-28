@@ -7,6 +7,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use nextmini::node::session::api::SessionOutcome;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
@@ -377,4 +378,109 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_aborts_on_changed_same_round_plain_need_from_one_peer() {
+    let mut harness = common::packet_capture(
+        SOURCE_NODE_ID,
+        RECEIVER_A,
+        SRC_PORT + 2,
+        DST_PORT + 2,
+        1,
+        2048,
+    )
+    .await;
+
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(SESSION_ID + 2, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![RECEIVER_A, RECEIVER_B],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456"),
+        manifest: LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 32,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Plain,
+        },
+        ready_grace_ms: 500,
+        topology_ready: None,
+    };
+
+    let session_id = SESSION_ID + 2;
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    let mut saw_manifest = false;
+    let mut saw_source_done = false;
+    let mut block_ids = BTreeSet::new();
+    while block_ids.len() < 2 || !saw_source_done {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include a TCP payload");
+
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            match control {
+                LosslessSessionControl::Manifest { .. } => {
+                    saw_manifest = true;
+                    ctrl_tx
+                        .send(common::ready_frame(session_id, RECEIVER_A))
+                        .await
+                        .expect("receiver A ready should enqueue");
+                    ctrl_tx
+                        .send(common::ready_frame(session_id, RECEIVER_B))
+                        .await
+                        .expect("receiver B ready should enqueue");
+                }
+                LosslessSessionControl::SourceDone { round_id } => {
+                    assert_eq!(round_id, 0);
+                    saw_source_done = true;
+                }
+                other => panic!("unexpected control frame: {other:?}"),
+            }
+            continue;
+        }
+
+        let (_, data, _) =
+            lossless_session::decode_block_data(payload).expect("expected plain block data");
+        block_ids.insert(data.block_id);
+    }
+
+    assert!(saw_manifest, "sender should advertise a manifest");
+    assert_eq!(block_ids, BTreeSet::from([0, 1]));
+
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_A,
+            0,
+            NeedReport::Plain {
+                ranges: vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            },
+        ))
+        .await
+        .expect("initial receiver A need should enqueue");
+    ctrl_tx
+        .send(common::plain_status_frame(
+            session_id,
+            RECEIVER_A,
+            0,
+            NeedReport::Complete,
+        ))
+        .await
+        .expect("changed duplicate receiver A need should enqueue");
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), sender_task)
+            .await
+            .expect("sender task timed out")
+            .expect("sender task failed"),
+        SessionOutcome::Aborted,
+        "sender must abort when one peer changes its same-round Need snapshot"
+    );
 }
