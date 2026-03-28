@@ -4,7 +4,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionManifest, LosslessSessionMode, NeedReport,
+    LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION, LosslessSessionHeader, LosslessSessionKind,
+    LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 
 use crate::node::processor::SendOutcome;
@@ -258,7 +259,7 @@ impl FecSender {
         let tree_count = self.tree_ids.len();
         let start_idx = self.next_tree_rr;
         let initial_tree_id = self.tree_ids[start_idx];
-        lossless_session::encode_block_symbol_into(
+        encode_block_symbol_into(
             &mut self.frame_scratch,
             shared.session.session_id,
             block_id,
@@ -271,7 +272,7 @@ impl FecSender {
             let idx = (start_idx + offset) % tree_count;
             let tree_id = self.tree_ids[idx];
             if offset > 0 {
-                lossless_session::set_block_symbol_tree_id(&mut self.frame_scratch, tree_id)
+                set_block_symbol_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
             }
             let submission = control::try_send_frame(
@@ -399,6 +400,57 @@ impl FecSender {
             block.emitted_extra_symbols = 0;
         }
     }
+}
+
+const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
+const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
+
+fn encode_block_symbol_into(
+    buf: &mut Vec<u8>,
+    session_id: u64,
+    block_id: u64,
+    symbol_id: u32,
+    tree_id: u16,
+    payload: &[u8],
+) {
+    let body_len = BLOCK_SYMBOL_FIXED_BODY_LEN + payload.len();
+    let frame_len = LosslessSessionHeader::LEN + body_len;
+    buf.resize(frame_len, 0);
+    LosslessSessionHeader {
+        magic: LOSSLESS_SESSION_MAGIC,
+        version: LOSSLESS_SESSION_VERSION,
+        kind: LosslessSessionKind::BlockSymbol,
+        ctrl_kind: 0,
+        session_id,
+        body_len: body_len as u32,
+    }
+    .encode_into(&mut buf[..LosslessSessionHeader::LEN]);
+
+    let mut pos = LosslessSessionHeader::LEN;
+    buf[pos..pos + 8].copy_from_slice(&block_id.to_be_bytes());
+    pos += 8;
+    buf[pos..pos + 4].copy_from_slice(&symbol_id.to_be_bytes());
+    pos += 4;
+    buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+    pos += 2;
+    buf[pos..pos + 2].copy_from_slice(&0u16.to_be_bytes());
+    pos += 2;
+    buf[pos..pos + payload.len()].copy_from_slice(payload);
+}
+
+fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
+    let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
+    if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
+        return None;
+    }
+    if hdr.body_len < BLOCK_SYMBOL_FIXED_BODY_LEN as u32 || buf.len() < off + hdr.body_len as usize
+    {
+        return None;
+    }
+
+    let pos = off + (BLOCK_SYMBOL_TREE_ID_OFFSET - LosslessSessionHeader::LEN);
+    buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+    Some(())
 }
 
 impl super::ModeHooks for FecSender {

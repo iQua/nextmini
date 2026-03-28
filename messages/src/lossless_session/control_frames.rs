@@ -15,13 +15,15 @@ const NEED_BLOCK_LEN: usize = 8 + 2;
 /// Large `Need::Fec` reports can exceed this bound; callers that need to encode
 /// arbitrarily large FEC feedback payloads should use [`encode_control`], which
 /// allocates an exact-size `Vec<u8>`.
-pub const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
+#[cfg(test)]
+const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
     + max_control_body_len(
         MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2),
         NEED_FIXED_BODY_LEN + (MAX_NEED_RANGES * NEED_RANGE_LEN),
         NEED_FIXED_BODY_LEN + (MAX_NEED_BLOCKS * NEED_BLOCK_LEN),
     );
 
+#[cfg(test)]
 const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize) -> usize {
     let first = if lhs > mid { lhs } else { mid };
     if first > rhs { first } else { rhs }
@@ -64,7 +66,7 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
 /// Encode a CONTROL frame into the provided buffer.
 ///
 /// The buffer must be at least `LosslessSessionHeader::LEN + control_body_len(control)` bytes.
-pub fn encode_control_into<'a>(
+fn encode_control_into<'a>(
     buf: &'a mut [u8],
     session_id: u64,
     control: &LosslessSessionControl,

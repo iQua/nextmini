@@ -24,6 +24,7 @@ pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<
 }
 
 const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
+#[cfg(test)]
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
 /// Encode a `BlockSymbol` frame into a fresh `Vec<u8>`.
@@ -40,7 +41,7 @@ pub fn encode_block_symbol(
 }
 
 /// Encode a `BlockSymbol` frame into the provided reusable buffer.
-pub fn encode_block_symbol_into<'a>(
+fn encode_block_symbol_into<'a>(
     buf: &'a mut Vec<u8>,
     session_id: u64,
     block_id: u64,
@@ -75,7 +76,8 @@ pub fn encode_block_symbol_into<'a>(
 }
 
 /// Update the tree id for an already-encoded `BlockSymbol` frame.
-pub fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
+#[cfg(test)]
+fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
     let (hdr, off) = LosslessSessionHeader::decode_from(buf)?;
     if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;

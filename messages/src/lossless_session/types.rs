@@ -134,8 +134,6 @@ pub struct NeedBlock {
     pub deficit_symbols: u16,
 }
 
-pub type BlockStatus = NeedBlock;
-
 /// End-of-round receiver feedback emitted after `SourceDone`.
 ///
 /// Empty plain/FEC payloads are canonicalized to `Complete` on encode.
@@ -145,8 +143,6 @@ pub enum NeedReport {
     Plain { ranges: Vec<MissingBlockRange> },
     Fec { blocks: Vec<NeedBlock> },
 }
-
-pub type FecStatus = NeedReport;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LosslessSessionValidationError {

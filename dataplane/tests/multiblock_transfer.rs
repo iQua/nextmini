@@ -381,9 +381,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
             bytes
         };
         for (symbol_id, symbol) in padded.chunks(2).enumerate() {
-            let mut bytes = Vec::new();
-            lossless_session::encode_block_symbol_into(
-                &mut bytes,
+            let bytes = lossless_session::encode_block_symbol(
                 0xA11C_E104,
                 block_id as u64,
                 symbol_id as u32,

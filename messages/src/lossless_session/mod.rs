@@ -14,10 +14,7 @@ mod validation;
 
 pub use block_frames::{
     decode_block_data, decode_block_symbol, encode_block_data, encode_block_symbol,
-    encode_block_symbol_into, set_block_symbol_tree_id,
 };
-pub use control_frames::{
-    MAX_CONTROL_FRAME_SIZE, decode_control, encode_control, encode_control_into,
-};
+pub use control_frames::{decode_control, encode_control};
 pub use header::{LosslessSessionHeader, LosslessSessionRawHeader, peek_header};
 pub use types::*;
