@@ -126,71 +126,6 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_ignores_legacy_fec_feedback_frames() {
-    let mut harness = common::packet_capture(1, 2, 4101, 5201, 1, 2048).await;
-
-    let session_id = 0xFEC5_0004;
-    let sender_cfg = SenderConfig {
-        session: harness.session_config(session_id, 16),
-        route: harness.route(),
-        pacing: None,
-        receiver_ids: vec![2],
-        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
-        manifest: LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
-        },
-        ready_grace_ms: 200,
-        topology_ready: None,
-    };
-
-    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
-    ctrl_tx
-        .send(common::ready_frame(session_id, 2))
-        .await
-        .expect("ready frame should enqueue");
-
-    let mut sender_task =
-        tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
-
-    wait_for_eot(&mut harness.packet_rx).await;
-
-    ctrl_tx
-        .send(block_status_frame(session_id, 2, 0, 2))
-        .await
-        .expect("legacy block status should enqueue");
-    assert!(
-        timeout(Duration::from_millis(150), harness.packet_rx.recv())
-            .await
-            .is_err(),
-        "legacy BlockStatus must not advance FEC convergence"
-    );
-
-    ctrl_tx
-        .send(common::block_ack_frame(session_id, 2, 0))
-        .await
-        .expect("legacy block ack should enqueue");
-    assert!(
-        timeout(Duration::from_millis(150), &mut sender_task)
-            .await
-            .is_err(),
-        "legacy BlockAck must not complete FEC convergence"
-    );
-
-    ctrl_tx
-        .send(fec_status_frame(session_id, 2, FecStatus::Complete))
-        .await
-        .expect("round status should enqueue");
-
-    timeout(Duration::from_secs(5), &mut sender_task)
-        .await
-        .expect("sender task timed out")
-        .expect("sender task failed");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbols() {
     let mut harness = common::packet_capture(1, 2, 4102, 5202, 1, 2048).await;
     let session_id = 0xFEC5_0002;
@@ -369,26 +304,6 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
-}
-
-fn block_status_frame(
-    session_id: u64,
-    peer_id: usize,
-    block_id: u64,
-    deficit_symbols: u16,
-) -> InboundFrame {
-    InboundFrame {
-        bytes: lossless_session::encode_control(
-            session_id,
-            &LosslessSessionControl::BlockStatus {
-                status: BlockStatus {
-                    block_id,
-                    deficit_symbols,
-                },
-            },
-        ),
-        peer_id: Some(peer_id),
-    }
 }
 
 fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {

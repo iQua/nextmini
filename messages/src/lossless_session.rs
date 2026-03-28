@@ -30,11 +30,9 @@ pub enum LosslessSessionKind {
 pub enum LosslessSessionCtrlKind {
     Manifest = 1,
     Ready = 2,
-    BlockAck = 3,
-    BlockStatus = 4,
-    Eot = 5,
-    PlainStatus = 6,
-    FecStatus = 7,
+    Eot = 3,
+    PlainStatus = 4,
+    FecStatus = 5,
 }
 
 #[repr(u8)]
@@ -179,7 +177,6 @@ pub enum LosslessSessionValidationError {
     ZeroDeficitSymbols,
     BlockDataRequiresPlainMode,
     BlockSymbolRequiresFecMode,
-    BlockStatusRequiresFecMode,
     PlainStatusRequiresPlainMode,
     FecStatusRequiresFecMode,
     BlockIdOutOfRange {
@@ -473,13 +470,6 @@ impl LosslessSessionManifest {
         match control {
             LosslessSessionControl::Manifest { manifest } => manifest.validate(),
             LosslessSessionControl::Ready { .. } | LosslessSessionControl::Eot => Ok(()),
-            LosslessSessionControl::BlockAck { block_id } => self.validate_block_id(*block_id),
-            LosslessSessionControl::BlockStatus { status } => {
-                if !self.mode.is_fec() {
-                    return Err(LosslessSessionValidationError::BlockStatusRequiresFecMode);
-                }
-                self.validate_block_id(status.block_id)
-            }
             LosslessSessionControl::PlainStatus { status } => self.validate_plain_status(status),
             LosslessSessionControl::FecStatus { status } => self.validate_fec_status(status),
         }
@@ -606,10 +596,6 @@ pub fn peek_header(buf: &[u8]) -> Option<LosslessSessionRawHeader> {
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
     Ready { node_id: u64 },
-    // Retained during the plain-mode cutover; later issues switch plain mode to
-    // PlainStatus while FEC continues to use per-block feedback.
-    BlockAck { block_id: u64 },
-    BlockStatus { status: BlockStatus },
     Eot,
     PlainStatus { status: PlainStatus },
     FecStatus { status: FecStatus },
@@ -629,13 +615,7 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready { .. } | Self::BlockAck { .. } | Self::Eot => Ok(()),
-            Self::BlockStatus { status } => {
-                if status.deficit_symbols == 0 {
-                    return Err(LosslessSessionValidationError::ZeroDeficitSymbols);
-                }
-                Ok(())
-            }
+            Self::Ready { .. } | Self::Eot => Ok(()),
             Self::PlainStatus { status } => status.validate(),
             Self::FecStatus { status } => status.validate(),
         }
@@ -846,8 +826,6 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
             MANIFEST_FIXED_BODY_LEN + (manifest_tree_ids(&manifest.mode).len() * 2)
         }
         LosslessSessionControl::Ready { .. } => 8,
-        LosslessSessionControl::BlockAck { .. } => 8,
-        LosslessSessionControl::BlockStatus { .. } => 12,
         LosslessSessionControl::Eot => 0,
         LosslessSessionControl::PlainStatus { status } => match status {
             PlainStatus::Complete => PLAIN_STATUS_FIXED_BODY_LEN,
@@ -918,19 +896,6 @@ pub fn encode_control_into<'a>(
             let body_start = LosslessSessionHeader::LEN;
             buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
             LosslessSessionCtrlKind::Ready as u8
-        }
-        LosslessSessionControl::BlockAck { block_id } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&block_id.to_be_bytes());
-            LosslessSessionCtrlKind::BlockAck as u8
-        }
-        LosslessSessionControl::BlockStatus { status } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&status.block_id.to_be_bytes());
-            buf[body_start + 8..body_start + 10]
-                .copy_from_slice(&status.deficit_symbols.to_be_bytes());
-            buf[body_start + 10..body_start + 12].copy_from_slice(&0u16.to_be_bytes());
-            LosslessSessionCtrlKind::BlockStatus as u8
         }
         LosslessSessionControl::Eot => LosslessSessionCtrlKind::Eot as u8,
         LosslessSessionControl::PlainStatus { status } => {
@@ -1072,25 +1037,6 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             }
             let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
             LosslessSessionControl::Ready { node_id }
-        }
-        x if x == LosslessSessionCtrlKind::BlockAck as u8 => {
-            if body.len() != 8 {
-                return None;
-            }
-            let block_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            LosslessSessionControl::BlockAck { block_id }
-        }
-        x if x == LosslessSessionCtrlKind::BlockStatus as u8 => {
-            if body.len() != 12 {
-                return None;
-            }
-            let block_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            let deficit_symbols = u16::from_be_bytes(body[8..10].try_into().ok()?);
-            let status = BlockStatus {
-                block_id,
-                deficit_symbols,
-            };
-            LosslessSessionControl::BlockStatus { status }
         }
         x if x == LosslessSessionCtrlKind::Eot as u8 => {
             if !body.is_empty() {
@@ -1266,7 +1212,6 @@ mod tests {
             manifest_plain,
             manifest_fec,
             LosslessSessionControl::Ready { node_id: 99 },
-            LosslessSessionControl::BlockAck { block_id: 2 },
             LosslessSessionControl::PlainStatus {
                 status: PlainStatus::Complete,
             },
@@ -1282,12 +1227,6 @@ mod tests {
                             end_block_id: 3,
                         },
                     ],
-                },
-            },
-            LosslessSessionControl::BlockStatus {
-                status: BlockStatus {
-                    block_id: 2,
-                    deficit_symbols: 3,
                 },
             },
             LosslessSessionControl::FecStatus {
@@ -1329,7 +1268,6 @@ mod tests {
                 manifest: fec_manifest(),
             },
             LosslessSessionControl::Ready { node_id: 11 },
-            LosslessSessionControl::BlockAck { block_id: 1 },
             LosslessSessionControl::PlainStatus {
                 status: PlainStatus::Complete,
             },
@@ -1339,12 +1277,6 @@ mod tests {
                         start_block_id: 1,
                         end_block_id: 2,
                     }],
-                },
-            },
-            LosslessSessionControl::BlockStatus {
-                status: BlockStatus {
-                    block_id: 1,
-                    deficit_symbols: 2,
                 },
             },
             LosslessSessionControl::FecStatus {
@@ -1444,15 +1376,6 @@ mod tests {
         assert_eq!(
             manifest.validate_block_symbol(&symbol),
             Err(LosslessSessionValidationError::BlockSymbolRequiresFecMode)
-        );
-        assert_eq!(
-            manifest.validate_control(&LosslessSessionControl::BlockStatus {
-                status: BlockStatus {
-                    block_id: 0,
-                    deficit_symbols: 1,
-                },
-            }),
-            Err(LosslessSessionValidationError::BlockStatusRequiresFecMode)
         );
         assert_eq!(
             manifest.validate_control(&LosslessSessionControl::FecStatus {
@@ -1718,11 +1641,13 @@ mod tests {
     }
 
     #[test]
-    fn zero_deficit_block_status_is_rejected() {
-        let control = LosslessSessionControl::BlockStatus {
-            status: BlockStatus {
-                block_id: 1,
-                deficit_symbols: 0,
+    fn zero_deficit_fec_status_block_is_rejected() {
+        let control = LosslessSessionControl::FecStatus {
+            status: FecStatus::MissingBlocks {
+                blocks: vec![BlockStatus {
+                    block_id: 1,
+                    deficit_symbols: 0,
+                }],
             },
         };
         assert_eq!(

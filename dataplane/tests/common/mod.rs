@@ -13,8 +13,8 @@ use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    PlainStatus,
+    self, FecStatus, LosslessSessionControl, LosslessSessionHeader, LosslessSessionKind,
+    LosslessSessionManifest, LosslessSessionMode, PlainStatus,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -135,14 +135,6 @@ pub fn manifest_frame(
     )
 }
 
-pub fn block_ack_frame(session_id: u64, peer_id: usize, block_id: u64) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::BlockAck { block_id },
-    )
-}
-
 pub fn block_data_frame(
     session_id: u64,
     peer_id: usize,
@@ -178,6 +170,29 @@ pub fn eot_frame(session_id: u64, peer_id: usize) -> InboundFrame {
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {
     InboundFrame {
         bytes: lossless_session::encode_control(session_id, &control),
+        peer_id: Some(peer_id),
+    }
+}
+
+fn legacy_control_frame(
+    session_id: u64,
+    peer_id: usize,
+    ctrl_kind: u8,
+    body: &[u8],
+) -> InboundFrame {
+    let mut bytes = vec![0u8; LosslessSessionHeader::LEN + body.len()];
+    LosslessSessionHeader {
+        magic: lossless_session::LOSSLESS_SESSION_MAGIC,
+        version: lossless_session::LOSSLESS_SESSION_VERSION,
+        kind: LosslessSessionKind::Control,
+        ctrl_kind,
+        session_id,
+        body_len: body.len() as u32,
+    }
+    .encode_into(&mut bytes[..LosslessSessionHeader::LEN]);
+    bytes[LosslessSessionHeader::LEN..].copy_from_slice(body);
+    InboundFrame {
+        bytes,
         peer_id: Some(peer_id),
     }
 }

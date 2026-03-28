@@ -149,9 +149,7 @@ impl SessionReceiver {
                 self.install_manifest(manifest).await;
             }
             LosslessSessionControl::Ready { .. }
-            | LosslessSessionControl::BlockAck { .. }
             | LosslessSessionControl::PlainStatus { .. }
-            | LosslessSessionControl::BlockStatus { .. }
             | LosslessSessionControl::FecStatus { .. } => {}
             LosslessSessionControl::Eot => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {

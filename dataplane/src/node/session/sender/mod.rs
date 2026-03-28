@@ -403,18 +403,12 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. }
-            | LosslessSessionControl::Eot
-            | LosslessSessionControl::BlockAck { .. }
-            // Legacy FEC feedback variants remain on the wire as no-ops after
-            // the round-status cutover.
-            | LosslessSessionControl::BlockStatus { .. } => {}
+            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::Eot => {}
             LosslessSessionControl::Ready { node_id } => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
                         session_id = self.session.session_id,
-                        node_id,
-                        "Lossless sender dropped Ready without transport peer_id"
+                        node_id, "Lossless sender dropped Ready without transport peer_id"
                     );
                     return;
                 };
@@ -439,8 +433,7 @@ impl SenderShared {
                 if self.active_quorum.is_frozen() {
                     warn!(
                         session_id = self.session.session_id,
-                        peer_id,
-                        "Lossless sender ignored late Ready after quorum freeze"
+                        peer_id, "Lossless sender ignored late Ready after quorum freeze"
                     );
                     return;
                 }
@@ -457,8 +450,7 @@ impl SenderShared {
                 if !self.active_quorum.active_members().contains(&peer_id) {
                     warn!(
                         session_id = self.session.session_id,
-                        peer_id,
-                        "Lossless sender ignored FEC status from non-quorum peer"
+                        peer_id, "Lossless sender ignored FEC status from non-quorum peer"
                     );
                     return;
                 }
@@ -475,8 +467,7 @@ impl SenderShared {
                 if !self.active_quorum.active_members().contains(&peer_id) {
                     warn!(
                         session_id = self.session.session_id,
-                        peer_id,
-                        "Lossless sender ignored plain status from non-quorum peer"
+                        peer_id, "Lossless sender ignored plain status from non-quorum peer"
                     );
                     return;
                 }
