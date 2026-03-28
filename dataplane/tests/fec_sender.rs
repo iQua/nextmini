@@ -306,6 +306,102 @@ async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_merges_same_round_need_while_repair_is_still_in_flight() {
+    let mut harness = common::packet_capture(1, 2, 4106, 5206, 1, 2048).await;
+    let session_id = 0xFEC5_0006;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2, 3],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest,
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(common::ready_frame(session_id, 3))
+        .await
+        .unwrap();
+
+    let mut sender_task =
+        tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            2,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 3,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+
+    let first_extra = recv_symbol(&mut harness.packet_rx).await;
+    assert_eq!(first_extra.symbol_id, 4);
+
+    ctrl_tx
+        .send(fec_status_frame(
+            session_id,
+            3,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 5,
+                }],
+            },
+        ))
+        .await
+        .unwrap();
+
+    let mut extra_symbol_ids = vec![first_extra.symbol_id];
+    while extra_symbol_ids.len() < 5 {
+        extra_symbol_ids.push(recv_symbol(&mut harness.packet_rx).await.symbol_id);
+    }
+    assert_eq!(
+        extra_symbol_ids,
+        vec![4, 5, 6, 7, 8],
+        "same-round in-flight Need should extend the current repair burst instead of being dropped"
+    );
+
+    wait_for_source_done(&mut harness.packet_rx, 1).await;
+
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, 1, NeedReport::Complete))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(fec_status_frame(session_id, 3, 1, NeedReport::Complete))
+        .await
+        .unwrap();
+
+    timeout(Duration::from_secs(5), &mut sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sender_retransmits_source_done_while_waiting_for_silent_peer_and_times_out() {
     let mut harness = common::packet_capture(1, 2, 4105, 5205, 1, 2048).await;
     let session_id = 0xFEC5_0005;
