@@ -388,6 +388,16 @@ impl super::ModeHooks for FecSender {
             self.finish_report_round(shared);
         }
     }
+
+    fn pending_feedback_peers(&self, shared: &super::SenderShared) -> Vec<usize> {
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| !self.round_reports.contains_key(peer_id))
+            .collect()
+    }
 }
 
 /// Refresh the cached source-symbol slice for `block_id` if needed.

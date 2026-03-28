@@ -65,6 +65,7 @@ pub(super) struct QuorumLiveness {
     peer_report_timeout: Duration,
     started_at: Option<Instant>,
     next_solicitation_at: Option<Instant>,
+    solicitation_count: u32,
 }
 
 impl QuorumLiveness {
@@ -74,17 +75,20 @@ impl QuorumLiveness {
             peer_report_timeout,
             started_at: None,
             next_solicitation_at: None,
+            solicitation_count: 0,
         }
     }
 
     pub(super) fn start(&mut self, now: Instant) {
         self.started_at = Some(now);
         self.next_solicitation_at = Some(now + self.solicitation_interval);
+        self.solicitation_count = 0;
     }
 
     pub(super) fn clear(&mut self) {
         self.started_at = None;
         self.next_solicitation_at = None;
+        self.solicitation_count = 0;
     }
 
     pub(super) fn started_at(&self) -> Option<Instant> {
@@ -111,6 +115,11 @@ impl QuorumLiveness {
 
     pub(super) fn note_solicitation(&mut self, now: Instant) {
         self.next_solicitation_at = Some(now + self.solicitation_interval);
+        self.solicitation_count += 1;
+    }
+
+    pub(super) fn solicitation_count(&self) -> u32 {
+        self.solicitation_count
     }
 }
 
@@ -333,9 +342,11 @@ mod tests {
             liveness.next_solicitation_at(),
             Some(now + Duration::from_millis(20))
         );
+        assert_eq!(liveness.solicitation_count(), 1);
 
         liveness.clear();
         assert!(liveness.started_at().is_none());
         assert!(liveness.next_solicitation_at().is_none());
+        assert_eq!(liveness.solicitation_count(), 0);
     }
 }

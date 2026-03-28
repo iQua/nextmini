@@ -62,6 +62,16 @@ impl super::ModeHooks for PlainSender {
             "Lossless plain sender processed round feedback"
         );
     }
+
+    fn pending_feedback_peers(&self, shared: &super::SenderShared) -> Vec<usize> {
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| !self.round_reports.contains_key(peer_id))
+            .collect()
+    }
 }
 
 impl PlainSender {

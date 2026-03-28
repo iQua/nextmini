@@ -65,6 +65,11 @@ pub(super) trait ModeHooks {
         _status: PlainStatus,
     ) {
     }
+
+    /// Return the frozen-quorum peers that still owe feedback for the current round.
+    fn pending_feedback_peers(&self, shared: &SenderShared) -> Vec<usize> {
+        shared.active_quorum.active_members().iter().copied().collect()
+    }
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -245,6 +250,7 @@ impl SenderShared {
         mode: &mut M,
     ) -> bool {
         if self.active_quorum.configured_len() == 0 {
+            self.freeze_active_quorum();
             return true;
         }
 
@@ -287,6 +293,7 @@ impl SenderShared {
             );
         }
 
+        self.freeze_active_quorum();
         true
     }
 
@@ -318,6 +325,13 @@ impl SenderShared {
             _ = tokio::time::sleep_until(wake_at) => {
                 let now = Instant::now();
                 if self.quorum_liveness.timed_out(now) {
+                    warn!(
+                        session_id = self.session.session_id,
+                        reason = "peer_report_timeout",
+                        missing = ?mode.pending_feedback_peers(self),
+                        solicitation_count = self.quorum_liveness.solicitation_count(),
+                        "Lossless sender timed out waiting for frozen quorum feedback"
+                    );
                     return QuorumWaitOutcome::TimedOut;
                 }
 
@@ -361,7 +375,7 @@ impl SenderShared {
         }
     }
 
-    /// Freeze the active quorum at the first payload boundary.
+    /// Freeze the active quorum when the data gate opens.
     pub(super) fn freeze_active_quorum(&mut self) {
         if self.active_quorum.is_frozen() {
             return;
@@ -378,7 +392,6 @@ impl SenderShared {
     /// Mark that a payload frame has actually left the sender.
     pub(super) fn mark_payload_emitted(&mut self) {
         self.payload_emitted = true;
-        self.freeze_active_quorum();
     }
 
     /// Begin the fixed-interval solicitation window for the frozen quorum.
@@ -497,9 +510,6 @@ impl SenderShared {
 
     /// Emit the end-of-transmission marker for the current send round.
     pub(super) async fn send_eot(&mut self) {
-        if !self.payload_emitted {
-            self.freeze_active_quorum();
-        }
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -616,6 +626,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn ready_grace_freezes_quorum_before_pre_payload_control_drain() {
+        let mut shared = test_sender_shared();
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
+
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("ready should enqueue");
+
+        assert!(shared.negotiate_ready(&mut ctrl_rx, &mut NoopMode).await);
+        assert!(shared.active_quorum.is_frozen());
+
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 23 },
+                ),
+                peer_id: Some(23),
+            })
+            .await
+            .expect("late ready should enqueue");
+        shared.drain_controls(&mut ctrl_rx, &mut NoopMode);
+
+        assert_eq!(
+            shared
+                .active_quorum
+                .active_members()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![22]
+        );
+    }
+
+    #[tokio::test]
     async fn non_quorum_plain_status_is_ignored_after_freeze() {
         let mut shared = test_sender_shared();
         shared.handle_control(
@@ -645,6 +697,70 @@ mod tests {
         );
 
         assert!(mode.plain_statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn plain_status_without_transport_peer_identity_is_ignored() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.freeze_active_quorum();
+
+        let mut mode = RecordingMode::default();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::PlainStatus {
+                        status: PlainStatus::Complete,
+                    },
+                ),
+                peer_id: None,
+            },
+            &mut mode,
+        );
+
+        assert!(mode.plain_statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn fec_status_without_transport_peer_identity_is_ignored() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.freeze_active_quorum();
+
+        let mut mode = RecordingMode::default();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::FecStatus {
+                        status: FecStatus::Complete,
+                    },
+                ),
+                peer_id: None,
+            },
+            &mut mode,
+        );
+
+        assert!(mode.fec_statuses.is_empty());
     }
 
     #[tokio::test]
@@ -820,9 +936,19 @@ mod tests {
     #[derive(Default)]
     struct RecordingMode {
         plain_statuses: Vec<(usize, PlainStatus)>,
+        fec_statuses: Vec<(usize, FecStatus)>,
     }
 
     impl ModeHooks for RecordingMode {
+        fn on_fec_status(
+            &mut self,
+            _shared: &mut SenderShared,
+            peer_id: usize,
+            status: FecStatus,
+        ) {
+            self.fec_statuses.push((peer_id, status));
+        }
+
         fn on_plain_status(
             &mut self,
             _shared: &mut SenderShared,
