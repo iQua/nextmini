@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
 /// Single cutover protocol version for the block-first wire model.
+///
+/// Version 3 is still the barriered `Manifest -> Ready -> payload sweep ->
+/// Eot -> round status` protocol. The simple-lossless rewrite intentionally
+/// changes those semantics in a later flag-day cutover.
+///
+/// The normative rewrite rules live in `plans/simple-lossless.md`. Keep the
+/// message surface and nearby comments in sync with that plan instead of
+/// restating a partial copy of the protocol here.
 pub const LOSSLESS_SESSION_VERSION: u8 = 3;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
@@ -564,6 +572,15 @@ impl LosslessSessionHeader {
 }
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
+///
+/// The simple-lossless rewrite keeps the live version-3 variants in place
+/// until later tasks land, but the message layer already records the target
+/// semantics here so sender and receiver work stays aligned:
+/// - `SourceDone(round_id)` replaces `Eot`
+/// - `Need(round_id, payload)` replaces both `PlainStatus` and `FecStatus`
+/// - duplicate round boundaries replay the same canonical same-round feedback
+/// - quorum freezes before round-0 payload or `SourceDone(0)` opens feedback
+/// - session completion depends on quorum-wide empty feedback for a closed round
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
@@ -576,6 +593,16 @@ pub enum LosslessSessionControl {
     PlainStatus { status: PlainStatus },
     FecStatus { status: FecStatus },
 }
+
+/// Rewrite note for future `SourceDone`/`Need` migration:
+///
+/// - `Ready` continues to key session admission before the active quorum freezes
+/// - `Eot` currently acts as the sender burst boundary, but the replacement
+///   boundary must still preserve deterministic replay and solicitation
+/// - plain and FEC receiver reports are still mode-specific today, but the
+///   rewrite must preserve canonical, immutable same-round feedback
+/// - dead control kinds are removed only after the round/quorum state machine is
+///   explicit and covered by tests
 
 impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
@@ -1121,6 +1148,39 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Red-test scaffold for the simple-lossless rewrite. These stay ignored in
+    // T1 so the foundation commit remains green while downstream behavior work
+    // replaces the live protocol surface.
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when Need canonical encoding lands"]
+    fn red_plain_need_canonical_encoding_is_byte_stable() {
+        panic!("pending rewrite invariant: plain Need canonical encoding must be stable");
+    }
+
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when Need canonical encoding lands"]
+    fn red_fec_need_canonical_encoding_is_byte_stable() {
+        panic!("pending rewrite invariant: fec Need canonical encoding must be stable");
+    }
+
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when Need decode validation lands"]
+    fn red_noncanonical_need_is_rejected_at_decode() {
+        panic!("pending rewrite invariant: noncanonical Need bodies must be rejected");
+    }
+
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when Need mode validation lands"]
+    fn red_need_body_must_match_manifest_mode() {
+        panic!("pending rewrite invariant: Need payload must match the manifest mode");
+    }
+
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when sender control acceptance is round-aware"]
+    fn red_future_round_need_is_dropped_deterministically() {
+        panic!("pending rewrite invariant: Need for a future round is invalid and dropped");
+    }
 
     fn plain_manifest() -> LosslessSessionManifest {
         LosslessSessionManifest {
