@@ -398,6 +398,18 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "T1 red test scaffold; enable when round state machine lands"]
+    fn red_local_exhaustion_alone_does_not_close_the_round() {
+        panic!("pending rewrite invariant: local exhaustion alone cannot close a round");
+    }
+
+    #[test]
+    #[ignore = "T1 red test scaffold; enable when quorum freeze lands"]
+    fn red_late_ready_after_quorum_freeze_does_not_join_completion_quorum() {
+        panic!("pending rewrite invariant: late Ready cannot join the active session quorum");
+    }
+
+    #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
         let source = BlockSource::new(Bytes::from_static(b"ab"));
         let plan = BlockPlan::new(8, 4).expect("valid plan");
