@@ -37,7 +37,7 @@ impl PlainReceiver {
         else {
             return;
         };
-        if manifest.validate_block_data(&data).is_err() {
+        if manifest.validate_block_data(&data, payload.len()).is_err() {
             return;
         }
         if shared.complete_blocks.contains(&data.block_id) {
