@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
     self, LosslessSessionManifest, LosslessSessionMode, NeedReport,
@@ -457,16 +457,34 @@ impl super::ModeHooks for FecSender {
                     }
                 }
                 if !had_pending_repair && self.has_pending_repair_work() {
+                    info!(
+                        session_id = shared.session.session_id,
+                        peer_id,
+                        round_id,
+                        next_burst_id = self.current_round_id.saturating_add(1),
+                        control_latency_ms = shared
+                            .quorum_liveness
+                            .started_at()
+                            .map(|started_at| started_at.elapsed().as_millis() as u64),
+                        "Lossless FEC sender observed the first useful Need for the open round"
+                    );
+                } else if had_pending_repair {
                     debug!(
                         session_id = shared.session.session_id,
                         peer_id,
                         round_id,
                         next_burst_id = self.current_round_id.saturating_add(1),
-                        "Lossless FEC sender observed the first useful Need for the open round"
+                        "Lossless FEC sender extended repair work for the open round"
                     );
                 }
             }
             NeedReport::Plain { .. } => {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless FEC sender rejected Need with mismatched report mode"
+                );
                 self.protocol_error = true;
                 return;
             }

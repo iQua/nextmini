@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use nextmini_messages::lossless_session::{MissingBlockRange, NeedReport};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::api::SessionOutcome;
@@ -82,12 +82,24 @@ impl super::ModeHooks for PlainSender {
                 }
                 if useful {
                     if !self.next_burst_nonempty {
+                        info!(
+                            session_id = shared.session.session_id,
+                            peer_id,
+                            round_id,
+                            next_burst_id = self.feedback_open_round_id.saturating_add(1),
+                            control_latency_ms = shared
+                                .quorum_liveness
+                                .started_at()
+                                .map(|started_at| started_at.elapsed().as_millis() as u64),
+                            "Lossless plain sender observed the first useful Need for the open round"
+                        );
+                    } else {
                         debug!(
                             session_id = shared.session.session_id,
                             peer_id,
                             round_id,
                             next_burst_id = self.feedback_open_round_id.saturating_add(1),
-                            "Lossless plain sender observed the first useful Need for the open round"
+                            "Lossless plain sender extended retransmit work for the open round"
                         );
                     }
                     self.current_burst_id = self.feedback_open_round_id.saturating_add(1);
@@ -95,6 +107,12 @@ impl super::ModeHooks for PlainSender {
                 }
             }
             Some(NeedReport::Fec { .. }) => {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless plain sender rejected Need with mismatched report mode"
+                );
                 self.protocol_error = true;
             }
             None => {}
