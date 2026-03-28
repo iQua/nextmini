@@ -486,6 +486,12 @@ mod tests {
     const RECEIVER_NODE_ID: usize = 52;
 
     #[tokio::test]
+    #[ignore = "T1 red test scaffold; enable when SourceDone replaces Eot"]
+    async fn red_duplicate_boundary_replays_exact_cached_round_feedback() {
+        panic!("pending rewrite invariant: duplicate SourceDone must replay the exact cached Need");
+    }
+
+    #[tokio::test]
     async fn block_deficit_requests_missing_source_symbols_first() {
         let shared = ReceiverShared {
             session_id: 7,
