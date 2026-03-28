@@ -1165,6 +1165,148 @@ mod tests {
             .expect("replay registration task should exit cleanly");
     }
 
+    #[tokio::test]
+    async fn passive_complete_receiver_defers_replay_registration_until_session_finish() {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4753,
+            dst_port: 5753,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, mut packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(8);
+        let receiver_task = tokio::spawn(run_with_runtime(
+            ReceiverConfig {
+                session_id: 11,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                sink_buffer: None,
+                progress: None,
+                fec_enabled: false,
+            },
+            rx,
+            processors.clone(),
+            Some(runtime_tx),
+        ));
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                11,
+                &LosslessSessionControl::Manifest {
+                    manifest: LosslessSessionManifest {
+                        block_size: 8,
+                        total_bytes: 8,
+                        total_blocks: 1,
+                        mode: LosslessSessionMode::Plain,
+                    },
+                },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("manifest should reach receiver");
+
+        let _ready = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for Ready")
+            .expect("packet capture closed unexpectedly");
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("block data should reach receiver");
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                11,
+                &LosslessSessionControl::SourceDone { round_id: 0 },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("first SourceDone should reach receiver");
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(
+            timeout(Duration::from_millis(20), runtime_rx.recv())
+                .await
+                .is_err(),
+            "runtime handoff must not start while the passive-complete receiver can still answer later rounds"
+        );
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                11,
+                &LosslessSessionControl::SourceDone { round_id: 1 },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("second SourceDone should reach receiver");
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(
+            timeout(Duration::from_millis(20), runtime_rx.recv())
+                .await
+                .is_err(),
+            "runtime handoff must still wait while the live passive-complete receiver owns future-round replies"
+        );
+
+        drop(tx);
+
+        let LosslessRuntimeMessage::ReceiverCompleted {
+            session_id,
+            replay,
+            ack,
+        } = timeout(Duration::from_secs(2), runtime_rx.recv())
+            .await
+            .expect("timed out waiting for replay handoff")
+            .expect("runtime channel closed unexpectedly")
+        else {
+            panic!("unexpected runtime message");
+        };
+        assert_eq!(session_id, 11);
+        assert_eq!(
+            replay,
+            CompletedReceiverReplay::Plain {
+                route,
+                report: NeedReport::Complete,
+            }
+        );
+        ack.send(()).expect("replay handoff should still await ack");
+
+        receiver_task
+            .await
+            .expect("receiver task should exit cleanly after handoff");
+    }
+
     async fn plain_test_receiver(
         total_blocks: u64,
         complete_blocks: BTreeSet<u64>,

@@ -306,25 +306,29 @@ impl LosslessRuntime {
             return;
         }
 
-        if self.replay_completed_receiver(session, frame.clone()).await {
-            return;
-        }
-
-        let inbox = self.sessions.get(&session).map(|entry| entry.inbox.clone());
-
-        if let Some(inbox) = inbox {
-            if inbox.send(frame.clone()).await.is_err() {
+        match self.deliver_live_receiver(session, frame.clone()).await {
+            LiveDeliveryOutcome::Delivered => return,
+            LiveDeliveryOutcome::Closed => {
+                if self.replay_completed_receiver(session, frame.clone()).await {
+                    return;
+                }
                 warn!(
                     session_id = session,
                     "Lossless runtime: session dropped inbound frame."
                 );
+                return;
             }
-        } else {
-            warn!(
-                session_id = session,
-                "Lossless runtime: no session for inbound frame."
-            );
+            LiveDeliveryOutcome::Missing => {}
         }
+
+        if self.replay_completed_receiver(session, frame.clone()).await {
+            return;
+        }
+
+        warn!(
+            session_id = session,
+            "Lossless runtime: no session for inbound frame."
+        );
     }
 
     fn abort_session(&mut self, session_id: SessionId) {
@@ -593,6 +597,29 @@ impl LosslessRuntime {
             }
         }
     }
+
+    async fn deliver_live_receiver(
+        &self,
+        session: SessionId,
+        frame: InboundFrame,
+    ) -> LiveDeliveryOutcome {
+        let Some(inbox) = self.sessions.get(&session).map(|entry| entry.inbox.clone()) else {
+            return LiveDeliveryOutcome::Missing;
+        };
+
+        if inbox.send(frame).await.is_ok() {
+            return LiveDeliveryOutcome::Delivered;
+        }
+
+        LiveDeliveryOutcome::Closed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveDeliveryOutcome {
+    Delivered,
+    Closed,
+    Missing,
 }
 
 #[cfg(test)]
@@ -700,10 +727,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_prefers_completed_plain_replay_over_live_inbox_during_handoff() {
+    async fn deliver_frame_prefers_live_plain_inbox_over_completed_replay_during_handoff() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E403;
-        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
         let (state_sender, _) = watch::channel(SessionState::Running);
         let abort_task = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -739,14 +766,27 @@ mod tests {
             .await;
 
         abort_task.abort();
-        assert_plain_complete(&mut packet_rx).await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "runtime-owned replay must not preempt a live receiver inbox during handoff"
+        );
+        let delivered = timeout(Duration::from_secs(2), inbox_rx.recv())
+            .await
+            .expect("timed out waiting for live plain handoff delivery")
+            .expect("live plain inbox should receive the duplicate frame");
+        assert!(matches!(
+            lossless_session::decode_control(&delivered.bytes),
+            Some((_, LosslessSessionControl::SourceDone { round_id: 0 }))
+        ));
     }
 
     #[tokio::test]
-    async fn deliver_frame_prefers_completed_fec_replay_over_live_inbox_during_handoff() {
+    async fn deliver_frame_prefers_live_fec_inbox_over_completed_replay_during_handoff() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E404;
-        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
         let (state_sender, _) = watch::channel(SessionState::Running);
         let abort_task = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -782,7 +822,20 @@ mod tests {
             .await;
 
         abort_task.abort();
-        assert_fec_complete(&mut packet_rx).await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "runtime-owned replay must not preempt a live receiver inbox during handoff"
+        );
+        let delivered = timeout(Duration::from_secs(2), inbox_rx.recv())
+            .await
+            .expect("timed out waiting for live FEC handoff delivery")
+            .expect("live FEC inbox should receive the duplicate frame");
+        assert!(matches!(
+            lossless_session::decode_control(&delivered.bytes),
+            Some((_, LosslessSessionControl::SourceDone { round_id: 0 }))
+        ));
     }
 
     #[tokio::test]
