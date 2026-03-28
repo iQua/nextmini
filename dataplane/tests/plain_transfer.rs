@@ -217,6 +217,87 @@ async fn plain_receiver_waits_for_eot_before_completion() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn plain_receiver_ignores_removed_legacy_control_ids() {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 20,
+        DST_PORT + 20,
+        1,
+        2048,
+    )
+    .await;
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let receiver_cfg = ReceiverConfig {
+        session_id: SESSION_ID + 20,
+        route: capture.route(),
+        local_node_id: capture.cfg.node_id,
+        sink_buffer: Some(sink.clone()),
+        progress: None,
+        fec_enabled: false,
+    };
+    let (tx, rx) = mpsc::channel::<InboundFrame>(64);
+    let mut receiver_task =
+        tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
+
+    tx.send(InboundFrame {
+        bytes: lossless_session::encode_control(
+            SESSION_ID + 20,
+            &LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 16,
+                    total_bytes: 16,
+                    total_blocks: 1,
+                    mode: LosslessSessionMode::Plain,
+                },
+            },
+        ),
+        peer_id: Some(SOURCE_NODE_ID),
+    })
+    .await
+    .expect("manifest should reach receiver");
+
+    let ready_packet = common::recv_packet(&mut capture.packet_rx).await;
+    let ready_payload = ready_packet
+        .tcp_payload()
+        .expect("ready packet should include payload");
+    assert!(matches!(
+        lossless_session::decode_control(ready_payload),
+        Some((_, LosslessSessionControl::Ready { .. }))
+    ));
+
+    tx.send(common::legacy_control_frame(
+        SESSION_ID + 20,
+        SOURCE_NODE_ID,
+        3,
+        &[],
+    ))
+    .await
+    .expect("legacy block-ack control should reach receiver");
+    tx.send(common::legacy_control_frame(
+        SESSION_ID + 20,
+        SOURCE_NODE_ID,
+        4,
+        &[0],
+    ))
+    .await
+    .expect("legacy block-status control should reach receiver");
+
+    assert!(
+        timeout(Duration::from_millis(200), capture.packet_rx.recv())
+            .await
+            .is_err(),
+        "removed legacy control ids must not be reinterpreted as live controls"
+    );
+    assert!(
+        timeout(Duration::from_millis(200), &mut receiver_task)
+            .await
+            .is_err(),
+        "receiver must stay active after removed legacy control ids"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,

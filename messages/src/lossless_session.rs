@@ -30,9 +30,9 @@ pub enum LosslessSessionKind {
 pub enum LosslessSessionCtrlKind {
     Manifest = 1,
     Ready = 2,
-    Eot = 3,
-    PlainStatus = 4,
-    FecStatus = 5,
+    Eot = 5,
+    PlainStatus = 6,
+    FecStatus = 7,
 }
 
 #[repr(u8)]
@@ -1497,6 +1497,28 @@ mod tests {
         );
         bad_tree_count[LosslessSessionHeader::LEN + 2] = 7;
         assert!(decode_control(&bad_tree_count).is_none());
+    }
+
+    #[test]
+    fn decode_control_rejects_removed_legacy_control_ids() {
+        let mut legacy_block_ack = encode_control(16, &LosslessSessionControl::Eot);
+        legacy_block_ack[6] = 3;
+        assert!(
+            decode_control(&legacy_block_ack).is_none(),
+            "removed ctrl_kind=3 must not be reinterpreted as a live control"
+        );
+
+        let mut legacy_block_status = encode_control(
+            17,
+            &LosslessSessionControl::PlainStatus {
+                status: PlainStatus::Complete,
+            },
+        );
+        legacy_block_status[6] = 4;
+        assert!(
+            decode_control(&legacy_block_status).is_none(),
+            "removed ctrl_kind=4 must not be reinterpreted as a live control"
+        );
     }
 
     #[test]

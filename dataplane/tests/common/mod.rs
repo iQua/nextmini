@@ -174,7 +174,7 @@ fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionContro
     }
 }
 
-fn legacy_control_frame(
+pub fn legacy_control_frame(
     session_id: u64,
     peer_id: usize,
     ctrl_kind: u8,
