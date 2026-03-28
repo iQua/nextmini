@@ -84,7 +84,9 @@ impl FecWorkFrontier {
         required
             .deficits
             .iter()
-            .all(|(block_id, required_symbols)| self.deficits.get(block_id).copied().unwrap_or(0) >= *required_symbols)
+            .all(|(block_id, required_symbols)| {
+                self.deficits.get(block_id).copied().unwrap_or(0) >= *required_symbols
+            })
     }
 }
 
