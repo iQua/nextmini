@@ -165,9 +165,7 @@ async fn sender_starts_repair_after_first_receiver_need_without_waiting_for_ever
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    for _ in 0..4 {
-        wait_for_source_done(&mut harness.packet_rx, 0).await;
-    }
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
 
     ctrl_tx
         .send(fec_status_frame(
@@ -243,7 +241,9 @@ async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    wait_for_source_done(&mut harness.packet_rx, 0).await;
+    for _ in 0..4 {
+        wait_for_source_done(&mut harness.packet_rx, 0).await;
+    }
 
     ctrl_tx
         .send(fec_status_frame(

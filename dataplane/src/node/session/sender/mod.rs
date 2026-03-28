@@ -317,6 +317,12 @@ impl SenderShared {
         round_id: u32,
     ) -> QuorumWaitOutcome {
         let Some(timeout_at) = self.quorum_liveness.timeout_at() else {
+            warn!(
+                session_id = self.session.session_id,
+                round_id,
+                reason = "quorum_feedback_wait_not_started",
+                "Lossless sender aborted because quorum feedback wait had no active timeout budget"
+            );
             return QuorumWaitOutcome::Closed;
         };
 
@@ -329,6 +335,12 @@ impl SenderShared {
         tokio::select! {
             maybe_frame = ctrl_rx.recv() => {
                 let Some(frame) = maybe_frame else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        round_id,
+                        reason = "control_channel_closed",
+                        "Lossless sender aborted while waiting for quorum feedback because the control channel closed"
+                    );
                     return QuorumWaitOutcome::Closed;
                 };
                 self.handle_control(frame, mode);
@@ -384,6 +396,11 @@ impl SenderShared {
         tokio::select! {
             maybe_frame = ctrl_rx.recv() => {
                 let Some(frame) = maybe_frame else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        reason = "control_channel_closed",
+                        "Lossless sender aborted while waiting for more control because the control channel closed"
+                    );
                     return false;
                 };
                 self.handle_control(frame, mode);

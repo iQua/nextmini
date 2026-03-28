@@ -87,7 +87,7 @@ impl super::ModeHooks for PlainSender {
                             peer_id,
                             round_id,
                             next_burst_id = self.feedback_open_round_id.saturating_add(1),
-                            control_latency_ms = shared
+                            control_wait_ms = shared
                                 .quorum_liveness
                                 .started_at()
                                 .map(|started_at| started_at.elapsed().as_millis() as u64),
