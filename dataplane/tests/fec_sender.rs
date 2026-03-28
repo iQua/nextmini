@@ -165,7 +165,9 @@ async fn sender_starts_repair_after_first_receiver_need_without_waiting_for_ever
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    wait_for_source_done(&mut harness.packet_rx, 0).await;
+    for _ in 0..4 {
+        wait_for_source_done(&mut harness.packet_rx, 0).await;
+    }
 
     ctrl_tx
         .send(fec_status_frame(
@@ -577,7 +579,7 @@ async fn sender_accepts_delayed_control_feedback_before_peer_report_timeout() {
             .expect("sender task timed out")
             .expect("sender task failed"),
         SessionOutcome::Completed,
-        "slow control should not false-timeout when the missing peer reports before the timeout budget expires"
+        "slow control should not false-timeout when the missing peer reports after repeated solicitations but before the timeout budget expires"
     );
 }
 
