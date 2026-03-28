@@ -139,6 +139,27 @@ It ensures a late `Need(r)` from a slow receiver is still meaningful as long as 
 - plain mode: missing block ranges
 - FEC mode: per-block deficit symbols
 
+### Canonical `Need` encoding
+
+Phase 1 defines same-round equality on canonical wire form.
+
+- plain `Need` ranges must be sorted, coalesced, and non-overlapping
+- FEC `Need` deficits must be sorted by block id, contain at most one entry per block, and omit zero deficits
+
+Receivers must canonicalize before encoding.
+
+Same-round immutability is then checked byte-for-byte on the canonical encoding.
+
+### FEC deficit semantics
+
+In Phase 1, FEC `Need` is a heuristic snapshot of residual demand.
+
+It means:
+
+- “at least this much more repair may still be useful right now”
+- not “this is the minimal repair set required to decode”
+- not “this is a perfect decode certificate”
+
 ### Empty Need
 
 An empty `Need(round_id)` means:
@@ -191,14 +212,40 @@ In Phase 1:
 If the project later wants same-round mutable updates, add an explicit `report_seq`.
 That is not part of Phase 1.
 
+### Sender work accounting for the open round
+
+For the feedback-open round `r`, the sender must track two monotonic frontiers:
+
+1. `required_work_frontier(r)`
+2. `emitted_work_frontier(r)`
+
+`required_work_frontier(r)` summarizes all work implied by the merged same-round `Need(r)` snapshots seen so far.
+
+- in plain mode: the union of all missing block ranges
+- in FEC mode: the max-per-block deficit map
+
+`emitted_work_frontier(r)` summarizes what burst `r + 1` has already had accepted by local processor ingress against that required work.
+
+Rules:
+
+- `required_work_frontier(r)` may only grow while round `r` remains open
+- `emitted_work_frontier(r)` may only grow as work is accepted by local processor ingress
+- `work locally exhausted` means `emitted_work_frontier(r)` covers `required_work_frontier(r)` and the sender has no additional local frames buffered or waiting to be admitted for that frontier
+- if a late useful `Need(r)` arrives after burst `r + 1` appeared locally exhausted, the sender extends `required_work_frontier(r)`, resumes burst `r + 1` emission in place, and keeps `SourceDone(r + 1)` pending
+- a boolean “work_locally_exhausted” flag is not sufficient state by itself
+
+This is intentionally a sender-local accounting concept.
+
+Phase 1 does **not** attempt to infer downstream scheduler drain or full network drain before advancing rounds.
+
 ### Round closure
 
-A round does **not** close just because repair work drains.
+A round does **not** close just because repair work becomes locally exhausted.
 
 A round closes only when:
 
 1. every peer in the active session quorum has reported for that round
-2. all work induced by that round’s merged `Need(round_id)` snapshots has been fully emitted
+2. `emitted_work_frontier(r)` covers `required_work_frontier(r)`
 3. there is no pending same-round solicitation or replay work left to send
 
 ### Round advancement
@@ -221,13 +268,23 @@ The sender may declare session completion only when:
 If round `r` closes with all-empty `Need(r)`, the session completes at `r`.
 It does **not** open a synthetic empty round `r + 1`.
 
+### Round-scoped control acceptance
+
+For sender-side control handling:
+
+- `Need(round_id)` for the current feedback-open round is accepted
+- `Need(round_id)` for a closed round is stale and dropped
+- `Need(round_id)` for a future round is invalid and dropped
+
+Those drops must be logged and counted.
+
 ## Missing-Peer Handling
 
 This rewrite does **not** use a settle timer for repair start.
 
 But it also does **not** allow missing-peer reports to be ignored.
 
-If merged work drains while some quorum peers have not yet reported for the open round:
+If merged work becomes locally exhausted while some quorum peers have not yet reported for the open round:
 
 - the sender keeps the same round open
 - the sender retransmits `SourceDone(round_id)` on a solicitation interval
@@ -241,6 +298,31 @@ That rule handles:
 - missing peer reports without opening spurious empty rounds
 
 This plan intentionally chooses same-round solicitation/replay instead of a settle timer or completion-only grace window.
+
+### Frozen quorum liveness policy
+
+Phase 1 does **not** allow a frozen quorum peer to stall a session forever.
+
+Phase 1 also does **not** support mid-session quorum shrink or peer eviction.
+
+The failure policy is:
+
+- sender retransmits `SourceDone(round_id)` at a fixed `source_done_solicitation_interval`
+- sender tracks a per-peer solicitation count for the open round
+- sender tracks a hard `peer_report_timeout` from the first `SourceDone(round_id)` for that round
+- if a quorum peer remains silent past the timeout, the sender aborts the session with `PeerReportTimeout { peer_id, round_id }`
+
+Timeout calibration rule:
+
+- `peer_report_timeout` is a control-path timeout, not a payload-throughput timeout
+- it must exceed the configured control-path RTT budget
+- it must also exceed several `source_done_solicitation_interval` periods so healthy but slow control delivery does not false-abort
+
+This keeps Phase 1 simple:
+
+- no infinite wait
+- no silent peer eviction
+- one explicit abort reason for operator handling
 
 ## Ready And Quorum Semantics
 
@@ -264,15 +346,36 @@ The data gate opens when:
 
 ### Freeze point
 
-The quorum freezes when the sender emits the first payload burst for round `0`.
+The quorum freezes when the sender emits:
+
+- the first payload burst for round `0`, or
+- `SourceDone(0)` for a zero-byte object session
 
 Late `Ready` after that point does not join the quorum for that session.
+
+### Phase 1 identity normalization
+
+While `Ready.node_id` remains on the wire:
+
+- `Ready.node_id` must equal the transport-derived `peer_id`
+- quorum membership is stored keyed only by transport `peer_id`
+- `Ready` with an identity mismatch is rejected for quorum purposes
+
+Identity mismatches must be logged and counted.
 
 ### Final completion
 
 Only quorum peers count toward final completion.
 
 This avoids a protocol deadlock where `ready_grace` opens the data gate but non-ready peers still count toward the final completion quorum.
+
+### Non-quorum control handling
+
+After freeze:
+
+- `Need` from non-quorum peers is ignored
+- late `Ready` from non-quorum configured peers is ignored for the current session
+- those drops must be logged and counted
 
 ## Tree Identity Scope
 
@@ -300,6 +403,38 @@ Phase 1 therefore includes an explicit migration policy:
 
 If mixed-version rollout becomes necessary later, that is a separate dual-stack effort.
 
+Phase 1 rollout work also includes:
+
+- updating harnesses and fixtures that generate or parse old control kinds
+- making version mismatch logs explicit in production with local version, remote version, and session id
+- documenting that in-flight old-version frames after cutover will be dropped
+
+## Observability Requirements
+
+Phase 1 is not acceptable without logs or metrics for:
+
+- open feedback round id
+- current emitted burst id
+- first useful `Need` arrival
+- late or stale `Need` dropped
+- same-round changed `Need` rejected
+- solicitation count per peer
+- quorum membership and freeze point
+- non-quorum control dropped
+- `Ready.node_id` versus transport `peer_id` mismatch
+- completion reason versus abort reason
+- version mismatch drops
+- control-path latency for `SourceDone` and `Need`
+- receiver transition into passive-complete state
+
+## Abort Reason Exposure
+
+Phase 1 keeps the current coarse public outcome surface.
+
+- `PeerReportTimeout` is an internal abort reason
+- it must be exposed through logs and metrics
+- expanding public session outcome enums is deferred
+
 ## Sender Algorithm
 
 ### Shared sender rules
@@ -310,14 +445,17 @@ For both plain and FEC:
 2. send initial burst
 3. emit `SourceDone(0)`
 4. keep round `0` feedback-open
-5. begin emitting burst `1` as soon as the first useful `Need(0)` arrives
-6. continue merging additional `Need(0)` snapshots from other quorum peers while round `0` remains open
-7. if burst `1` drains but not all quorum peers reported for round `0`, retransmit `SourceDone(0)` and keep waiting
-8. once round `0` closes:
+5. if the active quorum is empty at `SourceDone(0)`, complete immediately
+6. begin emitting burst `1` as soon as the first useful `Need(0)` arrives
+7. continue merging additional `Need(0)` snapshots from other quorum peers while round `0` remains open
+8. if burst `1` appears locally exhausted and a later useful `Need(0)` extends `required_work_frontier(0)`, resume burst `1` emission in place and keep `SourceDone(1)` pending
+9. if burst `1` is locally exhausted but not all quorum peers reported for round `0`, retransmit `SourceDone(0)` and keep waiting
+10. if a quorum peer stays silent past `peer_report_timeout`, abort the session
+11. once round `0` closes:
    - complete immediately if all reports were empty
-   - otherwise, if burst `1` has already drained, emit `SourceDone(1)` immediately
-   - otherwise wait until burst `1` drains, then emit `SourceDone(1)`
-9. repeat the same pattern for round `r` and burst `r + 1`
+   - otherwise, if burst `1` is already locally exhausted, emit `SourceDone(1)` immediately
+   - otherwise wait until burst `1` is locally exhausted, then emit `SourceDone(1)`
+12. repeat the same pattern for round `r` and burst `r + 1`
 
 ### Plain mode
 
@@ -334,6 +472,7 @@ For a given open round:
 - `Need(round_id)` contributes a full-snapshot per-block deficit map
 - sender merges peer reports by taking the max deficit per block
 - sender may begin repair as soon as first useful report arrives
+- late useful same-round reports may materially increase repair oversend and can force extra rounds relative to the current barriered design
 - sender uses work-conserving tree scheduling where transport contract allows it
 
 ### Throughput claim scope
@@ -347,6 +486,11 @@ On shared-queue paths:
 - protocol latency may improve
 - but tree-proportional throughput is not guaranteed
 
+Regardless of ingress mode:
+
+- repair latency is still gated by control-path delivery of `SourceDone` and `Need`
+- timeout behavior must therefore be calibrated to control latency, not payload throughput alone
+
 ## Receiver Algorithm
 
 ### Shared receiver rules
@@ -357,7 +501,7 @@ For both plain and FEC:
 2. send `Ready`
 3. on `SourceDone(round_id)`, compute one full residual snapshot
 4. send `Need(round_id, snapshot)` immediately
-5. cache that `Need(round_id)` for replay
+5. cache the canonical encoded `Need(round_id)` for replay
 6. if duplicate `SourceDone(round_id)` arrives, replay the exact cached `Need(round_id)`
 
 Late-arriving source data after `SourceDone(round_id)` is allowed.
@@ -365,6 +509,25 @@ Late-arriving source data after `SourceDone(round_id)` is allowed.
 It does not mutate the already-issued `Need(round_id)`.
 
 It only affects what the receiver reports in the next round.
+
+## Receiver Lifetime After Local Completion
+
+Local completion is monotonic once the receiver has fully reconstructed the object.
+
+Phase 1 does **not** let a receiver exit immediately on local completion.
+
+Instead it enters a passive-complete state:
+
+- the receiver remains live for the session
+- on every later `SourceDone(round_id)`, it emits a canonical empty `Need(round_id)`
+- it updates its replay cache to that later round id
+- it remains authoritative for future-round empty replies until local session termination
+
+Phase 1 does **not** let runtime synthesize empty `Need` for future round ids after the live receiver is gone.
+
+Phase 1 also does **not** add a new sender terminal control.
+
+So a passive-complete receiver remains live until local session termination, abort, or runtime cleanup.
 
 ### No settle timer
 
@@ -376,6 +539,24 @@ Rationale:
 - speculative repair is acceptable
 - correctness is preserved by full-snapshot `Need`, same-round replay, and explicit round closure rules
 - oversend is an accepted latency tradeoff in Phase 1, especially in FEC mode
+- in FEC mode, that oversend can be material because deficits are heuristic snapshots and same-round immutable
+
+## Replay Ownership And Handoff
+
+Replay state must have exactly one owner at any instant.
+
+Ownership model:
+
+- while the receiver task is live, it owns the cached canonical `Need(round_id)` for the open round
+- before the receiver task exits or is torn down, it transfers that cached replay state to runtime handoff storage
+- after handoff, runtime owns replay for that receiver
+- completed receiver replay is a specialized form of runtime-owned replay, not a separate semantic model
+
+No-gap handoff rule:
+
+- duplicates arriving during teardown must observe either live receiver-owned replay state or runtime-owned replay state
+- there must never be an interval where neither layer can answer replay for the latest cached round
+- while a live receiver task exists, inbound duplicates must be delivered to that live task; runtime-owned replay may answer only after ownership flips and the live session entry is no longer authoritative
 
 ## Runtime Replay
 
@@ -387,7 +568,6 @@ Phase 1 replay must support:
 
 - latest cached non-empty `Need(round_id)`
 - latest cached empty `Need(round_id)`
-- duplicate payload
 - duplicate `SourceDone(round_id)`
 
 Replay must never synthesize a changed same-round `Need`.
@@ -396,23 +576,37 @@ Replay must never emit feedback for a closed round.
 
 Replay must preserve the single-feedback-open-round rule even if later bursts have already been partially emitted.
 
+Duplicate `SourceDone(round_id)` is the only authoritative replay or solicitation trigger in Phase 1.
+
+Phase 1 does **not** use duplicate payload as an authoritative trigger for synthesized round-aware replay.
+
 ## Phase 2 Cleanup Rules
 
 Phase 2 cleanup happens only after Phase 1 semantics are proven in tests.
 
-### Safe candidates for Phase 2
+### Phase 2a mini-project: `payload_len` removal
 
-1. remove `payload_len`
-2. migrate `Ready` to empty payload if transport `peer_id` is proven on all handshake paths
-3. consider removing inner `BlockSymbol.tree_id` if outer transport metadata is sufficient everywhere
+- separate task
+- only after the full behavioral matrix is green
 
-### Explicitly deferred until a separate tree-contract audit
+### Phase 2b mini-project: empty `Ready`
 
-1. remove manifest `tree_ids`
-2. remove inner `session_id`
-3. simplify the inner frame header aggressively
+- separate task
+- only after transport-derived `peer_id` is proven on every handshake path
+- only after the full behavioral matrix is green
 
-Those are not part of the core rewrite.
+### Explicitly not low-risk in Phase 2
+
+- `BlockSymbol.tree_id` removal
+- manifest `tree_ids` removal
+- inner `session_id` removal
+- aggressive inner header simplification
+
+`BlockSymbol.tree_id` removal is a transport/routing mini-project, not a trivial cleanup.
+
+Manifest `tree_ids` removal is explicitly out of scope until a transport/routing contract redesign proves it safe.
+
+`BlockSymbol.tree_id` is also preserved by default in this plan unless a transport/routing redesign proves outer-tree identity is available everywhere validation and scheduling need it.
 
 ## Invariants
 
@@ -425,7 +619,7 @@ These invariants must be encoded in tests before substantial implementation work
 5. Same-round changed `Need` payloads are rejected in Phase 1.
 6. Sender may start repair after the first useful `Need(round_id)`.
 7. Sender may not close a round until every quorum peer reported.
-8. Sender may not advance the round just because merged work drained.
+8. Sender may not advance the round just because merged work becomes locally exhausted.
 9. Sender retransmits `SourceDone(round_id)` while waiting for missing peer reports.
 10. Sender completes only after all quorum peers report empty `Need` for the closed round.
 11. Quorum freezes when the first payload burst is emitted.
@@ -434,6 +628,18 @@ These invariants must be encoded in tests before substantial implementation work
 14. Fast-tree utilization claims are limited to tree-visible ingress paths.
 15. The sender may emit burst `r + 1` before round `r` closes, but may not emit `SourceDone(r + 1)` until round `r` is closed.
 16. If round `r` closes with all-empty `Need(r)`, the session completes without opening `r + 1`.
+17. A silent frozen quorum peer cannot stall the session forever; the session aborts on `PeerReportTimeout`.
+18. `required_work_frontier(r)` is monotonic while round `r` is open.
+19. `emitted_work_frontier(r)` is monotonic and `SourceDone(r + 1)` is forbidden until it covers `required_work_frontier(r)`.
+20. Late useful `Need(r)` extends the current round work frontier; it does not open a second feedback round.
+21. Same-round `Need` equality is byte-for-byte on canonical encoding.
+22. Non-quorum control is dropped and observed.
+23. Zero-byte object sessions freeze quorum on `SourceDone(0)` and complete through the same all-empty round rules.
+24. `Ready.node_id` must match transport `peer_id` in Phase 1 while `Ready.node_id` remains on the wire.
+25. Once a receiver reaches monotonic local completion, it must still answer every later `SourceDone(k)` with empty `Need(k)` until local session termination.
+26. Duplicate `SourceDone(round_id)` is the only authoritative replay trigger in Phase 1.
+27. `Need(round_id)` for a future round is invalid and dropped deterministically.
+28. If the active quorum is empty at `SourceDone(0)`, the sender completes immediately without waiting for `Need`.
 
 ## TDD Rule
 
@@ -457,31 +663,48 @@ T2 -> T7
 T2 -> T8
 T2 -> T9
 T2 -> T10
+T2 -> T11
 T3 -> T4
 T3 -> T5
-T3 -> T11
+T3 -> T12
+T3 -> T13
 T4 -> T8
 T4 -> T9
 T4 -> T10
-T4 -> T11
+T4 -> T12
+T4 -> T13
 T5 -> T8
 T5 -> T9
 T5 -> T10
-T5 -> T11
-T6 -> T12
+T5 -> T12
+T5 -> T13
+T6 -> T13
 T7 -> T8
 T7 -> T9
 T7 -> T10
+T7 -> T11
+T7 -> T12
+T7 -> T13
 T8 -> T9
 T8 -> T10
 T8 -> T11
-T9 -> T11
-T10 -> T11
-T7 -> T11
+T8 -> T12
+T8 -> T13
+T11 -> T9
+T11 -> T10
+T9 -> T13
+T9 -> T14
+T10 -> T13
+T10 -> T14
 T11 -> T12
 T11 -> T13
+T11 -> T14
 T12 -> T13
+T12 -> T14
 T13 -> T14
+T14 -> T15
+T15 -> T16
+T16 -> T17
 ```
 
 ## Detailed Tasks
@@ -514,8 +737,9 @@ Acceptance criteria:
   - current burst id
   - per-peer report status
   - quorum membership
+  - `required_work_frontier(r)` for the open round
+  - `emitted_work_frontier(r)` for work already accepted by local processor ingress
   - whether a non-empty next burst has been emitted in response to the open round
-  - whether all work induced by the open round has drained
   - whether the next `SourceDone` is pending on round closure
 - Add small helper types instead of scattering ad hoc counters and booleans through plain/FEC sender code.
 
@@ -523,6 +747,8 @@ Acceptance criteria:
 
 - Plain and FEC sender rewrites can share one round/quorum vocabulary.
 - Burst state versus feedback-open state is explicit in code before behavior rewrites start.
+- Work accounting is represented as explicit frontiers, not a single boolean.
+- The plan does not depend on unobservable network-drain signals.
 
 ### T3. Add explicit migration/versioning policy
 
@@ -530,12 +756,14 @@ Acceptance criteria:
 - Bump `LOSSLESS_SESSION_VERSION`.
 - Document Phase 1 as a flag-day protocol change.
 - Ensure unsupported protocol versions fail fast.
+- Update harnesses, fixtures, and logs for the hard wire break.
 - Add tests for version rejection.
 
 Acceptance criteria:
 
 - The plan no longer hand-waves migration.
 - Version mismatch behavior is explicit and tested.
+- Version mismatch is obvious in production logs.
 
 ### T4. Replace `Eot` with `SourceDone { round_id }`
 
@@ -556,12 +784,15 @@ Acceptance criteria:
 - Add `Need { round_id, payload }`.
 - Remove `PlainStatus` and `FecStatus` from live protocol paths.
 - Encode empty payload as “complete.”
+- Canonicalize `Need` payloads before encode.
+- Reject malformed `Need` bodies that do not match manifest mode.
 - Reject same-round changed payloads in Phase 1.
 
 Acceptance criteria:
 
 - `Need` is the only receiver-to-sender report.
 - Same-round duplicate handling is deterministic.
+- Same-round equality is byte-for-byte on canonical encoding.
 
 ### T6. Remove dead compatibility variants
 
@@ -578,63 +809,90 @@ Acceptance criteria:
 
 - depends_on: [T2]
 - Make the active session quorum explicit.
-- Freeze quorum when the first payload burst for round `0` is emitted.
+- Freeze quorum when the first payload burst for round `0` is emitted, or when `SourceDone(0)` is emitted for a zero-byte object.
+- Require `Ready.node_id == transport peer_id` while `Ready.node_id` remains on the wire.
+- Store quorum membership keyed only by transport `peer_id`.
 - Define late `Ready` as non-participating for that session.
-- Add tests for `ready_grace` expiration and final completion with non-ready configured receivers.
+- Define fixed-interval solicitation and `peer_report_timeout` abort behavior for silent frozen peers.
+- Define `Need` from non-quorum peers as ignored with logging and metrics.
+- Add tests for `ready_grace` expiration, final completion with non-ready configured receivers, silent frozen-peer timeout, and `Ready.node_id` mismatch.
 
 Acceptance criteria:
 
 - Final completion quorum is unambiguous.
 - `ready_grace` no longer creates hidden completion ambiguity.
+- Frozen quorum peers have a defined failure path instead of indefinite wait.
+- Phase 1 does not allow split identity between readiness and later round reporting.
 
 ### T8. Rewrite receiver logic around cached per-round `Need`
 
 - depends_on: [T2, T4, T5, T7]
 - Plain receiver:
   - compute one missing-range snapshot on `SourceDone(round_id)`
-  - cache it
+  - canonicalize and cache it
   - replay it on duplicate `SourceDone(round_id)`
 - FEC receiver:
   - compute one deficit snapshot on `SourceDone(round_id)`
-  - cache it
+  - canonicalize and cache it
   - replay it on duplicate `SourceDone(round_id)`
 - Keep accepting late symbols after `SourceDone(round_id)`, but do not mutate the cached same-round snapshot.
+- Define zero-byte object receiver behavior as immediate empty `Need(0)` after `SourceDone(0)`.
 
 Acceptance criteria:
 
 - Receiver emits exactly one distinct `Need` per round.
 - Duplicate `SourceDone` produces exact replay, not recomputation drift.
+- Duplicate `SourceDone` after additional late data still replays the original cached snapshot.
+
+### T11. Define passive-complete receiver lifetime and future-round behavior
+
+- depends_on: [T2, T4, T5, T7, T8]
+- Define the passive-complete receiver state once local completion becomes monotonic.
+- Require the live receiver to remain available and emit canonical empty `Need(round_id)` on every later `SourceDone(round_id)`.
+- Keep future-round empty replies owned by the live receiver in Phase 1; do not synthesize them in runtime after receiver exit.
+- Define zero-byte object behavior and the empty-active-quorum sender fast path explicitly.
+- Add tests for later-round empty replies from locally complete receivers.
+
+Acceptance criteria:
+
+- Local receiver completion does not create a future-round protocol hole.
+- Passive-complete receivers can satisfy later quorum rounds without inventing new wire messages.
 
 ### T9. Rewrite the plain sender around the shared round state machine
 
-- depends_on: [T2, T4, T5, T7, T8]
+- depends_on: [T2, T4, T5, T7, T8, T11]
 - Remove the current all-receiver barrier implementation.
 - Start retransmission after the first useful `Need(round_id)` from a quorum peer.
 - Merge additional same-round peer snapshots into one block retransmit set.
 - Allow burst `r + 1` emission to begin while feedback for round `r` remains open.
-- If work drains and some quorum peers still have not reported:
+- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend `required_work_frontier(r)` and resume burst `r + 1` emission in place.
+- If work is locally exhausted and some quorum peers still have not reported:
   - keep the round open
   - retransmit `SourceDone(round_id)`
   - do not advance the round
+- Abort on `PeerReportTimeout` instead of waiting forever for a silent frozen peer.
 - If the round closes:
   - complete if all reports are empty
-  - otherwise emit `SourceDone(r + 1)` only after round `r` is closed and burst `r + 1` has drained
+  - otherwise emit `SourceDone(r + 1)` only after round `r` is closed and burst `r + 1` is locally exhausted
 
 Acceptance criteria:
 
 - Plain sender begins repair early without losing slow-peer correctness.
 - Plain sender no longer opens empty follow-up rounds.
 - Plain sender never has two feedback-open rounds at once.
+- Plain sender accounts for late useful same-round reports without reopening feedback.
 
 ### T10. Rewrite the FEC sender around the shared round state machine
 
-- depends_on: [T2, T4, T5, T7, T8]
+- depends_on: [T2, T4, T5, T7, T8, T11]
 - Remove the current all-receiver report barrier implementation.
 - Start repair symbol transmission after the first useful `Need(round_id)` from a quorum peer.
 - Merge same-round peer snapshots by taking max per-block deficit.
 - Allow burst `r + 1` emission to begin while feedback for round `r` remains open.
-- Keep the round open until every quorum peer reported and merged work drained.
+- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend `required_work_frontier(r)` and resume burst `r + 1` emission in place.
+- Keep the round open until every quorum peer reported and merged work is locally exhausted.
 - Retransmit `SourceDone(round_id)` while waiting for missing peer reports.
+- Abort on `PeerReportTimeout` instead of waiting forever for a silent frozen peer.
 - Scope fast-tree utilization expectations explicitly to tree-visible ingress behavior.
 
 Acceptance criteria:
@@ -643,40 +901,84 @@ Acceptance criteria:
 - FEC sender still gives slow peers a correct reporting window.
 - The implementation does not over-claim behavior on shared-queue ingress.
 - FEC sender never opens feedback for burst `r + 1` before round `r` closes.
+- FEC sender treats oversend and extra rounds as explicit latency tradeoffs, not accidental side effects.
 
-### T11. Update runtime replay and stale-control handling
+### T12. Define replay ownership and no-gap handoff
 
-- depends_on: [T2, T3, T4, T5, T7, T8, T9, T10]
+- depends_on: [T2, T7, T8, T11]
+- Specify whether replay state is owned by the live receiver task, runtime handoff state, or completed replay state at each lifecycle point.
+- Implement an explicit no-gap handoff from receiver-owned replay to runtime-owned replay during teardown and completion.
+- Define delivery precedence so the live receiver remains authoritative until handoff completes.
+- Add tests for receiver/runtime replay handoff races and for preventing handoff while future rounds may still require live passive-complete replies.
+
+Acceptance criteria:
+
+- Replay ownership is explicit at every lifecycle point.
+- Duplicates during teardown cannot fall into a replay hole.
+- Live delivery and replay cannot both answer the same duplicate.
+- Runtime handoff does not preempt a passive-complete receiver that may still need to answer later rounds.
+
+### T13. Update runtime replay and stale-control handling
+
+- depends_on: [T3, T4, T5, T7, T8, T9, T10, T11, T12]
 - Rewrite completed and partially-complete receiver replay to be round-aware.
-- Replay the latest cached `Need(round_id)` when duplicate payload or duplicate `SourceDone(round_id)` indicates the sender may still be on that round.
+- Replay the latest cached `Need(round_id)` only on duplicate `SourceDone(round_id)` for the relevant round.
 - Reject stale control for closed rounds.
+- Drop future-round `Need(round_id)` deterministically.
 - Add tests for:
   - duplicate `SourceDone`
   - late `Need(round_id)` while round still open
   - stale `Need(round_id)` after round closure
   - feedback for round `r + 1` not opening until round `r` is closed
+  - non-quorum peer `Need` after freeze
+  - duplicate payload after burst `r + 1` has begun does not trigger wrong-round replay
+  - future-round `Need` dropped deterministically
 
 Acceptance criteria:
 
 - Replay is round-aware, not just completion-aware.
 - Stale control handling is explicit and deterministic.
+- Phase 1 does not use duplicate payload as an authoritative replay trigger.
 
-### T12. Phase 2 low-risk wire cleanup
+### T14. Behavioral integration coverage and observability
 
-- depends_on: [T6, T11]
-- Evaluate and implement only low-risk wire cleanups:
-  - remove `payload_len`
-  - possibly migrate `Ready` to empty payload if transport `peer_id` is proven on all handshake paths
-- Add tests proving equivalent behavior.
+- depends_on: [T3, T4, T5, T6, T7, T8, T9, T10, T11, T12, T13]
+- Add the full behavioral integration matrix before any cleanup work.
+- Implement the required logs and metrics for round ids, burst ids, solicitation, quorum membership, stale drops, abort reason, version mismatch, passive-complete state, and `Ready` identity mismatch.
+- Make the quorum-freeze behavior change operator-visible in logs and metrics.
+- Add explicit performance-oriented coverage for control-path latency asymmetry with tree-visible data paths and for slow-control/no-false-timeout behavior.
 
 Acceptance criteria:
 
-- Only low-risk cleanup lands in this phase.
-- Cleanup does not change round/quorum semantics.
+- The behavioral matrix is green before cleanup begins.
+- Operators can observe round progress, drops, and aborts.
 
-### T13. Phase 2 tree-contract audit and selective field cleanup
+### T15. Phase 2a `payload_len` removal mini-project
 
-- depends_on: [T11, T12]
+- depends_on: [T14]
+- Remove `payload_len` only.
+- Add tests proving no semantic change.
+
+Acceptance criteria:
+
+- `payload_len` cleanup is isolated from every other wire change.
+- No behavioral semantics change.
+
+### T16. Phase 2b empty `Ready` mini-project
+
+- depends_on: [T15]
+- Prove transport-derived `peer_id` exists and is stable on every handshake/control path.
+- Only then migrate `Ready` to an empty payload.
+- Add tests and logs around late/non-quorum readiness.
+
+Acceptance criteria:
+
+- Empty `Ready` is backed by transport identity proof, not assumption.
+- Handshake behavior remains observable.
+
+### T17. Phase 2c tree-contract audit only
+
+- depends_on: [T16]
 - Audit all current uses of tree identity across:
   - manifest validation
   - sender preflight
@@ -685,33 +987,17 @@ Acceptance criteria:
   - control-path routing for `SourceDone` and `Need`
   - receiver validation
 - Only after that audit:
-  - consider removing inner `BlockSymbol.tree_id`
-  - decide whether manifest `tree_ids` can ever be removed
-- Header simplification and inner `session_id` removal remain deferred unless the audit proves them safe and in-scope.
+- decide whether a later transport/routing redesign could ever remove `BlockSymbol.tree_id`
+- Keep manifest `tree_ids` removal explicitly out of scope unless a transport/routing redesign proves it safe.
+- Keep `BlockSymbol.tree_id` in place in this plan.
+- Header simplification and inner `session_id` removal remain deferred unless a separate audit proves them safe and in-scope.
 
 Acceptance criteria:
 
 - Tree-related cleanup is driven by a real dependency audit.
 - The plan no longer assumes tree identity is purely local when current code disproves that.
-
-### T14. Validation, integration coverage, and cleanup
-
-- depends_on: [T13]
-- Add full integration coverage for:
-  - slow peer reporting after fast-peer repair start
-  - identical vs changed duplicate `Need(round_id)`
-  - lost, duplicated, and out-of-order `SourceDone`
-  - work drained while missing peer reports
-  - `ready_grace` with non-ready configured receivers
-  - tree-visible vs shared-queue ingress behavior
-  - runtime replay of latest non-empty and final empty `Need`
-- Split `messages/src/lossless_session.rs` only after behavior is stable.
-- Remove obsolete cutover comments.
-
-Acceptance criteria:
-
-- The new protocol is behaviorally covered before further cleanup.
-- Cleanup is the last step, not the first.
+- Manifest `tree_ids` removal remains out of scope unless the transport contract changes.
+- `BlockSymbol.tree_id` is preserved unless a later redesign proves otherwise.
 
 ## Validation Matrix
 
@@ -725,8 +1011,11 @@ Must cover:
 - plain `Need(round_id, ranges)` roundtrip
 - FEC `Need(round_id, deficits)` roundtrip
 - empty `Need(round_id)` roundtrip
+- canonical `Need` equality encoding
+- malformed `Need` body rejected for the wrong manifest mode
 - unsupported protocol version rejection
 - removed dead control kinds rejected
+- `Ready.node_id` and transport `peer_id` mismatch rejected
 
 ### Dataplane crate
 
@@ -739,13 +1028,26 @@ Must cover:
 3. changed same-round `Need(r)` is rejected in Phase 1
 4. duplicate `SourceDone(r)` triggers exact replay of cached `Need(r)`
 5. lost `SourceDone(r)` is repaired by solicitation retransmit
-6. work drained while some quorum peers are still missing does not advance the round
+6. work is locally exhausted while some quorum peers are still missing does not advance the round
 7. non-ready peers excluded from final quorum after gate open
 8. sender starts repair after first useful `Need`
 9. sender completes only after all quorum peers reported empty `Need`
 10. tree-visible vs shared-queue ingress expectations are both covered
 11. sender may emit burst `r + 1` early, but `SourceDone(r + 1)` does not open feedback until round `r` closes
 12. closing an all-empty round completes the session without opening an empty follow-up round
+13. silent frozen quorum peer triggers repeated solicitation and then `PeerReportTimeout`
+14. late useful `Need(r)` after apparent burst `r + 1` local exhaustion extends the current work frontier in place
+15. duplicate `SourceDone(r)` after more data arrived replays cached `Need(r)`, not a recomputed snapshot
+16. non-quorum peer `Need` after freeze is dropped and logged
+17. receiver/runtime replay handoff race does not create a replay hole
+18. control-path latency asymmetry with tree-visible data paths is covered explicitly
+19. zero-byte object session freezes quorum on `SourceDone(0)` and completes correctly
+20. locally complete receiver answers later `SourceDone(r + 1)` with empty `Need(r + 1)`
+21. future-round `Need` is dropped deterministically
+22. duplicate payload after burst `r + 1` begins does not trigger wrong-round replay
+23. slow control path with fast data path does not false-timeout when timeout is properly budgeted
+24. empty active quorum at `SourceDone(0)` completes immediately
+25. runtime handoff does not preempt a passive-complete receiver while future rounds are still possible
 
 ### Full suite
 
@@ -754,15 +1056,24 @@ Must cover:
 ## Risks
 
 - Early repair may oversend relative to the current all-receiver barrier.
+- In FEC mode that oversend can be material, because deficits are heuristic snapshots and same-round immutable.
+- Early immutable non-empty `Need` can also force extra follow-up rounds that later in-flight source data would have avoided.
 - The burst-id versus feedback-open-round distinction must be implemented explicitly or the new protocol will race.
 - Quorum freeze changes session semantics and must be clearly communicated.
+- Silent frozen-peer handling now fails by abort rather than indefinite wait; operators must understand that behavior.
+- Passive-complete receivers may stay alive longer because Phase 1 does not add a terminal sender control.
 - Same-round `Need` immutability is a deliberate simplification; changing it later requires `report_seq`.
+- Control-path latency may still dominate end-to-end repair latency even when payload trees are fast.
 - Tree cleanup remains risky until the transport/scheduling contract is audited.
 
 ## Non-Goals
 
 - No settle timer for repair start
 - No attempt to infer full network drain before feedback
+- No mid-session quorum shrink or peer eviction in Phase 1
+- No sender terminal control in Phase 1
+- No runtime synthesis of future-round empty `Need` after the live receiver has exited
+- No public API expansion for abort reasons in Phase 1
 - No mixed-version interoperability in Phase 1
 - No aggressive header simplification in Phase 1
 - No claim that shared-queue ingress can achieve tree-proportional throughput
@@ -775,11 +1086,14 @@ Must cover:
 4. Add `SourceDone`.
 5. Add `Need`.
 6. Remove dead control kinds.
-7. Implement quorum rules.
+7. Implement quorum rules and liveness failure policy.
 8. Rewrite receiver behavior.
-9. Rewrite plain sender.
-10. Rewrite FEC sender.
-11. Rewrite runtime replay.
-12. Do only low-risk wire cleanup.
-13. Audit tree-contract dependencies before any further field removal.
-14. Finish with integration coverage and cleanup.
+9. Define passive-complete receiver lifetime.
+10. Rewrite plain sender.
+11. Rewrite FEC sender.
+12. Define replay ownership and handoff.
+13. Rewrite runtime replay.
+14. Make the behavioral matrix and observability green.
+15. Do `payload_len` cleanup only.
+16. Do empty `Ready` only if transport identity proof is complete.
+17. Audit tree-contract dependencies before any tree-field cleanup.
