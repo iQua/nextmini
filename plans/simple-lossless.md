@@ -150,6 +150,10 @@ Receivers must canonicalize before encoding.
 
 Same-round immutability is then checked byte-for-byte on the canonical encoding.
 
+Decoders must reject noncanonical `Need` bodies.
+
+That prevents semantic equality from depending on encoder quirks.
+
 ### FEC deficit semantics
 
 In Phase 1, FEC `Need` is a heuristic snapshot of residual demand.
@@ -208,6 +212,11 @@ In Phase 1:
 - a receiver emits at most one `Need(round_id)` per observed `SourceDone(round_id)`
 - duplicate `SourceDone(round_id)` may trigger replay of that **same exact** `Need(round_id)`
 - same-round changed `Need` payloads are **not allowed**
+
+Protocol action:
+
+- changed same-round `Need` from a quorum peer is a session-fatal protocol violation
+- changed same-round `Need` from a non-quorum peer is dropped and counted
 
 If the project later wants same-round mutable updates, add an explicit `report_seq`.
 That is not part of Phase 1.
@@ -275,6 +284,8 @@ For sender-side control handling:
 - `Need(round_id)` for the current feedback-open round is accepted
 - `Need(round_id)` for a closed round is stale and dropped
 - `Need(round_id)` for a future round is invalid and dropped
+- changed same-round `Need(round_id)` from a quorum peer aborts the session
+- changed same-round `Need(round_id)` from a non-quorum peer is dropped
 
 Those drops must be logged and counted.
 
@@ -360,8 +371,9 @@ While `Ready.node_id` remains on the wire:
 - `Ready.node_id` must equal the transport-derived `peer_id`
 - quorum membership is stored keyed only by transport `peer_id`
 - `Ready` with an identity mismatch is rejected for quorum purposes
+- `Ready` or `Need` with no transport `peer_id` is invalid and dropped
 
-Identity mismatches must be logged and counted.
+Identity mismatches and missing transport identity must be logged and counted.
 
 ### Final completion
 
@@ -406,7 +418,7 @@ If mixed-version rollout becomes necessary later, that is a separate dual-stack 
 Phase 1 rollout work also includes:
 
 - updating harnesses and fixtures that generate or parse old control kinds
-- making version mismatch logs explicit in production with local version, remote version, and session id
+- adding a header-peek or decode-error path so version mismatch logs can include local version, observed remote version, and session id before the frame is dropped
 - documenting that in-flight old-version frames after cutover will be dropped
 
 ## Observability Requirements
@@ -422,10 +434,13 @@ Phase 1 is not acceptable without logs or metrics for:
 - quorum membership and freeze point
 - non-quorum control dropped
 - `Ready.node_id` versus transport `peer_id` mismatch
+- missing transport `peer_id` on inbound control
+- changed same-round `Need` protocol violations
 - completion reason versus abort reason
 - version mismatch drops
 - control-path latency for `SourceDone` and `Need`
-- receiver transition into passive-complete state
+- receiver transition into `object_complete`, `passive_complete`, and `session_finished`
+- passive-complete local GC reason
 
 ## Abort Reason Exposure
 
@@ -510,11 +525,24 @@ It does not mutate the already-issued `Need(round_id)`.
 
 It only affects what the receiver reports in the next round.
 
+Receiver-side stale-boundary rule:
+
+- once a receiver has already handled `SourceDone(k)`, any later-arriving `SourceDone(j)` with `j < k` is stale and must be dropped
+- the receiver must not answer a stale older `SourceDone` with its latest cached empty `Need`
+
 ## Receiver Lifetime After Local Completion
 
 Local completion is monotonic once the receiver has fully reconstructed the object.
 
-Phase 1 does **not** let a receiver exit immediately on local completion.
+Phase 1 splits receiver lifecycle into:
+
+1. `object_complete`
+2. `passive_complete`
+3. `session_finished`
+
+`object_complete` means the object is fully reconstructed locally.
+
+It does **not** mean the task may exit.
 
 Instead it enters a passive-complete state:
 
@@ -527,7 +555,21 @@ Phase 1 does **not** let runtime synthesize empty `Need` for future round ids af
 
 Phase 1 also does **not** add a new sender terminal control.
 
-So a passive-complete receiver remains live until local session termination, abort, or runtime cleanup.
+So Phase 1 needs an explicit local finish rule.
+
+The receiver enters `session_finished` only when one of these happens:
+
+- the local session aborts
+- the local runtime tears the session down explicitly
+- a passive-complete local-GC timeout expires after the most recent answered `SourceDone(round_id)` and no later payload or `SourceDone` arrives
+
+Local GC rule:
+
+- `session_finish_timeout` must exceed `peer_report_timeout`
+- it must also exceed the control-path RTT budget
+- object reconstruction alone is never sufficient for task exit
+
+This makes receiver termination explicit without adding a new terminal wire control in Phase 1.
 
 ### No settle timer
 
@@ -640,6 +682,12 @@ These invariants must be encoded in tests before substantial implementation work
 26. Duplicate `SourceDone(round_id)` is the only authoritative replay trigger in Phase 1.
 27. `Need(round_id)` for a future round is invalid and dropped deterministically.
 28. If the active quorum is empty at `SourceDone(0)`, the sender completes immediately without waiting for `Need`.
+29. Changed same-round `Need` from a quorum peer is a session-fatal protocol violation.
+30. Noncanonical `Need` bodies are rejected at decode time.
+31. `Ready` or `Need` with no transport `peer_id` is invalid and dropped.
+32. `object_complete` does not imply receiver exit; only `session_finished` may exit.
+33. Passive-complete receivers may exit only after local abort, explicit teardown, or `session_finish_timeout`.
+34. Receiver-side stale `SourceDone(j < k)` is dropped.
 
 ## TDD Rule
 
@@ -756,6 +804,7 @@ Acceptance criteria:
 - Bump `LOSSLESS_SESSION_VERSION`.
 - Document Phase 1 as a flag-day protocol change.
 - Ensure unsupported protocol versions fail fast.
+- Add a header-peek or lightweight decode-error path so unsupported versions can be logged before the frame is dropped.
 - Update harnesses, fixtures, and logs for the hard wire break.
 - Add tests for version rejection.
 
@@ -764,6 +813,7 @@ Acceptance criteria:
 - The plan no longer hand-waves migration.
 - Version mismatch behavior is explicit and tested.
 - Version mismatch is obvious in production logs.
+- Mixed-version failures do not degrade into silent `ready_grace` or timeout symptoms without a diagnostic.
 
 ### T4. Replace `Eot` with `SourceDone { round_id }`
 
@@ -785,6 +835,7 @@ Acceptance criteria:
 - Remove `PlainStatus` and `FecStatus` from live protocol paths.
 - Encode empty payload as “complete.”
 - Canonicalize `Need` payloads before encode.
+- Reject noncanonical `Need` bodies at decode time.
 - Reject malformed `Need` bodies that do not match manifest mode.
 - Reject same-round changed payloads in Phase 1.
 
@@ -793,6 +844,7 @@ Acceptance criteria:
 - `Need` is the only receiver-to-sender report.
 - Same-round duplicate handling is deterministic.
 - Same-round equality is byte-for-byte on canonical encoding.
+- Canonicality is enforced on both encode and decode.
 
 ### T6. Remove dead compatibility variants
 
@@ -812,10 +864,11 @@ Acceptance criteria:
 - Freeze quorum when the first payload burst for round `0` is emitted, or when `SourceDone(0)` is emitted for a zero-byte object.
 - Require `Ready.node_id == transport peer_id` while `Ready.node_id` remains on the wire.
 - Store quorum membership keyed only by transport `peer_id`.
+- Treat `Ready` or `Need` with no transport `peer_id` as invalid and drop them with logs and metrics.
 - Define late `Ready` as non-participating for that session.
 - Define fixed-interval solicitation and `peer_report_timeout` abort behavior for silent frozen peers.
 - Define `Need` from non-quorum peers as ignored with logging and metrics.
-- Add tests for `ready_grace` expiration, final completion with non-ready configured receivers, silent frozen-peer timeout, and `Ready.node_id` mismatch.
+- Add tests for `ready_grace` expiration, final completion with non-ready configured receivers, silent frozen-peer timeout, `Ready.node_id` mismatch, and missing transport `peer_id`.
 
 Acceptance criteria:
 
@@ -836,6 +889,7 @@ Acceptance criteria:
   - canonicalize and cache it
   - replay it on duplicate `SourceDone(round_id)`
 - Keep accepting late symbols after `SourceDone(round_id)`, but do not mutate the cached same-round snapshot.
+- Drop stale older `SourceDone(j < k)` once a later round has already been handled.
 - Define zero-byte object receiver behavior as immediate empty `Need(0)` after `SourceDone(0)`.
 
 Acceptance criteria:
@@ -843,20 +897,24 @@ Acceptance criteria:
 - Receiver emits exactly one distinct `Need` per round.
 - Duplicate `SourceDone` produces exact replay, not recomputation drift.
 - Duplicate `SourceDone` after additional late data still replays the original cached snapshot.
+- Receiver-side stale `SourceDone` is dropped, not answered with a newer cached `Need`.
 
 ### T11. Define passive-complete receiver lifetime and future-round behavior
 
 - depends_on: [T2, T4, T5, T7, T8]
+- Split receiver lifecycle into `object_complete`, `passive_complete`, and `session_finished`.
 - Define the passive-complete receiver state once local completion becomes monotonic.
 - Require the live receiver to remain available and emit canonical empty `Need(round_id)` on every later `SourceDone(round_id)`.
 - Keep future-round empty replies owned by the live receiver in Phase 1; do not synthesize them in runtime after receiver exit.
 - Define zero-byte object behavior and the empty-active-quorum sender fast path explicitly.
-- Add tests for later-round empty replies from locally complete receivers.
+- Define `session_finish_timeout` and the local GC rule for passive-complete receivers.
+- Add tests for later-round empty replies from locally complete receivers and for passive-complete local GC.
 
 Acceptance criteria:
 
 - Local receiver completion does not create a future-round protocol hole.
 - Passive-complete receivers can satisfy later quorum rounds without inventing new wire messages.
+- Receiver termination is explicit rather than hand-waved.
 
 ### T9. Rewrite the plain sender around the shared round state machine
 
@@ -909,6 +967,7 @@ Acceptance criteria:
 - Specify whether replay state is owned by the live receiver task, runtime handoff state, or completed replay state at each lifecycle point.
 - Implement an explicit no-gap handoff from receiver-owned replay to runtime-owned replay during teardown and completion.
 - Define delivery precedence so the live receiver remains authoritative until handoff completes.
+- Rewrite the existing runtime handoff tests that currently prefer completed replay over live delivery so they go red under the new semantics first.
 - Add tests for receiver/runtime replay handoff races and for preventing handoff while future rounds may still require live passive-complete replies.
 
 Acceptance criteria:
@@ -925,10 +984,12 @@ Acceptance criteria:
 - Replay the latest cached `Need(round_id)` only on duplicate `SourceDone(round_id)` for the relevant round.
 - Reject stale control for closed rounds.
 - Drop future-round `Need(round_id)` deterministically.
+- Treat changed same-round `Need` from a quorum peer as a session-fatal protocol violation.
 - Add tests for:
   - duplicate `SourceDone`
   - late `Need(round_id)` while round still open
   - stale `Need(round_id)` after round closure
+  - changed same-round `Need` from a quorum peer aborts the session
   - feedback for round `r + 1` not opening until round `r` is closed
   - non-quorum peer `Need` after freeze
   - duplicate payload after burst `r + 1` has begun does not trigger wrong-round replay
@@ -1012,10 +1073,10 @@ Must cover:
 - FEC `Need(round_id, deficits)` roundtrip
 - empty `Need(round_id)` roundtrip
 - canonical `Need` equality encoding
+- noncanonical `Need` rejected
 - malformed `Need` body rejected for the wrong manifest mode
 - unsupported protocol version rejection
 - removed dead control kinds rejected
-- `Ready.node_id` and transport `peer_id` mismatch rejected
 
 ### Dataplane crate
 
@@ -1025,7 +1086,7 @@ Must cover:
 
 1. slow peer `Need(r)` arrives after fast-peer repair already started
 2. duplicate `Need(r)` with identical payload is safe
-3. changed same-round `Need(r)` is rejected in Phase 1
+3. changed same-round `Need(r)` from a quorum peer aborts the session
 4. duplicate `SourceDone(r)` triggers exact replay of cached `Need(r)`
 5. lost `SourceDone(r)` is repaired by solicitation retransmit
 6. work is locally exhausted while some quorum peers are still missing does not advance the round
@@ -1048,6 +1109,11 @@ Must cover:
 23. slow control path with fast data path does not false-timeout when timeout is properly budgeted
 24. empty active quorum at `SourceDone(0)` completes immediately
 25. runtime handoff does not preempt a passive-complete receiver while future rounds are still possible
+26. `Ready.node_id` and transport `peer_id` mismatch is dropped and logged
+27. `Ready` or `Need` with no transport `peer_id` is dropped and logged
+28. stale older `SourceDone(j < k)` is dropped on the receiver side
+29. passive-complete receiver enters `session_finished` only after `session_finish_timeout` or explicit teardown
+30. version mismatch logs remote version and session id before drop
 
 ### Full suite
 
