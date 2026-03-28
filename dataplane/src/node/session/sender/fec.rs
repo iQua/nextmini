@@ -42,7 +42,8 @@ pub(super) struct FecSender {
 struct FecBlockState {
     next_source_symbol: u32,
     next_fountain_symbol: u32,
-    extra_budget: u16,
+    required_extra_symbols: u16,
+    emitted_extra_symbols: u16,
     encoder: Option<Encoder>,
 }
 
@@ -66,7 +67,8 @@ impl FecSender {
                 .map(|_| FecBlockState {
                     next_source_symbol: 0,
                     next_fountain_symbol: u32::from(fec.symbols_per_block),
-                    extra_budget: 0,
+                    required_extra_symbols: 0,
+                    emitted_extra_symbols: 0,
                     encoder: None,
                 })
                 .collect(),
@@ -88,8 +90,9 @@ impl FecSender {
     /// Main send loop for FEC mode.
     ///
     /// Source symbols are always sent before extra fountain symbols. The sender
-    /// only emits extra symbols after it has completed a source-symbol sweep
-    /// and received round-status feedback for every receiver.
+    /// starts repair as soon as the first useful Need snapshot arrives, but it
+    /// does not open the next feedback round until the current one is fully
+    /// drained and every frozen quorum peer has reported.
     pub(super) async fn run(
         &mut self,
         shared: &mut super::SenderShared,
@@ -99,26 +102,6 @@ impl FecSender {
             shared.drain_controls(ctrl_rx, self);
             if self.protocol_error {
                 return SessionOutcome::Aborted;
-            }
-
-            if self.phase == RoundPhase::WaitingForReports {
-                if self.round_reports.len() == shared.active_quorum.active_members().len() {
-                    self.finish_report_round(shared);
-                    continue;
-                }
-                match shared
-                    .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
-                    .await
-                {
-                    super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
-                    super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
-                        return SessionOutcome::Aborted;
-                    }
-                }
-                if self.protocol_error {
-                    return SessionOutcome::Aborted;
-                }
-                continue;
             }
 
             if let Some((block_id, symbol_id)) = self.next_source_symbol(shared) {
@@ -143,6 +126,18 @@ impl FecSender {
                 continue;
             }
 
+            if self.has_pending_repair_work() {
+                if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
+                    if self.send_extra_symbol(shared, block_id, symbol_id).await {
+                        continue;
+                    }
+                    if !shared.wait_for_signal(ctrl_rx, self).await {
+                        return SessionOutcome::Aborted;
+                    }
+                    continue;
+                }
+            }
+
             if !self.round_source_done_sent {
                 self.begin_report_round(shared).await;
                 self.round_source_done_sent = true;
@@ -151,6 +146,13 @@ impl FecSender {
                     break;
                 }
                 shared.start_quorum_feedback_wait();
+                continue;
+            }
+
+            if self.phase == RoundPhase::WaitingForReports
+                && self.round_reports.len() == shared.active_quorum.active_members().len()
+            {
+                self.finish_report_round(shared);
                 continue;
             }
 
@@ -189,7 +191,7 @@ impl FecSender {
     fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if block.extra_budget > 0 && self.phase == RoundPhase::SendingData {
+            if block.emitted_extra_symbols < block.required_extra_symbols {
                 return Some((block_id, block.next_fountain_symbol));
             }
         }
@@ -234,7 +236,7 @@ impl FecSender {
         }
 
         if let Some(block) = fec_block_mut(self, block_id) {
-            block.extra_budget = block.extra_budget.saturating_sub(1);
+            block.emitted_extra_symbols = block.emitted_extra_symbols.saturating_add(1);
             block.next_fountain_symbol += 1;
         }
         shared.mark_payload_emitted();
@@ -354,7 +356,6 @@ impl FecSender {
     }
 
     fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
-        let mut aggregated = vec![0u16; self.blocks.len()];
         let mut all_complete = true;
 
         for status in self.round_reports.values() {
@@ -363,12 +364,13 @@ impl FecSender {
                 NeedReport::Fec { blocks } => {
                     all_complete = false;
                     for block in blocks {
-                        let Some(entry) = aggregated
+                        if let Some(entry) = self
+                            .blocks
                             .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
-                        else {
-                            continue;
-                        };
-                        *entry = (*entry).max(block.deficit_symbols);
+                        {
+                            entry.required_extra_symbols =
+                                entry.required_extra_symbols.max(block.deficit_symbols);
+                        }
                     }
                 }
                 NeedReport::Plain { .. } => {
@@ -383,14 +385,19 @@ impl FecSender {
             return;
         }
 
-        for (block, budget) in self.blocks.iter_mut().zip(aggregated) {
-            block.extra_budget = budget;
+        if self.has_pending_repair_work() {
+            return;
         }
+
         self.round_reports.clear();
         shared.clear_quorum_feedback_wait();
         self.phase = RoundPhase::SendingData;
         self.current_round_id = self.current_round_id.saturating_add(1);
         self.round_source_done_sent = false;
+        for block in &mut self.blocks {
+            block.required_extra_symbols = 0;
+            block.emitted_extra_symbols = 0;
+        }
     }
 }
 
@@ -411,8 +418,28 @@ impl super::ModeHooks for FecSender {
             }
             return;
         }
-        self.round_reports.insert(peer_id, report);
-        if self.round_reports.len() == shared.active_quorum.active_members().len() {
+        self.round_reports.insert(peer_id, report.clone());
+        match report {
+            NeedReport::Complete => {}
+            NeedReport::Fec { blocks } => {
+                for block in blocks {
+                    if let Some(entry) = self
+                        .blocks
+                        .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
+                    {
+                        entry.required_extra_symbols =
+                            entry.required_extra_symbols.max(block.deficit_symbols);
+                    }
+                }
+            }
+            NeedReport::Plain { .. } => {
+                self.protocol_error = true;
+                return;
+            }
+        }
+        if self.round_reports.len() == shared.active_quorum.active_members().len()
+            && !self.has_pending_repair_work()
+        {
             self.finish_report_round(shared);
         }
     }
@@ -425,6 +452,14 @@ impl super::ModeHooks for FecSender {
             .copied()
             .filter(|peer_id| !self.round_reports.contains_key(peer_id))
             .collect()
+    }
+}
+
+impl FecSender {
+    fn has_pending_repair_work(&self) -> bool {
+        self.blocks
+            .iter()
+            .any(|block| block.emitted_extra_symbols < block.required_extra_symbols)
     }
 }
 

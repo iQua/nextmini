@@ -132,7 +132,7 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbols() {
+async fn sender_starts_repair_after_first_receiver_need_without_waiting_for_every_peer() {
     let mut harness = common::packet_capture(1, 2, 4102, 5202, 1, 2048).await;
     let session_id = 0xFEC5_0002;
     let manifest = LosslessSessionManifest {
@@ -182,30 +182,14 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
         .await
         .unwrap();
 
-    assert!(
-        timeout(Duration::from_millis(150), harness.packet_rx.recv())
-            .await
-            .is_err(),
-        "sender should wait for every receiver report before sending extra symbols"
-    );
+    let first_extra = recv_symbol(&mut harness.packet_rx).await;
+    assert_eq!(first_extra.symbol_id, 4);
 
     ctrl_tx
-        .send(fec_status_frame(
-            session_id,
-            3,
-            0,
-            NeedReport::Fec {
-                blocks: vec![NeedBlock {
-                    block_id: 0,
-                    deficit_symbols: 1,
-                }],
-            },
-        ))
+        .send(fec_status_frame(session_id, 3, 0, NeedReport::Complete))
         .await
         .unwrap();
 
-    let symbol = recv_symbol(&mut harness.packet_rx).await;
-    assert_eq!(symbol.symbol_id, 4);
     wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
@@ -224,7 +208,7 @@ async fn sender_waits_for_every_receiver_round_report_before_sending_extra_symbo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
+async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local_exhaustion() {
     let mut harness = common::packet_capture(1, 2, 4103, 5203, 1, 2048).await;
     let session_id = 0xFEC5_0003;
     let manifest = LosslessSessionManifest {
@@ -273,6 +257,17 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         ))
         .await
         .unwrap();
+
+    let first_extra = recv_symbol(&mut harness.packet_rx).await;
+    assert_eq!(first_extra.symbol_id, 4);
+
+    assert!(
+        timeout(Duration::from_millis(150), harness.packet_rx.recv())
+            .await
+            .is_err(),
+        "sender should keep the round open after locally exhausting the first repair burst"
+    );
+
     ctrl_tx
         .send(fec_status_frame(
             session_id,
@@ -289,22 +284,16 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .unwrap();
 
     let mut extra_symbol_ids = Vec::new();
-    while extra_symbol_ids.len() < 3 {
+    while extra_symbol_ids.len() < 2 {
         extra_symbol_ids.push(recv_symbol(&mut harness.packet_rx).await.symbol_id);
     }
-    assert_eq!(extra_symbol_ids, vec![4, 5, 6]);
+    assert_eq!(extra_symbol_ids, vec![5, 6]);
     wait_for_source_done(&mut harness.packet_rx, 1).await;
 
     ctrl_tx
         .send(fec_status_frame(session_id, 2, 1, NeedReport::Complete))
         .await
         .unwrap();
-    assert!(
-        timeout(Duration::from_millis(150), &mut sender_task)
-            .await
-            .is_err(),
-        "sender should not complete until every receiver reports complete"
-    );
     ctrl_tx
         .send(fec_status_frame(session_id, 3, 1, NeedReport::Complete))
         .await
@@ -314,6 +303,58 @@ async fn sender_aggregates_max_deficit_across_receiver_round_reports() {
         .await
         .expect("sender task timed out")
         .expect("sender task failed");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_retransmits_source_done_while_waiting_for_silent_peer_and_times_out() {
+    let mut harness = common::packet_capture(1, 2, 4105, 5205, 1, 2048).await;
+    let session_id = 0xFEC5_0005;
+    let manifest = LosslessSessionManifest {
+        block_size: 16,
+        total_bytes: 16,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2, 3],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest,
+        ready_grace_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .unwrap();
+    ctrl_tx
+        .send(common::ready_frame(session_id, 3))
+        .await
+        .unwrap();
+
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
+
+    ctrl_tx
+        .send(fec_status_frame(session_id, 2, 0, NeedReport::Complete))
+        .await
+        .unwrap();
+
+    wait_for_source_done(&mut harness.packet_rx, 0).await;
+
+    assert_eq!(
+        timeout(Duration::from_secs(5), sender_task)
+            .await
+            .expect("sender task timed out")
+            .expect("sender task failed"),
+        SessionOutcome::Aborted,
+        "sender should abort after repeatedly soliciting a silent frozen peer"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
