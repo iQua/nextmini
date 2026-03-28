@@ -7,6 +7,7 @@
 
 mod fec;
 mod plain;
+mod state;
 
 use bytes::Bytes;
 use std::collections::BTreeSet;
