@@ -485,9 +485,48 @@ mod tests {
     const RECEIVER_NODE_ID: usize = 52;
 
     #[tokio::test]
-    #[ignore = "T1 red test scaffold; enable when SourceDone replaces Eot"]
-    async fn red_duplicate_boundary_replays_exact_cached_round_feedback() {
-        panic!("pending rewrite invariant: duplicate SourceDone must replay the exact cached Need");
+    async fn fec_receiver_replays_cached_need_after_late_symbols_for_same_round() {
+        let (mut receiver, mut packet_rx) = fec_test_receiver(
+            8,
+            BTreeSet::new(),
+            BTreeMap::from([(0, BTreeMap::from([(0, vec![1, 2])]))]),
+        )
+        .await;
+
+        let source_done = InboundFrame {
+            bytes: lossless_session::encode_control(
+                receiver.shared.session_id,
+                &LosslessSessionControl::SourceDone { round_id: 0 },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+        let expected = NeedReport::Fec {
+            blocks: vec![NeedBlock {
+                block_id: 0,
+                deficit_symbols: 3,
+            }],
+        };
+
+        receiver.handle_control_frame(source_done.clone()).await;
+        assert_eq!(recv_fec_need(&mut packet_rx).await, expected.clone());
+        assert!(!receiver.is_complete());
+
+        receiver
+            .handle_block_symbol_frame(InboundFrame {
+                bytes: lossless_session::encode_block_symbol(
+                    receiver.shared.session_id,
+                    0,
+                    1,
+                    0,
+                    &[3, 4],
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        receiver.handle_control_frame(source_done).await;
+        assert_eq!(recv_fec_need(&mut packet_rx).await, expected);
+        assert!(!receiver.is_complete());
     }
 
     #[tokio::test]
@@ -795,6 +834,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn fec_receiver_drops_stale_source_done() {
+        let (mut receiver, mut packet_rx) = fec_test_receiver(
+            8,
+            BTreeSet::new(),
+            BTreeMap::from([(0, BTreeMap::from([(0, vec![1, 2])]))]),
+        )
+        .await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 1 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert_eq!(
+            recv_fec_need(&mut packet_rx).await,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 3,
+                }],
+            }
+        );
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "stale SourceDone must be dropped"
+        );
+    }
+
+    #[tokio::test]
     async fn plain_receiver_ignores_duplicate_data_before_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
         let frame = InboundFrame {
@@ -821,6 +905,43 @@ mod tests {
                 }],
             })
         );
+    }
+
+    #[tokio::test]
+    async fn plain_receiver_reports_complete_for_zero_byte_object_on_source_done() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(0, BTreeSet::new()).await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_reports_complete_for_zero_byte_object_on_source_done() {
+        let (mut receiver, mut packet_rx) =
+            fec_test_receiver(0, BTreeSet::new(), BTreeMap::new()).await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert_eq!(recv_fec_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(receiver.is_complete());
     }
 
     #[tokio::test]
@@ -1042,6 +1163,87 @@ mod tests {
                     complete_blocks,
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
+            },
+            packet_rx,
+        )
+    }
+
+    async fn fec_test_receiver(
+        total_bytes: u64,
+        complete_blocks: BTreeSet<u64>,
+        blocks: BTreeMap<u64, BTreeMap<u32, Vec<u8>>>,
+    ) -> (SessionReceiver, mpsc::Receiver<Packet>) {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4752,
+            dst_port: 5752,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let plan = BlockPlan::new(total_bytes, 8).expect("valid plan");
+        let geometry = plan.symbol_geometry(4).expect("valid geometry");
+
+        let mut fec = FecReceiver::new(geometry);
+        fec.blocks = blocks
+            .into_iter()
+            .map(|(block_id, symbols)| (block_id, FecBlockState { symbols }))
+            .collect();
+
+        (
+            SessionReceiver {
+                shared: ReceiverShared {
+                    session_id: 10,
+                    route,
+                    local_node_id: RECEIVER_NODE_ID,
+                    cfg: ReceiverConfig {
+                        session_id: 10,
+                        route,
+                        local_node_id: RECEIVER_NODE_ID,
+                        sink_buffer: None,
+                        progress: None,
+                        fec_enabled: true,
+                    },
+                    processors,
+                    manifest: Some(LosslessSessionManifest {
+                        block_size: 8,
+                        total_bytes,
+                        total_blocks: plan.total_blocks(),
+                        mode: LosslessSessionMode::Fec(
+                            nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
+                                4,
+                                vec![0, 1],
+                            ),
+                        ),
+                    }),
+                    plan: Some(plan),
+                    complete_blocks,
+                },
+                mode: Some(ReceiverMode::Fec(fec)),
             },
             packet_rx,
         )
