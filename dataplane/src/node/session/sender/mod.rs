@@ -5,6 +5,7 @@
 //! `SourceDone { round_id }` after the source sweep, and only then responds to
 //! aggregate round status feedback with extra fountain symbols.
 
+mod block_symbol_frame;
 mod fec;
 mod plain;
 mod state;
