@@ -4,14 +4,14 @@ use serde::{Deserialize, Serialize};
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
 /// Single cutover protocol version for the block-first wire model.
 ///
-/// Version 3 is still the barriered `Manifest -> Ready -> payload sweep ->
+/// Version 4 is still the barriered `Manifest -> Ready -> payload sweep ->
 /// Eot -> round status` protocol. The simple-lossless rewrite intentionally
 /// changes those semantics in a later flag-day cutover.
 ///
 /// The normative rewrite rules live in `plans/simple-lossless.md`. Keep the
 /// message surface and nearby comments in sync with that plan instead of
 /// restating a partial copy of the protocol here.
-pub const LOSSLESS_SESSION_VERSION: u8 = 3;
+pub const LOSSLESS_SESSION_VERSION: u8 = 4;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -520,6 +520,18 @@ pub struct LosslessSessionHeader {
     pub body_len: u32,
 }
 
+/// Raw header view used when callers need session/version diagnostics before
+/// full kind-specific decoding succeeds.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LosslessSessionRawHeader {
+    pub magic: u32,
+    pub version: u8,
+    pub kind: u8,
+    pub ctrl_kind: u8,
+    pub session_id: u64,
+    pub body_len: u32,
+}
+
 impl LosslessSessionHeader {
     pub const LEN: usize = 4 + 1 + 1 + 1 + 1 + 8 + 4;
 
@@ -537,43 +549,52 @@ impl LosslessSessionHeader {
 
     #[inline]
     pub fn decode_from(buf: &[u8]) -> Option<(Self, usize)> {
-        if buf.len() < Self::LEN {
+        let raw = peek_header(buf)?;
+        if raw.version != LOSSLESS_SESSION_VERSION {
             return None;
         }
-        let magic = u32::from_be_bytes(buf[0..4].try_into().ok()?);
-        if magic != LOSSLESS_SESSION_MAGIC {
-            return None;
-        }
-        let version = buf[4];
-        if version != LOSSLESS_SESSION_VERSION {
-            return None;
-        }
-        let kind = match buf[5] {
+        let kind = match raw.kind {
             1 => LosslessSessionKind::BlockData,
             2 => LosslessSessionKind::BlockSymbol,
             3 => LosslessSessionKind::Control,
             _ => return None,
         };
-        let ctrl_kind = buf[6];
-        let session_id = u64::from_be_bytes(buf[8..16].try_into().ok()?);
-        let body_len = u32::from_be_bytes(buf[16..20].try_into().ok()?);
         Some((
             Self {
-                magic,
-                version,
+                magic: raw.magic,
+                version: raw.version,
                 kind,
-                ctrl_kind,
-                session_id,
-                body_len,
+                ctrl_kind: raw.ctrl_kind,
+                session_id: raw.session_id,
+                body_len: raw.body_len,
             },
             Self::LEN,
         ))
     }
 }
 
+#[inline]
+pub fn peek_header(buf: &[u8]) -> Option<LosslessSessionRawHeader> {
+    if buf.len() < LosslessSessionHeader::LEN {
+        return None;
+    }
+    let magic = u32::from_be_bytes(buf[0..4].try_into().ok()?);
+    if magic != LOSSLESS_SESSION_MAGIC {
+        return None;
+    }
+    Some(LosslessSessionRawHeader {
+        magic,
+        version: buf[4],
+        kind: buf[5],
+        ctrl_kind: buf[6],
+        session_id: u64::from_be_bytes(buf[8..16].try_into().ok()?),
+        body_len: u32::from_be_bytes(buf[16..20].try_into().ok()?),
+    })
+}
+
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// The simple-lossless rewrite keeps the live version-3 variants in place
+/// The simple-lossless rewrite keeps the live version-4 variants in place
 /// until later tasks land, but the message layer already records the target
 /// semantics here so sender and receiver work stays aligned:
 /// - `SourceDone(round_id)` replaces `Eot`
@@ -1682,6 +1703,18 @@ mod tests {
         let mut symbol = Vec::new();
         encode_block_symbol_into(&mut symbol, 1, 0, 0, 1, b"y");
         assert!(decode_block_data(&symbol).is_none());
+    }
+
+    #[test]
+    fn peek_header_exposes_unsupported_version_for_logging() {
+        let mut buf = encode_control(17, &LosslessSessionControl::Ready { node_id: 7 });
+        buf[4] = LOSSLESS_SESSION_VERSION - 1;
+
+        let raw = peek_header(&buf).expect("raw header should still decode");
+        assert_eq!(raw.session_id, 17);
+        assert_eq!(raw.version, LOSSLESS_SESSION_VERSION - 1);
+        assert!(LosslessSessionHeader::decode_from(&buf).is_none());
+        assert!(decode_control(&buf).is_none());
     }
 
     #[test]

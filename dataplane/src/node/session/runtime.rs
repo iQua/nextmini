@@ -291,6 +291,21 @@ impl LosslessRuntime {
 
     /// Forward one inbound frame to the matching session task.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
+        if let Some(header) = lossless_session::peek_header(&frame.bytes)
+            && header.version != lossless_session::LOSSLESS_SESSION_VERSION
+        {
+            warn!(
+                session_id = session,
+                wire_session_id = header.session_id,
+                observed_version = header.version,
+                expected_version = lossless_session::LOSSLESS_SESSION_VERSION,
+                kind = header.kind,
+                ctrl_kind = header.ctrl_kind,
+                "Lossless runtime: dropping frame with unsupported session version."
+            );
+            return;
+        }
+
         if self.replay_completed_receiver(session, frame.clone()).await {
             return;
         }
@@ -576,6 +591,7 @@ mod tests {
     use std::time::Duration;
 
     use tokio::sync::watch;
+    use tokio::time::timeout;
 
     use nextmini_messages::lossless_session::{self, FecStatus, PlainStatus};
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
@@ -745,6 +761,52 @@ mod tests {
 
         abort_task.abort();
         assert_fec_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_drops_unsupported_version_before_dispatch() {
+        let (mut runtime, _packet_rx, _route) = test_runtime().await;
+        let session_id = 0xA11C_E405;
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+
+        let mut bytes = lossless_session::encode_control(
+            session_id,
+            &LosslessSessionControl::Ready {
+                node_id: SOURCE_NODE_ID as u64,
+            },
+        );
+        bytes[4] = lossless_session::LOSSLESS_SESSION_VERSION - 1;
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes,
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert!(
+            timeout(Duration::from_millis(100), inbox_rx.recv())
+                .await
+                .is_err(),
+            "unsupported-version frames should be dropped before session delivery"
+        );
     }
 
     async fn test_runtime() -> (LosslessRuntime, mpsc::Receiver<Packet>, TransportRoute) {
