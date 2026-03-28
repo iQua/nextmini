@@ -292,6 +292,78 @@ async fn completed_receiver_replays_complete_on_late_eot() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn passive_complete_receiver_answers_later_round_before_handoff_then_runtime_replays_after_finish(
+) {
+    let mut capture = common::packet_capture(
+        RECEIVER_NODE_ID,
+        SOURCE_NODE_ID,
+        SRC_PORT + 6,
+        DST_PORT + 6,
+        1,
+        2048,
+    )
+    .await;
+    let runtime = LosslessRuntimeHandle::new(
+        capture.processors.clone(),
+        capture.cfg.lossless_runtime_config.clone(),
+    );
+    let session_id = 0xA11C_E307;
+
+    let mut session = runtime
+        .start_receiver(ReceiverRequest {
+            session_id,
+            route: capture.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: None,
+            progress: None,
+        })
+        .await
+        .expect("receiver should start");
+
+    runtime.deliver(
+        session_id,
+        common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
+    );
+    assert_ready(&mut capture).await;
+
+    runtime.deliver(
+        session_id,
+        common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
+    );
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+    );
+    assert_plain_complete_round(&mut capture, 0).await;
+
+    assert!(
+        timeout(Duration::from_millis(100), session.wait())
+            .await
+            .is_err(),
+        "receiver should remain live in passive-complete state before runtime handoff"
+    );
+
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
+    );
+    assert_plain_complete_round(&mut capture, 1).await;
+
+    assert_eq!(
+        timeout(Duration::from_secs(3), session.wait())
+            .await
+            .expect("receiver should eventually finish and hand off replay"),
+        SessionOutcome::Completed
+    );
+
+    runtime.deliver(
+        session_id,
+        common::source_done_frame(session_id, SOURCE_NODE_ID, 2),
+    );
+    assert_plain_complete_round(&mut capture, 2).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn completed_receiver_does_not_replay_complete_on_late_duplicate_block_data() {
     let mut capture = common::packet_capture(
         RECEIVER_NODE_ID,
@@ -501,6 +573,13 @@ async fn assert_ready(capture: &mut common::PacketCaptureHarness) {
 }
 
 async fn assert_plain_complete(capture: &mut common::PacketCaptureHarness) {
+    assert_plain_complete_round(capture, 0).await;
+}
+
+async fn assert_plain_complete_round(
+    capture: &mut common::PacketCaptureHarness,
+    expected_round_id: u32,
+) {
     let packet = common::recv_packet(&mut capture.packet_rx).await;
     let payload = packet
         .tcp_payload()
@@ -510,7 +589,7 @@ async fn assert_plain_complete(capture: &mut common::PacketCaptureHarness) {
     assert_eq!(
         control,
         LosslessSessionControl::Need {
-            round_id: 0,
+            round_id: expected_round_id,
             report: NeedReport::Complete,
         }
     );
