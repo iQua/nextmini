@@ -71,10 +71,16 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
             lossless_session::LosslessSessionHeader::decode_from(ready_payload)
                 .expect("ready control should decode")
                 .0,
-            LosslessSessionControl::Ready {
-                node_id: RECEIVER_NODE_ID as u64,
-            },
+            LosslessSessionControl::Ready,
         ))
+    );
+    assert_eq!(
+        lossless_session::LosslessSessionHeader::decode_from(ready_payload)
+            .expect("ready control should decode")
+            .0
+            .body_len,
+        0,
+        "Ready should no longer carry an in-band node id"
     );
 
     tx.send(InboundFrame {
@@ -169,7 +175,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     tx.send(InboundFrame {
@@ -353,7 +359,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     tx.send(InboundFrame {
@@ -455,7 +461,7 @@ async fn plain_receiver_ignores_removed_legacy_control_ids() {
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     tx.send(common::legacy_control_frame(
@@ -536,7 +542,7 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
             .expect("ready packet should include payload");
         assert!(matches!(
             lossless_session::decode_control(ready_payload),
-            Some((_, LosslessSessionControl::Ready { .. }))
+            Some((_, LosslessSessionControl::Ready))
         ));
     }
 
@@ -593,7 +599,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     tx.send(InboundFrame {

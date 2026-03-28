@@ -657,10 +657,13 @@ async fn assert_ready(capture: &mut common::PacketCaptureHarness) {
     let ready_payload = ready_packet
         .tcp_payload()
         .expect("ready packet should include payload");
-    assert!(matches!(
-        lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
-    ));
+    let (hdr, control) =
+        lossless_session::decode_control(ready_payload).expect("ready control should decode");
+    assert_eq!(
+        hdr.body_len, 0,
+        "Ready should no longer carry an in-band node id"
+    );
+    assert!(matches!(control, LosslessSessionControl::Ready));
 }
 
 async fn assert_plain_complete(capture: &mut common::PacketCaptureHarness) {

@@ -105,13 +105,7 @@ pub async fn recv_packet(packet_rx: &mut mpsc::Receiver<Packet>) -> Packet {
 }
 
 pub fn ready_frame(session_id: u64, peer_id: usize) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::Ready {
-            node_id: peer_id as u64,
-        },
-    )
+    control_frame(session_id, peer_id, LosslessSessionControl::Ready)
 }
 
 pub fn manifest_frame(

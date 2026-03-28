@@ -215,7 +215,7 @@ impl SessionReceiver {
             LosslessSessionControl::Manifest { manifest } => {
                 self.install_manifest(manifest).await;
             }
-            LosslessSessionControl::Ready { .. } | LosslessSessionControl::Need { .. } => {}
+            LosslessSessionControl::Ready | LosslessSessionControl::Need { .. } => {}
             LosslessSessionControl::SourceDone { round_id } => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
@@ -452,9 +452,7 @@ impl ReceiverShared {
                 dst_ip: self.route.dst_ip,
                 dst_port: self.route.dst_port,
             },
-            &LosslessSessionControl::Ready {
-                node_id: self.local_node_id as u64,
-            },
+            &LosslessSessionControl::Ready,
         )
         .await;
     }

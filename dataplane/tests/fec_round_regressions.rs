@@ -252,7 +252,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     );
     assert!(matches!(
         recv_control(&mut capture.packet_rx).await,
-        LosslessSessionControl::Ready { .. }
+        LosslessSessionControl::Ready
     ));
 
     for (symbol_id, chunk) in [1u8, 2, 3, 4, 5, 6, 7, 8].chunks(2).enumerate() {

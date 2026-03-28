@@ -194,7 +194,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     for (block_id, block) in [b"abcdefgh", b"ijklmnop", b"qrstuvwx"]
@@ -366,7 +366,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         .expect("ready packet should include payload");
     assert!(matches!(
         lossless_session::decode_control(ready_payload),
-        Some((_, LosslessSessionControl::Ready { .. }))
+        Some((_, LosslessSessionControl::Ready))
     ));
 
     let blocks = [

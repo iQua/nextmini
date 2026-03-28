@@ -135,12 +135,7 @@ async fn receiver_reports_complete_after_source_done_and_writes_sink() {
     .await;
 
     let (_, ready) = recv_control(&mut harness.packet_rx).await;
-    assert_eq!(
-        ready,
-        LosslessSessionControl::Ready {
-            node_id: RECEIVER_NODE_ID as u64,
-        }
-    );
+    assert_eq!(ready, LosslessSessionControl::Ready);
 
     let payload = [1u8, 2, 3, 4, 5, 6, 7, 8];
     for (symbol_id, chunk) in payload.chunks(2).enumerate() {
@@ -211,7 +206,7 @@ async fn receiver_replies_complete_on_later_source_done_after_local_completion()
     .await;
 
     let (_, ready) = recv_control(&mut harness.packet_rx).await;
-    assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
+    assert!(matches!(ready, LosslessSessionControl::Ready));
 
     let payload = [1u8, 2, 3, 4, 5, 6, 7, 8];
     for (symbol_id, chunk) in payload.chunks(2).enumerate() {
@@ -292,7 +287,7 @@ async fn receiver_reports_missing_blocks_after_source_done_for_incomplete_block(
     .await;
 
     let (_, ready) = recv_control(&mut harness.packet_rx).await;
-    assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
+    assert!(matches!(ready, LosslessSessionControl::Ready));
 
     let mut frame = Vec::new();
     lossless_session::encode_block_symbol_into(&mut frame, SESSION_ID, 0, 0, 0, &[1u8, 2]);
@@ -344,7 +339,7 @@ async fn receiver_replays_same_missing_status_on_repeated_source_done() {
     .await;
 
     let (_, ready) = recv_control(&mut harness.packet_rx).await;
-    assert!(matches!(ready, LosslessSessionControl::Ready { .. }));
+    assert!(matches!(ready, LosslessSessionControl::Ready));
 
     send_frame(
         &harness.tx,

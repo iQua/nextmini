@@ -453,9 +453,7 @@ impl LosslessSessionManifest {
         control.validate()?;
         match control {
             LosslessSessionControl::Manifest { manifest } => manifest.validate(),
-            LosslessSessionControl::Ready { .. } | LosslessSessionControl::SourceDone { .. } => {
-                Ok(())
-            }
+            LosslessSessionControl::Ready | LosslessSessionControl::SourceDone { .. } => Ok(()),
             LosslessSessionControl::Need {
                 round_id: _,
                 report,
@@ -575,7 +573,7 @@ pub fn peek_header(buf: &[u8]) -> Option<LosslessSessionRawHeader> {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
-    Ready { node_id: u64 },
+    Ready,
     SourceDone { round_id: u32 },
     Need { round_id: u32, report: NeedReport },
 }
@@ -594,7 +592,7 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready { .. } | Self::SourceDone { .. } => Ok(()),
+            Self::Ready | Self::SourceDone { .. } => Ok(()),
             Self::Need { report, .. } => report.validate(),
         }
     }
@@ -782,7 +780,7 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
         LosslessSessionControl::Manifest { manifest } => {
             MANIFEST_FIXED_BODY_LEN + (manifest_tree_ids(&manifest.mode).len() * 2)
         }
-        LosslessSessionControl::Ready { .. } => 8,
+        LosslessSessionControl::Ready => 0,
         LosslessSessionControl::SourceDone { .. } => 4,
         LosslessSessionControl::Need { report, .. } => match report {
             NeedReport::Complete => NEED_FIXED_BODY_LEN,
@@ -854,11 +852,7 @@ pub fn encode_control_into<'a>(
             }
             LosslessSessionCtrlKind::Manifest as u8
         }
-        LosslessSessionControl::Ready { node_id } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 8].copy_from_slice(&node_id.to_be_bytes());
-            LosslessSessionCtrlKind::Ready as u8
-        }
+        LosslessSessionControl::Ready => LosslessSessionCtrlKind::Ready as u8,
         LosslessSessionControl::SourceDone { round_id } => {
             let body_start = LosslessSessionHeader::LEN;
             buf[body_start..body_start + 4].copy_from_slice(&round_id.to_be_bytes());
@@ -995,11 +989,10 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             LosslessSessionControl::Manifest { manifest }
         }
         x if x == LosslessSessionCtrlKind::Ready as u8 => {
-            if body.len() != 8 {
+            if !body.is_empty() {
                 return None;
             }
-            let node_id = u64::from_be_bytes(body[0..8].try_into().ok()?);
-            LosslessSessionControl::Ready { node_id }
+            LosslessSessionControl::Ready
         }
         x if x == LosslessSessionCtrlKind::SourceDone as u8 => {
             if body.len() != 4 {
@@ -1184,7 +1177,7 @@ mod tests {
         let ctrls = vec![
             manifest_plain,
             manifest_fec,
-            LosslessSessionControl::Ready { node_id: 99 },
+            LosslessSessionControl::Ready,
             LosslessSessionControl::SourceDone { round_id: 7 },
             LosslessSessionControl::Need {
                 round_id: 8,
@@ -1228,6 +1221,16 @@ mod tests {
     }
 
     #[test]
+    fn ready_control_uses_empty_body() {
+        let ctrl = LosslessSessionControl::Ready;
+        let buf = encode_control(77, &ctrl);
+        let (hdr, decoded) = decode_control(&buf).expect("decode ready");
+        assert_eq!(hdr.body_len, 0);
+        assert_eq!(buf.len(), LosslessSessionHeader::LEN);
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
     fn encode_control_into_matches_encode_control() {
         let ctrls = vec![
             LosslessSessionControl::Manifest {
@@ -1236,7 +1239,7 @@ mod tests {
             LosslessSessionControl::Manifest {
                 manifest: fec_manifest(),
             },
-            LosslessSessionControl::Ready { node_id: 11 },
+            LosslessSessionControl::Ready,
             LosslessSessionControl::SourceDone { round_id: 11 },
             plain_need(
                 12,
@@ -1491,9 +1494,9 @@ mod tests {
         truncated.truncate(LosslessSessionHeader::LEN);
         assert!(decode_control(&truncated).is_none());
 
-        let ready = encode_control(1, &LosslessSessionControl::Ready { node_id: 7 });
+        let ready = encode_control(1, &LosslessSessionControl::Ready);
         let mut bad_ready = ready.clone();
-        bad_ready.truncate(LosslessSessionHeader::LEN + 4);
+        bad_ready[16..20].copy_from_slice(&4u32.to_be_bytes());
         assert!(decode_control(&bad_ready).is_none());
 
         let need = encode_control(
@@ -1664,7 +1667,7 @@ mod tests {
 
     #[test]
     fn peek_header_exposes_unsupported_version_for_logging() {
-        let mut buf = encode_control(17, &LosslessSessionControl::Ready { node_id: 7 });
+        let mut buf = encode_control(17, &LosslessSessionControl::Ready);
         buf[4] = LOSSLESS_SESSION_VERSION - 1;
 
         let raw = peek_header(&buf).expect("raw header should still decode");

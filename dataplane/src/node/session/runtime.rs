@@ -919,12 +919,8 @@ mod tests {
             },
         );
 
-        let mut bytes = lossless_session::encode_control(
-            session_id,
-            &LosslessSessionControl::Ready {
-                node_id: SOURCE_NODE_ID as u64,
-            },
-        );
+        let mut bytes =
+            lossless_session::encode_control(session_id, &LosslessSessionControl::Ready);
         bytes[4] = lossless_session::LOSSLESS_SESSION_VERSION - 1;
 
         runtime
