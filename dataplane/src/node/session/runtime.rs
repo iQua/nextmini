@@ -396,7 +396,7 @@ impl LosslessRuntime {
         let message_sender = self.message_sender.clone();
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(()) => SessionOutcome::Completed,
+                Ok(outcome) => outcome,
                 Err(_) => SessionOutcome::Aborted,
             };
             let _ = message_sender.send(LosslessRuntimeMessage::SessionExited {

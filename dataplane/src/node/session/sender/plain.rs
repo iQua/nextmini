@@ -5,6 +5,7 @@ use tokio::sync::mpsc;
 use tracing::debug;
 
 use crate::node::session::api::InboundFrame;
+use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 
 /// Plain-mode sender state machine.
@@ -21,7 +22,7 @@ pub(super) struct PlainSender {
 impl super::ModeHooks for PlainSender {
     fn on_plain_status(
         &mut self,
-        shared: &super::SenderShared,
+        shared: &mut super::SenderShared,
         peer_id: usize,
         status: PlainStatus,
     ) {
@@ -30,13 +31,13 @@ impl super::ModeHooks for PlainSender {
         }
 
         self.round_reports.insert(peer_id, status);
-        if self.round_reports.len() < shared.receiver_set.len() {
+        if self.round_reports.len() < shared.active_quorum.active_members().len() {
             return;
         }
 
         let mut next_round = BTreeSet::new();
         let mut complete = true;
-        for receiver_id in &shared.receiver_ids {
+        for receiver_id in shared.active_quorum.active_members() {
             let Some(status) = self.round_reports.get(receiver_id) else {
                 return;
             };
@@ -54,6 +55,7 @@ impl super::ModeHooks for PlainSender {
         self.cursor = 0;
         self.round_eot_sent = false;
         self.round_reports.clear();
+        shared.clear_quorum_feedback_wait();
         debug!(
             complete = self.complete,
             retransmit_blocks = self.pending_blocks.len(),
@@ -68,7 +70,7 @@ impl PlainSender {
         &mut self,
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
-    ) {
+    ) -> SessionOutcome {
         self.ensure_initial_round(shared);
 
         while !self.complete {
@@ -85,19 +87,24 @@ impl PlainSender {
             if !self.round_eot_sent {
                 shared.send_eot().await;
                 self.round_eot_sent = true;
+                if shared.active_quorum_is_empty() {
+                    self.complete = true;
+                    break;
+                }
+                shared.start_quorum_feedback_wait();
                 continue;
             }
 
-            if !shared.wait_for_signal(ctrl_rx, self).await {
-                break;
+            match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+                super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
+                super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
+                    return SessionOutcome::Aborted;
+                }
             }
         }
-    }
 
-    pub(super) fn is_complete(&self) -> bool {
-        self.complete
+        SessionOutcome::Completed
     }
-
     /// Return the next plain block that still needs to be sent.
     fn next_block(&mut self) -> Option<u64> {
         while self.cursor < self.pending_blocks.len() {
@@ -141,6 +148,7 @@ impl PlainSender {
             &frame,
         )
         .await;
+        shared.mark_payload_emitted();
     }
 }
 

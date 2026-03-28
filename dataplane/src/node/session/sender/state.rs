@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use tokio::time::{Duration, Instant};
+
 pub(super) type RoundId = u32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +48,69 @@ impl ActiveSessionQuorum {
 
     pub(super) fn active_members(&self) -> &BTreeSet<usize> {
         &self.active
+    }
+
+    pub(super) fn configured_len(&self) -> usize {
+        self.configured.len()
+    }
+
+    pub(super) fn configured_members(&self) -> &BTreeSet<usize> {
+        &self.configured
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct QuorumLiveness {
+    solicitation_interval: Duration,
+    peer_report_timeout: Duration,
+    started_at: Option<Instant>,
+    next_solicitation_at: Option<Instant>,
+}
+
+impl QuorumLiveness {
+    pub(super) fn new(solicitation_interval: Duration, peer_report_timeout: Duration) -> Self {
+        Self {
+            solicitation_interval,
+            peer_report_timeout,
+            started_at: None,
+            next_solicitation_at: None,
+        }
+    }
+
+    pub(super) fn start(&mut self, now: Instant) {
+        self.started_at = Some(now);
+        self.next_solicitation_at = Some(now + self.solicitation_interval);
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.started_at = None;
+        self.next_solicitation_at = None;
+    }
+
+    pub(super) fn started_at(&self) -> Option<Instant> {
+        self.started_at
+    }
+
+    pub(super) fn next_solicitation_at(&self) -> Option<Instant> {
+        self.next_solicitation_at
+    }
+
+    pub(super) fn timeout_at(&self) -> Option<Instant> {
+        self.started_at
+            .map(|started_at| started_at + self.peer_report_timeout)
+    }
+
+    pub(super) fn should_solicit(&self, now: Instant) -> bool {
+        self.next_solicitation_at
+            .is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(super) fn timed_out(&self, now: Instant) -> bool {
+        self.timeout_at().is_some_and(|deadline| now >= deadline)
+    }
+
+    pub(super) fn note_solicitation(&mut self, now: Instant) {
+        self.next_solicitation_at = Some(now + self.solicitation_interval);
     }
 }
 
@@ -243,5 +308,34 @@ mod tests {
 
         state.mark_reported(12);
         assert!(state.all_active_peers_reported());
+    }
+
+    #[test]
+    fn quorum_liveness_solicits_before_timing_out() {
+        let mut liveness =
+            QuorumLiveness::new(Duration::from_millis(10), Duration::from_millis(30));
+        let now = Instant::now();
+
+        assert!(liveness.started_at().is_none());
+        liveness.start(now);
+        assert_eq!(liveness.started_at(), Some(now));
+        assert_eq!(
+            liveness.next_solicitation_at(),
+            Some(now + Duration::from_millis(10))
+        );
+        assert!(!liveness.should_solicit(now));
+        assert!(liveness.should_solicit(now + Duration::from_millis(10)));
+        assert!(!liveness.timed_out(now + Duration::from_millis(29)));
+        assert!(liveness.timed_out(now + Duration::from_millis(30)));
+
+        liveness.note_solicitation(now + Duration::from_millis(10));
+        assert_eq!(
+            liveness.next_solicitation_at(),
+            Some(now + Duration::from_millis(20))
+        );
+
+        liveness.clear();
+        assert!(liveness.started_at().is_none());
+        assert!(liveness.next_solicitation_at().is_none());
     }
 }

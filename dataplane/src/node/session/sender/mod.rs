@@ -10,7 +10,6 @@ mod plain;
 mod state;
 
 use bytes::Bytes;
-use std::collections::BTreeSet;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -22,41 +21,50 @@ use nextmini_messages::lossless_session::{
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
-use crate::node::session::api::InboundFrame;
+use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
 
 use self::fec::FecSender;
 use self::plain::PlainSender;
+use self::state::{ActiveSessionQuorum, QuorumLiveness};
 
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_WAIT: Duration = Duration::from_millis(10);
+const QUORUM_SOLICITATION_INTERVAL: Duration = Duration::from_millis(250);
+const QUORUM_PEER_REPORT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Run one sender session until completion or channel shutdown.
 pub async fn run(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
-) {
+) -> SessionOutcome {
     let mut sender = match SessionSender::new(cfg, processors) {
         Ok(sender) => sender,
         Err(reason) => {
             warn!(reason, "Lossless sender aborted before start");
-            return;
+            return SessionOutcome::Aborted;
         }
     };
 
-    sender.run(&mut ctrl_rx).await;
+    sender.run(&mut ctrl_rx).await
 }
 
 /// Mode-specific sender hooks invoked by the shared control path.
 pub(super) trait ModeHooks {
     /// Observe FEC-mode end-of-round feedback from a receiver.
-    fn on_fec_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: FecStatus) {}
+    fn on_fec_status(&mut self, _shared: &mut SenderShared, _peer_id: usize, _status: FecStatus) {}
 
     /// Observe plain-mode end-of-round feedback from a receiver.
-    fn on_plain_status(&mut self, _shared: &SenderShared, _peer_id: usize, _status: PlainStatus) {}
+    fn on_plain_status(
+        &mut self,
+        _shared: &mut SenderShared,
+        _peer_id: usize,
+        _status: PlainStatus,
+    ) {
+    }
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -72,13 +80,14 @@ pub(super) struct SenderShared {
     pub(super) processors: ProcessorHandle,
     pub(super) manifest: LosslessSessionManifest,
     pub(super) receiver_ids: Vec<usize>,
-    pub(super) receiver_set: BTreeSet<usize>,
-    pub(super) ready_peers: BTreeSet<usize>,
+    pub(in crate::node::session::sender) active_quorum: ActiveSessionQuorum,
+    pub(in crate::node::session::sender) quorum_liveness: QuorumLiveness,
     pub(super) plan: BlockPlan,
     pub(super) source: BlockSource,
     pub(super) ready_grace: Duration,
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
+    pub(super) payload_emitted: bool,
 }
 
 /// Concrete sender mode selected from the manifest.
@@ -151,7 +160,9 @@ impl SessionSender {
         let pacer = cfg.pacing.map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer);
-        let receiver_set = cfg.receiver_ids.iter().copied().collect::<BTreeSet<_>>();
+        let active_quorum = ActiveSessionQuorum::new(cfg.receiver_ids.iter().copied());
+        let quorum_liveness =
+            QuorumLiveness::new(QUORUM_SOLICITATION_INTERVAL, QUORUM_PEER_REPORT_TIMEOUT);
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
             LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
@@ -164,20 +175,21 @@ impl SessionSender {
                 processors,
                 manifest,
                 receiver_ids: cfg.receiver_ids,
-                receiver_set,
-                ready_peers: BTreeSet::new(),
+                active_quorum,
+                quorum_liveness,
                 plan,
                 source,
                 ready_grace,
                 topology_ready: cfg.topology_ready,
                 pacer,
+                payload_emitted: false,
             },
             mode,
         })
     }
 
     /// Execute the sender state machine for the negotiated transfer mode.
-    async fn run(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) {
+    async fn run(&mut self, ctrl_rx: &mut mpsc::Receiver<InboundFrame>) -> SessionOutcome {
         info!(
             session_id = self.shared.session.session_id,
             total_bytes = self.shared.manifest.total_bytes,
@@ -193,22 +205,19 @@ impl SessionSender {
             SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
         };
         if !ready {
-            return;
+            return SessionOutcome::Aborted;
         }
 
-        match &mut self.mode {
+        let outcome = match &mut self.mode {
             SenderMode::Plain(mode) => mode.run(&mut self.shared, ctrl_rx).await,
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
-        }
-
-        let complete = match &self.mode {
-            SenderMode::Plain(mode) => mode.is_complete(),
-            SenderMode::Fec(mode) => mode.is_complete(),
         };
         info!(
             session_id = self.shared.session.session_id,
-            complete, "Lossless sender finished"
+            complete = outcome == SessionOutcome::Completed,
+            "Lossless sender finished"
         );
+        outcome
     }
 }
 
@@ -235,14 +244,14 @@ impl SenderShared {
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
         mode: &mut M,
     ) -> bool {
-        if self.receiver_set.is_empty() {
+        if self.active_quorum.configured_len() == 0 {
             return true;
         }
 
         let deadline = Instant::now() + self.ready_grace;
         let mut next_manifest_at = Instant::now();
 
-        while self.ready_peers.len() < self.receiver_set.len() {
+        while self.active_quorum.active_members().len() < self.active_quorum.configured_len() {
             let now = Instant::now();
             if now >= next_manifest_at {
                 self.send_manifest().await;
@@ -264,10 +273,11 @@ impl SenderShared {
             }
         }
 
-        if self.ready_peers.len() < self.receiver_set.len() {
+        if self.active_quorum.active_members().len() < self.active_quorum.configured_len() {
             let missing = self
-                .receiver_set
-                .difference(&self.ready_peers)
+                .active_quorum
+                .configured_members()
+                .difference(self.active_quorum.active_members())
                 .copied()
                 .collect::<Vec<_>>();
             warn!(
@@ -278,6 +288,48 @@ impl SenderShared {
         }
 
         true
+    }
+
+    /// Wait for quorum feedback while periodically soliciting and timing out
+    /// silent frozen peers.
+    pub(super) async fn wait_for_quorum_feedback<M: ModeHooks>(
+        &mut self,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+        mode: &mut M,
+    ) -> QuorumWaitOutcome {
+        let Some(timeout_at) = self.quorum_liveness.timeout_at() else {
+            return QuorumWaitOutcome::Closed;
+        };
+
+        let wake_at = self
+            .quorum_liveness
+            .next_solicitation_at()
+            .unwrap_or(timeout_at)
+            .min(timeout_at);
+
+        tokio::select! {
+            maybe_frame = ctrl_rx.recv() => {
+                let Some(frame) = maybe_frame else {
+                    return QuorumWaitOutcome::Closed;
+                };
+                self.handle_control(frame, mode);
+                QuorumWaitOutcome::Control
+            }
+            _ = tokio::time::sleep_until(wake_at) => {
+                let now = Instant::now();
+                if self.quorum_liveness.timed_out(now) {
+                    return QuorumWaitOutcome::TimedOut;
+                }
+
+                if self.quorum_liveness.should_solicit(now) {
+                    self.send_eot().await;
+                    self.quorum_liveness.note_solicitation(now);
+                    return QuorumWaitOutcome::Solicited;
+                }
+
+                QuorumWaitOutcome::Control
+            }
+        }
     }
 
     /// Drain any queued control frames without blocking the send loop.
@@ -309,6 +361,41 @@ impl SenderShared {
         }
     }
 
+    /// Freeze the active quorum at the first payload boundary.
+    pub(super) fn freeze_active_quorum(&mut self) {
+        if self.active_quorum.is_frozen() {
+            return;
+        }
+
+        self.active_quorum.freeze();
+        info!(
+            session_id = self.session.session_id,
+            quorum = ?self.active_quorum.active_members(),
+            "Lossless sender froze the active session quorum"
+        );
+    }
+
+    /// Mark that a payload frame has actually left the sender.
+    pub(super) fn mark_payload_emitted(&mut self) {
+        self.payload_emitted = true;
+        self.freeze_active_quorum();
+    }
+
+    /// Begin the fixed-interval solicitation window for the frozen quorum.
+    pub(super) fn start_quorum_feedback_wait(&mut self) {
+        self.quorum_liveness.start(Instant::now());
+    }
+
+    /// Clear solicitation and timeout state after the current round closes.
+    pub(in crate::node::session::sender) fn clear_quorum_feedback_wait(&mut self) {
+        self.quorum_liveness.clear();
+    }
+
+    /// Return whether the frozen quorum has no active members.
+    pub(super) fn active_quorum_is_empty(&self) -> bool {
+        self.active_quorum.active_members().is_empty()
+    }
+
     /// Apply one inbound control frame to the sender state machine.
     fn handle_control<M: ModeHooks>(&mut self, frame: InboundFrame, mode: &mut M) {
         let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
@@ -323,26 +410,74 @@ impl SenderShared {
             // the round-status cutover.
             | LosslessSessionControl::BlockStatus { .. } => {}
             LosslessSessionControl::Ready { node_id } => {
-                if let Ok(node_id) = usize::try_from(node_id)
-                    && self.receiver_set.contains(&node_id)
-                {
-                    self.ready_peers.insert(node_id);
+                let Some(peer_id) = frame.peer_id else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        node_id,
+                        "Lossless sender dropped Ready without transport peer_id"
+                    );
+                    return;
+                };
+                let Ok(node_id) = usize::try_from(node_id) else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id,
+                        node_id,
+                        "Lossless sender dropped Ready that did not fit the local peer-id space"
+                    );
+                    return;
+                };
+                if node_id != peer_id {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id,
+                        node_id,
+                        "Lossless sender rejected Ready with mismatched transport peer_id"
+                    );
+                    return;
                 }
+                if self.active_quorum.is_frozen() {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id,
+                        "Lossless sender ignored late Ready after quorum freeze"
+                    );
+                    return;
+                }
+                self.active_quorum.record_ready(peer_id);
             }
             LosslessSessionControl::FecStatus { status } => {
                 let Some(peer_id) = frame.peer_id else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        "Lossless sender dropped FEC status without transport peer_id"
+                    );
                     return;
                 };
-                if !self.receiver_set.contains(&peer_id) {
+                if !self.active_quorum.active_members().contains(&peer_id) {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id,
+                        "Lossless sender ignored FEC status from non-quorum peer"
+                    );
                     return;
                 }
                 mode.on_fec_status(self, peer_id, status);
             }
             LosslessSessionControl::PlainStatus { status } => {
                 let Some(peer_id) = frame.peer_id else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        "Lossless sender dropped plain status without transport peer_id"
+                    );
                     return;
                 };
-                if !self.receiver_set.contains(&peer_id) {
+                if !self.active_quorum.active_members().contains(&peer_id) {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id,
+                        "Lossless sender ignored plain status from non-quorum peer"
+                    );
                     return;
                 }
                 mode.on_plain_status(self, peer_id, status);
@@ -371,6 +506,9 @@ impl SenderShared {
 
     /// Emit the end-of-transmission marker for the current send round.
     pub(super) async fn send_eot(&mut self) {
+        if !self.payload_emitted {
+            self.freeze_active_quorum();
+        }
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -394,9 +532,21 @@ impl SenderShared {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum QuorumWaitOutcome {
+    Control,
+    Solicited,
+    TimedOut,
+    Closed,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::net::Ipv4Addr;
+    use tokio::time::Duration;
+
+    use crate::node::config::LocalConfig;
 
     #[test]
     #[ignore = "T1 red test scaffold; enable when round state machine lands"]
@@ -404,10 +554,206 @@ mod tests {
         panic!("pending rewrite invariant: local exhaustion alone cannot close a round");
     }
 
-    #[test]
-    #[ignore = "T1 red test scaffold; enable when quorum freeze lands"]
-    fn red_late_ready_after_quorum_freeze_does_not_join_completion_quorum() {
-        panic!("pending rewrite invariant: late Ready cannot join the active session quorum");
+    #[tokio::test]
+    async fn ready_requires_matching_transport_peer_identity() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(23),
+            },
+            &mut NoopMode,
+        );
+
+        assert!(shared.active_quorum.active_members().is_empty());
+    }
+
+    #[tokio::test]
+    async fn ready_without_transport_peer_identity_is_ignored() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: None,
+            },
+            &mut NoopMode,
+        );
+
+        assert!(shared.active_quorum.active_members().is_empty());
+    }
+
+    #[tokio::test]
+    async fn late_ready_after_quorum_freeze_does_not_join_completion_quorum() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.freeze_active_quorum();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 23 },
+                ),
+                peer_id: Some(23),
+            },
+            &mut NoopMode,
+        );
+
+        assert_eq!(
+            shared
+                .active_quorum
+                .active_members()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![22]
+        );
+    }
+
+    #[tokio::test]
+    async fn non_quorum_plain_status_is_ignored_after_freeze() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.freeze_active_quorum();
+
+        let mut mode = RecordingMode::default();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::PlainStatus {
+                        status: PlainStatus::Complete,
+                    },
+                ),
+                peer_id: Some(23),
+            },
+            &mut mode,
+        );
+
+        assert!(mode.plain_statuses.is_empty());
+    }
+
+    #[tokio::test]
+    async fn quorum_feedback_times_out_for_silent_frozen_peer() {
+        let mut shared = test_sender_shared();
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.freeze_active_quorum();
+        shared.quorum_liveness =
+            QuorumLiveness::new(Duration::from_millis(50), Duration::from_millis(1));
+        shared.start_quorum_feedback_wait();
+
+        let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(1);
+        let outcome = shared
+            .wait_for_quorum_feedback(&mut ctrl_rx, &mut NoopMode)
+            .await;
+
+        assert_eq!(outcome, QuorumWaitOutcome::TimedOut);
+    }
+
+    #[tokio::test]
+    async fn ready_grace_completion_only_waits_for_active_quorum() {
+        let processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity: 8,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+        let cfg = SenderConfig {
+            session: SessionConfig {
+                session_id: 9,
+                block_size: 4,
+            },
+            route: TransportRoute {
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1111,
+                dst_port: 2222,
+            },
+            pacing: None,
+            receiver_ids: vec![22, 23],
+            source_buffer: Bytes::new(),
+            manifest: LosslessSessionManifest {
+                block_size: 4,
+                total_bytes: 0,
+                total_blocks: 0,
+                mode: LosslessSessionMode::Plain,
+            },
+            ready_grace_ms: 1,
+            topology_ready: None,
+        };
+        let mut sender = SessionSender::new(cfg, processors).expect("sender should build");
+        sender.shared.quorum_liveness =
+            QuorumLiveness::new(Duration::from_millis(50), Duration::from_millis(20));
+
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
+        let sender_task = tokio::spawn(async move { sender.run(&mut ctrl_rx).await });
+
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    9,
+                    &LosslessSessionControl::Ready { node_id: 22 },
+                ),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("ready control should enqueue");
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    9,
+                    &LosslessSessionControl::PlainStatus {
+                        status: PlainStatus::Complete,
+                    },
+                ),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("plain status should enqueue");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), sender_task)
+                .await
+                .expect("sender task should finish")
+                .expect("sender task should not panic"),
+            SessionOutcome::Completed
+        );
     }
 
     #[test]
@@ -430,5 +776,69 @@ mod tests {
         assert_eq!(symbols[1].as_ref(), b"cd");
         assert_eq!(symbols[2].as_ref(), b"ef");
         assert_eq!(symbols[3].as_ref(), b"\0\0");
+    }
+
+    fn test_sender_shared() -> SenderShared {
+        let manifest = LosslessSessionManifest {
+            block_size: 4,
+            total_bytes: 4,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Plain,
+        };
+        let plan = BlockPlan::new(4, 4).expect("valid plan");
+        SenderShared {
+            session: SessionConfig {
+                session_id: 7,
+                block_size: 4,
+            },
+            route: TransportRoute {
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1111,
+                dst_port: 2222,
+            },
+            processors: ProcessorHandle::new(LocalConfig {
+                node_id: 0,
+                n_nodes: 1,
+                num_packet_processors: 1,
+                channel_capacity: 8,
+                user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+                local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+                ..Default::default()
+            }),
+            manifest,
+            receiver_ids: vec![22, 23],
+            active_quorum: ActiveSessionQuorum::new([22, 23]),
+            quorum_liveness: QuorumLiveness::new(
+                Duration::from_millis(10),
+                Duration::from_millis(30),
+            ),
+            plan,
+            source: BlockSource::new(Bytes::from_static(b"abcd")),
+            ready_grace: Duration::from_millis(1),
+            topology_ready: None,
+            pacer: None,
+            payload_emitted: false,
+        }
+    }
+
+    struct NoopMode;
+
+    impl ModeHooks for NoopMode {}
+
+    #[derive(Default)]
+    struct RecordingMode {
+        plain_statuses: Vec<(usize, PlainStatus)>,
+    }
+
+    impl ModeHooks for RecordingMode {
+        fn on_plain_status(
+            &mut self,
+            _shared: &mut SenderShared,
+            peer_id: usize,
+            status: PlainStatus,
+        ) {
+            self.plain_statuses.push((peer_id, status));
+        }
     }
 }

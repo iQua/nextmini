@@ -9,6 +9,7 @@ use nextmini_messages::lossless_session::{
 
 use crate::node::processor::SendOutcome;
 use crate::node::session::api::InboundFrame;
+use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder};
@@ -89,17 +90,20 @@ impl FecSender {
         &mut self,
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
-    ) {
+    ) -> SessionOutcome {
         while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
 
             if self.phase == RoundPhase::WaitingForReports {
-                if self.round_reports.len() == shared.receiver_set.len() {
-                    self.finish_report_round();
+                if self.round_reports.len() == shared.active_quorum.active_members().len() {
+                    self.finish_report_round(shared);
                     continue;
                 }
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    break;
+                match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+                    super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
+                    super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
+                        return SessionOutcome::Aborted;
+                    }
                 }
                 continue;
             }
@@ -110,7 +114,7 @@ impl FecSender {
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
-                    break;
+                    return SessionOutcome::Aborted;
                 }
                 continue;
             }
@@ -121,7 +125,7 @@ impl FecSender {
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
-                    break;
+                    return SessionOutcome::Aborted;
                 }
                 continue;
             }
@@ -129,13 +133,23 @@ impl FecSender {
             if !self.round_eot_sent {
                 self.begin_report_round(shared).await;
                 self.round_eot_sent = true;
+                if shared.active_quorum_is_empty() {
+                    self.round_complete = true;
+                    break;
+                }
+                shared.start_quorum_feedback_wait();
                 continue;
             }
 
-            if !shared.wait_for_signal(ctrl_rx, self).await {
-                break;
+            match shared.wait_for_quorum_feedback(ctrl_rx, self).await {
+                super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
+                super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
+                    return SessionOutcome::Aborted;
+                }
             }
         }
+
+        SessionOutcome::Completed
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -184,6 +198,7 @@ impl FecSender {
         if let Some(block) = fec_block_mut(self, block_id) {
             block.next_source_symbol += 1;
         }
+        shared.mark_payload_emitted();
         true
     }
 
@@ -206,6 +221,7 @@ impl FecSender {
             block.extra_budget = block.extra_budget.saturating_sub(1);
             block.next_fountain_symbol += 1;
         }
+        shared.mark_payload_emitted();
         true
     }
 
@@ -321,7 +337,7 @@ impl FecSender {
         self.phase = RoundPhase::WaitingForReports;
     }
 
-    fn finish_report_round(&mut self) {
+    fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
         let mut aggregated = vec![0u16; self.blocks.len()];
         let mut all_complete = true;
 
@@ -351,17 +367,26 @@ impl FecSender {
             block.extra_budget = budget;
         }
         self.round_reports.clear();
+        shared.clear_quorum_feedback_wait();
         self.phase = RoundPhase::SendingData;
         self.round_eot_sent = false;
     }
 }
 
 impl super::ModeHooks for FecSender {
-    fn on_fec_status(&mut self, _shared: &super::SenderShared, peer_id: usize, status: FecStatus) {
+    fn on_fec_status(
+        &mut self,
+        shared: &mut super::SenderShared,
+        peer_id: usize,
+        status: FecStatus,
+    ) {
         if self.phase != RoundPhase::WaitingForReports {
             return;
         }
         self.round_reports.insert(peer_id, status);
+        if self.round_reports.len() == shared.active_quorum.active_members().len() {
+            self.finish_report_round(shared);
+        }
     }
 }
 
