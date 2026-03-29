@@ -83,6 +83,7 @@ pub struct ReceiverRequest {
 #[derive(Debug, Default)]
 pub struct ReceiverProgress {
     first_payload_unit_at: OnceLock<Instant>,
+    object_complete_at: OnceLock<Instant>,
 }
 
 impl ReceiverProgress {
@@ -95,6 +96,17 @@ impl ReceiverProgress {
     #[allow(dead_code)]
     pub fn first_payload_unit_at(&self) -> Option<Instant> {
         self.first_payload_unit_at.get().copied()
+    }
+
+    /// Record when the receiver first reached local object completion.
+    pub fn mark_object_complete(&self) {
+        let _ = self.object_complete_at.set(Instant::now());
+    }
+
+    /// Return the timestamp of local object completion, if any.
+    #[allow(dead_code)]
+    pub fn object_complete_at(&self) -> Option<Instant> {
+        self.object_complete_at.get().copied()
     }
 }
 

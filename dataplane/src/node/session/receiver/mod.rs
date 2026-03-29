@@ -192,6 +192,7 @@ impl SessionReceiver {
         if self.lifecycle == ReceiverLifecycle::PassiveComplete {
             return;
         }
+        self.shared.mark_object_complete();
         self.lifecycle = ReceiverLifecycle::PassiveComplete;
         debug!(
             session_id = self.shared.session_id,
@@ -358,6 +359,13 @@ impl ReceiverShared {
     pub(super) fn mark_first_payload_unit(&self) {
         if let Some(progress) = &self.cfg.progress {
             progress.mark_first_payload_unit();
+        }
+    }
+
+    /// Record when this receiver first completed the local object.
+    fn mark_object_complete(&self) {
+        if let Some(progress) = &self.cfg.progress {
+            progress.mark_object_complete();
         }
     }
 
@@ -1048,6 +1056,47 @@ mod tests {
         shared.mark_first_payload_unit();
 
         assert!(progress.first_payload_unit_at().is_some());
+    }
+
+    #[tokio::test]
+    async fn mark_object_complete_records_progress() {
+        let progress = Arc::new(crate::node::session::runtime::ReceiverProgress::default());
+        let shared = ReceiverShared {
+            session_id: 9,
+            route: crate::node::session::runtime::TransportRoute {
+                src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1,
+                dst_port: 2,
+            },
+            local_node_id: 1,
+            cfg: ReceiverConfig {
+                session_id: 9,
+                route: crate::node::session::runtime::TransportRoute {
+                    src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+                    dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+                    src_port: 1,
+                    dst_port: 2,
+                },
+                local_node_id: 1,
+                sink_buffer: None,
+                progress: Some(progress.clone()),
+                fec_enabled: false,
+            },
+            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
+            manifest: Some(LosslessSessionManifest {
+                block_size: 8,
+                total_bytes: 8,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Plain,
+            }),
+            plan: BlockPlan::new(8, 8).ok(),
+            complete_blocks: BTreeSet::new(),
+        };
+
+        shared.mark_object_complete();
+
+        assert!(progress.object_complete_at().is_some());
     }
 
     #[tokio::test]
