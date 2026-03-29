@@ -37,6 +37,7 @@ pub(super) struct FecSender {
     phase: RoundPhase,
     round_complete: bool,
     round_reports: BTreeMap<usize, NeedReport>,
+    repair_window_symbols: u32,
     protocol_error: bool,
 }
 
@@ -85,6 +86,7 @@ impl FecSender {
             phase: RoundPhase::SendingData,
             round_complete: false,
             round_reports: BTreeMap::new(),
+            repair_window_symbols: 0,
             protocol_error: false,
         })
     }
@@ -191,6 +193,9 @@ impl FecSender {
 
     /// Return the next extra fountain symbol requested by a receiver.
     fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
+        if self.total_emitted_extra_symbols() >= self.repair_window_symbols {
+            return None;
+        }
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
             if block.emitted_extra_symbols < block.required_extra_symbols {
@@ -392,6 +397,7 @@ impl FecSender {
         }
 
         self.round_reports.clear();
+        self.repair_window_symbols = 0;
         shared.clear_quorum_feedback_wait();
         self.phase = RoundPhase::SendingData;
         self.current_round_id = self.current_round_id.saturating_add(1);
@@ -491,6 +497,7 @@ impl super::ModeHooks for FecSender {
                 return;
             }
         }
+        self.recalculate_repair_window(shared);
         if self.round_reports.len() == shared.active_quorum.active_members().len()
             && !self.has_pending_repair_work()
         {
@@ -514,6 +521,42 @@ impl FecSender {
         self.blocks
             .iter()
             .any(|block| block.emitted_extra_symbols < block.required_extra_symbols)
+    }
+
+    fn total_required_extra_symbols(&self) -> u32 {
+        self.blocks
+            .iter()
+            .map(|block| u32::from(block.required_extra_symbols))
+            .sum()
+    }
+
+    fn total_emitted_extra_symbols(&self) -> u32 {
+        self.blocks
+            .iter()
+            .map(|block| u32::from(block.emitted_extra_symbols))
+            .sum()
+    }
+
+    fn recalculate_repair_window(&mut self, shared: &super::SenderShared) {
+        let total_required = self.total_required_extra_symbols();
+        if total_required == 0 {
+            self.repair_window_symbols = 0;
+            return;
+        }
+
+        let report_count = u32::try_from(self.round_reports.len()).unwrap_or(u32::MAX);
+        let quorum_size =
+            u32::try_from(shared.active_quorum.active_members().len()).unwrap_or(u32::MAX);
+        if report_count == 0 || quorum_size == 0 {
+            self.repair_window_symbols = 0;
+            return;
+        }
+
+        let speculative_window = total_required
+            .saturating_mul(report_count)
+            .div_ceil(quorum_size)
+            .max(1);
+        self.repair_window_symbols = speculative_window.min(total_required);
     }
 }
 
@@ -615,6 +658,56 @@ mod tests {
         assert!(sender.round_reports.is_empty());
         assert!(!sender.has_pending_repair_work());
         assert!(!sender.protocol_error);
+    }
+
+    #[tokio::test]
+    async fn fec_sender_bounds_speculative_repair_until_more_quorum_reports_arrive() {
+        let manifest = test_manifest();
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        sender.phase = RoundPhase::WaitingForReports;
+        sender.current_round_id = 0;
+        let mut shared = test_sender_shared(manifest.clone());
+        shared.active_quorum = ActiveSessionQuorum::new([22, 23]);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.record_ready(23);
+        shared.active_quorum.freeze();
+
+        sender.on_need(
+            &mut shared,
+            22,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 4,
+                }],
+            },
+        );
+
+        assert!(sender.has_pending_repair_work());
+        assert_eq!(
+            sender.next_extra_symbol(&shared),
+            Some((0, u32::from(sender.symbols_per_block))),
+            "first quorum report should open a bounded speculative repair window"
+        );
+        if let Some(block) = sender.blocks.first_mut() {
+            block.emitted_extra_symbols = 2;
+            block.next_fountain_symbol = u32::from(sender.symbols_per_block) + 2;
+        }
+        assert_eq!(
+            sender.next_extra_symbol(&shared),
+            None,
+            "speculative repair should stop once the partial window is exhausted"
+        );
+
+        sender.on_need(&mut shared, 23, 0, NeedReport::Complete);
+
+        assert_eq!(
+            sender.next_extra_symbol(&shared),
+            Some((0, u32::from(sender.symbols_per_block) + 2)),
+            "full quorum should open the remaining repair budget"
+        );
     }
 
     fn test_manifest() -> LosslessSessionManifest {
