@@ -479,8 +479,39 @@ For a given open round:
 - `Need(round_id)` contributes a full-snapshot per-block deficit map
 - sender merges peer reports by taking the max deficit per block
 - sender may begin repair as soon as first useful report arrives
+- sender does **not** immediately open the full merged repair budget on the first useful report
+- instead it uses a bounded speculative repair window:
+  - keep the full merged max-deficit map as the required repair target
+  - cap early repair eligibility to a quorum-scaled window derived from how many quorum reports have arrived so far
+  - open the full merged repair budget once full quorum has reported for the round
 - late useful same-round reports may materially increase repair oversend and can force extra rounds relative to the current barriered design
 - sender uses work-conserving tree scheduling where transport contract allows it
+
+### FEC speculative repair window
+
+Phase 1 uses a bounded speculative repair window instead of a settle timer or a fixed first-repair grace.
+
+Rationale:
+
+- a fixed grace is time-based and brittle
+- a bounded window is uncertainty-based and local to the FEC sender
+- it still allows fast trees to help immediately
+- but it limits how much speculative repair can consume before the quorum view stabilizes
+
+Phase 1 rule:
+
+- let `required_extra_symbols` be the full merged max-deficit target for the open round
+- let `repair_window_symbols` be the currently eligible repair budget for that round
+- when the first useful quorum report arrives, open only a bounded speculative fraction of the merged repair target
+- as more quorum peers report, widen that speculative window
+- once every quorum peer has reported for the round, open the full remaining merged repair budget
+
+The exact window formula is an implementation detail, but the behavioral contract is:
+
+- early repair is allowed
+- early repair is bounded
+- the full merged repair target becomes eligible at full quorum
+- same-round late useful reports may still extend the merged repair target in place while the round remains open
 
 ### Throughput claim scope
 
@@ -570,6 +601,8 @@ There is no settle timer for repair start.
 Rationale:
 
 - fast trees should not be held idle waiting for a timer
+- fixed first-repair grace windows are not the preferred mitigation
+- in FEC mode, bounded speculative repair is preferred over a time-based grace
 - speculative repair is acceptable
 - correctness is preserved by full-snapshot `Need`, same-round replay, and explicit round closure rules
 - oversend is an accepted latency tradeoff in Phase 1, especially in FEC mode
@@ -680,6 +713,8 @@ These invariants must be encoded in tests before substantial implementation work
 32. `object_complete` does not imply receiver exit; only `session_finished` may exit.
 33. Passive-complete receivers may exit only after local abort, explicit teardown, or `session_finish_timeout`.
 34. Receiver-side stale `SourceDone(j < k)` is dropped.
+35. In FEC mode, early repair eligibility is bounded before full quorum; the sender does not immediately expose the full merged repair budget on the first useful report.
+36. In FEC mode, full merged repair eligibility opens once every quorum peer has reported for the round.
 
 ## TDD Rule
 
@@ -934,6 +969,9 @@ Acceptance criteria:
 - Remove the current all-receiver report barrier implementation.
 - Start repair symbol transmission after the first useful `Need(round_id)` from a quorum peer.
 - Merge same-round peer snapshots by taking max per-block deficit.
+- Add a bounded speculative repair window so the first useful report opens only a partial repair budget.
+- Widen that repair window as more quorum reports arrive.
+- Open the full merged repair budget once full quorum has reported for the round.
 - Allow burst `r + 1` emission to begin while feedback for round `r` remains open.
 - If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend the merged FEC deficit map and resume burst `r + 1` emission in place.
 - Keep the round open until every quorum peer reported and merged work is locally exhausted.
@@ -945,6 +983,8 @@ Acceptance criteria:
 
 - FEC sender starts repair early.
 - FEC sender still gives slow peers a correct reporting window.
+- FEC sender bounds speculative repair before full quorum instead of opening the full merged repair budget immediately.
+- FEC sender exposes the full merged repair budget once full quorum has reported.
 - The implementation does not over-claim behavior on shared-queue ingress.
 - FEC sender never opens feedback for burst `r + 1` before round `r` closes.
 - FEC sender treats oversend and extra rounds as explicit latency tradeoffs, not accidental side effects.
@@ -1102,6 +1142,9 @@ Must cover:
 28. stale older `SourceDone(j < k)` is dropped on the receiver side
 29. passive-complete receiver enters `session_finished` only after `session_finish_timeout` or explicit teardown
 30. version mismatch logs remote version and session id before drop
+31. in FEC mode, the first useful quorum report opens only a bounded speculative repair window
+32. in FEC mode, speculative repair stops when that partial window is exhausted and resumes as later quorum reports widen it
+33. in FEC mode, full quorum opens the remaining merged repair budget
 
 ### Full suite
 
@@ -1112,6 +1155,7 @@ Must cover:
 - Early repair may oversend relative to the current all-receiver barrier.
 - In FEC mode that oversend can be material, because deficits are heuristic snapshots and same-round immutable.
 - Early immutable non-empty `Need` can also force extra follow-up rounds that later in-flight source data would have avoided.
+- A bounded speculative repair window reduces early FEC overshoot, but it does not eliminate the underlying heuristic-deficit tradeoff.
 - The burst-id versus feedback-open-round distinction must be implemented explicitly or the new protocol will race.
 - Quorum freeze changes session semantics and must be clearly communicated.
 - Silent frozen-peer handling now fails by abort rather than indefinite wait; operators must understand that behavior.
