@@ -223,27 +223,19 @@ That is not part of Phase 1.
 
 ### Sender work accounting for the open round
 
-For the feedback-open round `r`, the sender must track two monotonic frontiers:
+For the feedback-open round `r`, the sender keeps mode-local accounting instead of a separate shared frontier framework.
 
-1. `required_work_frontier(r)`
-2. `emitted_work_frontier(r)`
-
-`required_work_frontier(r)` summarizes all work implied by the merged same-round `Need(r)` snapshots seen so far.
-
-- in plain mode: the union of all missing block ranges
-- in FEC mode: the max-per-block deficit map
-
-`emitted_work_frontier(r)` summarizes what burst `r + 1` has already had accepted by local processor ingress against that required work.
+- in plain mode: track the merged missing block set/ranges implied by same-round `Need(r)` snapshots and which retransmits for burst `r + 1` have already been admitted locally
+- in FEC mode: track the merged max-per-block deficit map implied by same-round `Need(r)` snapshots and how many repair symbols for burst `r + 1` have already been admitted locally
 
 Rules:
 
-- `required_work_frontier(r)` may only grow while round `r` remains open
-- `emitted_work_frontier(r)` may only grow as work is accepted by local processor ingress
-- `work locally exhausted` means `emitted_work_frontier(r)` covers `required_work_frontier(r)` and the sender has no additional local frames buffered or waiting to be admitted for that frontier
-- if a late useful `Need(r)` arrives after burst `r + 1` appeared locally exhausted, the sender extends `required_work_frontier(r)`, resumes burst `r + 1` emission in place, and keeps `SourceDone(r + 1)` pending
-- a boolean “work_locally_exhausted” flag is not sufficient state by itself
+- required same-round work may only grow while round `r` remains open
+- locally admitted work may only grow as retransmits or repair symbols are accepted by local processor ingress
+- `work locally exhausted` means the sender has admitted enough work to cover the current merged round requirement and has no additional local frames buffered or waiting to be admitted for that requirement
+- if a late useful `Need(r)` arrives after burst `r + 1` appeared locally exhausted, the sender extends the current round work in place, resumes burst `r + 1` emission, and keeps `SourceDone(r + 1)` pending
 
-This is intentionally a sender-local accounting concept.
+This is intentionally a sender-local, mode-local accounting concept.
 
 Phase 1 does **not** attempt to infer downstream scheduler drain or full network drain before advancing rounds.
 
@@ -254,7 +246,7 @@ A round does **not** close just because repair work becomes locally exhausted.
 A round closes only when:
 
 1. every peer in the active session quorum has reported for that round
-2. `emitted_work_frontier(r)` covers `required_work_frontier(r)`
+2. the sender's merged round work is locally exhausted
 3. there is no pending same-round solicitation or replay work left to send
 
 ### Round advancement
@@ -463,7 +455,7 @@ For both plain and FEC:
 5. if the active quorum is empty at `SourceDone(0)`, complete immediately
 6. begin emitting burst `1` as soon as the first useful `Need(0)` arrives
 7. continue merging additional `Need(0)` snapshots from other quorum peers while round `0` remains open
-8. if burst `1` appears locally exhausted and a later useful `Need(0)` extends `required_work_frontier(0)`, resume burst `1` emission in place and keep `SourceDone(1)` pending
+8. if burst `1` appears locally exhausted and a later useful `Need(0)` extends the merged round work, resume burst `1` emission in place and keep `SourceDone(1)` pending
 9. if burst `1` is locally exhausted but not all quorum peers reported for round `0`, retransmit `SourceDone(0)` and keep waiting
 10. if a quorum peer stays silent past `peer_report_timeout`, abort the session
 11. once round `0` closes:
@@ -671,9 +663,9 @@ These invariants must be encoded in tests before substantial implementation work
 15. The sender may emit burst `r + 1` before round `r` closes, but may not emit `SourceDone(r + 1)` until round `r` is closed.
 16. If round `r` closes with all-empty `Need(r)`, the session completes without opening `r + 1`.
 17. A silent frozen quorum peer cannot stall the session forever; the session aborts on `PeerReportTimeout`.
-18. `required_work_frontier(r)` is monotonic while round `r` is open.
-19. `emitted_work_frontier(r)` is monotonic and `SourceDone(r + 1)` is forbidden until it covers `required_work_frontier(r)`.
-20. Late useful `Need(r)` extends the current round work frontier; it does not open a second feedback round.
+18. Sender-local required work for round `r` is monotonic while round `r` is open.
+19. Sender-local admitted work for round `r` is monotonic and `SourceDone(r + 1)` is forbidden until round `r` is locally exhausted.
+20. Late useful `Need(r)` extends the current round work in place; it does not open a second feedback round.
 21. Same-round `Need` equality is byte-for-byte on canonical encoding.
 22. Non-quorum control is dropped and observed.
 23. Zero-byte object sessions freeze quorum on `SourceDone(0)` and complete through the same all-empty round rules.
@@ -777,25 +769,21 @@ Acceptance criteria:
 - The new semantics are written down in one place.
 - The riskiest rules exist as failing tests before code changes.
 
-### T2. Introduce explicit shared round and quorum state types
+### T2. Introduce explicit shared quorum and liveness state types
 
 - depends_on: [T1]
 - Add shared sender-side types for:
-  - feedback-open round id
-  - current burst id
-  - per-peer report status
   - quorum membership
-  - `required_work_frontier(r)` for the open round
-  - `emitted_work_frontier(r)` for work already accepted by local processor ingress
-  - whether a non-empty next burst has been emitted in response to the open round
-  - whether the next `SourceDone` is pending on round closure
-- Add small helper types instead of scattering ad hoc counters and booleans through plain/FEC sender code.
+  - quorum freeze
+  - missing-peer solicitation timing
+  - peer-report timeout tracking
+- Keep round-local work accounting inside the plain and FEC sender implementations instead of introducing a second shared frontier model.
+- Add small helper types where the state is truly shared instead of scattering ad hoc counters and booleans through sender code.
 
 Acceptance criteria:
 
-- Plain and FEC sender rewrites can share one round/quorum vocabulary.
-- Burst state versus feedback-open state is explicit in code before behavior rewrites start.
-- Work accounting is represented as explicit frontiers, not a single boolean.
+- Plain and FEC sender rewrites share one quorum and liveness vocabulary.
+- The implementation does not depend on a second unused sender-state abstraction.
 - The plan does not depend on unobservable network-drain signals.
 
 ### T3. Add explicit migration/versioning policy
@@ -916,14 +904,14 @@ Acceptance criteria:
 - Passive-complete receivers can satisfy later quorum rounds without inventing new wire messages.
 - Receiver termination is explicit rather than hand-waved.
 
-### T9. Rewrite the plain sender around the shared round state machine
+### T9. Rewrite the plain sender around the revised round rules
 
 - depends_on: [T2, T4, T5, T7, T8, T11]
 - Remove the current all-receiver barrier implementation.
 - Start retransmission after the first useful `Need(round_id)` from a quorum peer.
 - Merge additional same-round peer snapshots into one block retransmit set.
 - Allow burst `r + 1` emission to begin while feedback for round `r` remains open.
-- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend `required_work_frontier(r)` and resume burst `r + 1` emission in place.
+- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend the merged plain retransmit set and resume burst `r + 1` emission in place.
 - If work is locally exhausted and some quorum peers still have not reported:
   - keep the round open
   - retransmit `SourceDone(round_id)`
@@ -940,14 +928,14 @@ Acceptance criteria:
 - Plain sender never has two feedback-open rounds at once.
 - Plain sender accounts for late useful same-round reports without reopening feedback.
 
-### T10. Rewrite the FEC sender around the shared round state machine
+### T10. Rewrite the FEC sender around the revised round rules
 
 - depends_on: [T2, T4, T5, T7, T8, T11]
 - Remove the current all-receiver report barrier implementation.
 - Start repair symbol transmission after the first useful `Need(round_id)` from a quorum peer.
 - Merge same-round peer snapshots by taking max per-block deficit.
 - Allow burst `r + 1` emission to begin while feedback for round `r` remains open.
-- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend `required_work_frontier(r)` and resume burst `r + 1` emission in place.
+- If a late useful `Need(round_id)` arrives after burst `r + 1` appeared locally exhausted, extend the merged FEC deficit map and resume burst `r + 1` emission in place.
 - Keep the round open until every quorum peer reported and merged work is locally exhausted.
 - Retransmit `SourceDone(round_id)` while waiting for missing peer reports.
 - Abort on `PeerReportTimeout` instead of waiting forever for a silent frozen peer.
@@ -1147,7 +1135,7 @@ Must cover:
 ## Recommended Execution Order
 
 1. Freeze semantics and tests.
-2. Introduce shared round/quorum state.
+2. Introduce shared quorum/liveness state.
 3. Add migration/versioning.
 4. Add `SourceDone`.
 5. Add `Need`.

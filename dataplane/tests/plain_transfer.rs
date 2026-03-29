@@ -304,7 +304,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
     .expect("source-done should reach receiver");
     let _ = common::recv_packet(&mut capture.packet_rx).await;
 
-    timeout(Duration::from_secs(2), &mut receiver_task)
+    timeout(Duration::from_secs(3), &mut receiver_task)
         .await
         .expect("receiver should eventually GC after passive-complete idle timeout")
         .expect("receiver task should exit cleanly");

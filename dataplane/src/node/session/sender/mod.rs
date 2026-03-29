@@ -25,6 +25,7 @@ use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
+use crate::node::session::timing;
 
 use self::fec::FecSender;
 use self::plain::PlainSender;
@@ -32,8 +33,6 @@ use self::state::{ActiveSessionQuorum, QuorumLiveness};
 
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 const IDLE_WAIT: Duration = Duration::from_millis(10);
-const QUORUM_SOLICITATION_INTERVAL: Duration = Duration::from_millis(250);
-const QUORUM_PEER_REPORT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Run one sender session until completion or channel shutdown.
 pub async fn run(
@@ -169,8 +168,10 @@ impl SessionSender {
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
         let source = BlockSource::new(cfg.source_buffer);
         let active_quorum = ActiveSessionQuorum::new(cfg.receiver_ids.iter().copied());
-        let quorum_liveness =
-            QuorumLiveness::new(QUORUM_SOLICITATION_INTERVAL, QUORUM_PEER_REPORT_TIMEOUT);
+        let quorum_liveness = QuorumLiveness::new(
+            timing::quorum_solicitation_interval(),
+            timing::peer_report_timeout(),
+        );
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
             LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),

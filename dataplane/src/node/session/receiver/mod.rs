@@ -13,7 +13,6 @@ use std::collections::BTreeSet;
 use std::ops::Bound::{Excluded, Unbounded};
 
 use tokio::sync::{mpsc, oneshot};
-use tokio::time::Duration;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
@@ -27,14 +26,10 @@ use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessR
 use crate::node::session::control;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
+use crate::node::session::timing;
 
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
-
-#[cfg(test)]
-const SESSION_FINISH_TIMEOUT: Duration = Duration::from_millis(50);
-#[cfg(not(test))]
-const SESSION_FINISH_TIMEOUT: Duration = Duration::from_millis(1500);
 
 /// Run one receiver session until the transfer is complete or the channel closes.
 #[allow(dead_code)]
@@ -122,7 +117,7 @@ impl SessionReceiver {
             let frame = if self.is_passive_complete() {
                 tokio::select! {
                     maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep(SESSION_FINISH_TIMEOUT) => {
+                    _ = tokio::time::sleep(timing::session_finish_timeout()) => {
                         self.finish_session("session_finish_timeout");
                         break;
                     }
@@ -1302,6 +1297,147 @@ mod tests {
             panic!("unexpected runtime message");
         };
         assert_eq!(session_id, 11);
+        assert_eq!(
+            replay,
+            CompletedReceiverReplay::Plain {
+                round_id: 1,
+                route,
+                report: NeedReport::Complete,
+            }
+        );
+        ack.send(()).expect("replay handoff should still await ack");
+
+        receiver_task
+            .await
+            .expect("receiver task should exit cleanly after handoff");
+    }
+
+    #[tokio::test]
+    async fn passive_complete_receiver_survives_past_peer_report_timeout_to_answer_later_round() {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4754,
+            dst_port: 5754,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, mut packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(8);
+        let receiver_task = tokio::spawn(run_with_runtime(
+            ReceiverConfig {
+                session_id: 12,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                sink_buffer: None,
+                progress: None,
+                fec_enabled: false,
+            },
+            rx,
+            processors.clone(),
+            Some(runtime_tx),
+        ));
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                12,
+                &LosslessSessionControl::Manifest {
+                    manifest: LosslessSessionManifest {
+                        block_size: 8,
+                        total_bytes: 8,
+                        total_blocks: 1,
+                        mode: LosslessSessionMode::Plain,
+                    },
+                },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("manifest should reach receiver");
+
+        let _ready = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for Ready")
+            .expect("packet capture closed unexpectedly");
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("block data should reach receiver");
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                12,
+                &LosslessSessionControl::SourceDone { round_id: 0 },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("first SourceDone should reach receiver");
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        tokio::time::sleep(
+            crate::node::session::timing::peer_report_timeout() + Duration::from_millis(25),
+        )
+        .await;
+        assert!(
+            matches!(
+                runtime_rx.try_recv(),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+            ),
+            "receiver should remain live past the sender peer-report timeout budget"
+        );
+
+        tx.send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                12,
+                &LosslessSessionControl::SourceDone { round_id: 1 },
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        })
+        .await
+        .expect("second SourceDone should reach receiver");
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+
+        drop(tx);
+
+        let LosslessRuntimeMessage::ReceiverCompleted {
+            session_id,
+            replay,
+            ack,
+        } = timeout(Duration::from_secs(2), runtime_rx.recv())
+            .await
+            .expect("timed out waiting for replay handoff")
+            .expect("runtime channel closed unexpectedly")
+        else {
+            panic!("unexpected runtime message");
+        };
+        assert_eq!(session_id, 12);
         assert_eq!(
             replay,
             CompletedReceiverReplay::Plain {
