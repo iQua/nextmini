@@ -276,9 +276,11 @@ async fn run_receiver(
         ));
     }
 
-    let transfer_finished_at = Instant::now();
     let transfer_started_at = progress.first_payload_unit_at().ok_or_else(|| {
         format!("receiver session {session_id} completed without recording payload arrival")
+    })?;
+    let transfer_finished_at = progress.object_complete_at().ok_or_else(|| {
+        format!("receiver session {session_id} completed without recording local object completion")
     })?;
 
     let sink_bytes = sink.lock().await.clone();

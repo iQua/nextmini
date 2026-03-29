@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
-use nextmini_messages::lossless_session::{self, BlockStatus, FecStatus, LosslessSessionMode};
-use tracing::warn;
+use nextmini_messages::lossless_session::{self, LosslessSessionMode, NeedBlock, NeedReport};
+use tracing::{debug, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
@@ -18,17 +18,23 @@ pub(super) struct FecBlockState {
 pub(super) struct FecReceiver {
     pub(super) geometry: SymbolGeometry,
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
-    pub(super) eot_seen: bool,
+    pub(super) last_source_done_round_id: Option<u32>,
+    pub(super) last_round_need: Option<NeedReport>,
     complete_reported: bool,
 }
 
 impl FecReceiver {
+    pub(super) fn last_source_done_round_id(&self) -> Option<u32> {
+        self.last_source_done_round_id
+    }
+
     /// Build receiver-side FEC state from the negotiated symbol geometry.
     pub(super) fn new(geometry: SymbolGeometry) -> Self {
         Self {
             geometry,
             blocks: BTreeMap::new(),
-            eot_seen: false,
+            last_source_done_round_id: None,
+            last_round_need: None,
             complete_reported: false,
         }
     }
@@ -194,33 +200,58 @@ impl FecReceiver {
         }
     }
 
-    pub(super) fn status(&self, shared: &super::ReceiverShared) -> Option<FecStatus> {
-        let Some(plan) = shared.plan else {
-            return None;
-        };
+    pub(super) fn need_report(&self, shared: &super::ReceiverShared) -> Option<NeedReport> {
+        let plan = shared.plan?;
         if plan.total_blocks() == 0 || shared.has_all_blocks() {
-            return Some(FecStatus::Complete);
-        };
+            return Some(NeedReport::Complete);
+        }
         let mut blocks = Vec::new();
         for block_id in 0..plan.total_blocks() {
             if shared.complete_blocks.contains(&block_id) {
                 continue;
             }
-            blocks.push(BlockStatus {
+            blocks.push(NeedBlock {
                 block_id,
                 deficit_symbols: self.block_deficit(shared, block_id),
             });
         }
-        Some(FecStatus::MissingBlocks { blocks })
+        Some(NeedReport::Fec { blocks })
     }
 
-    pub(super) async fn handle_eot(&mut self, shared: &super::ReceiverShared) {
-        self.eot_seen = true;
-        let Some(status) = self.status(shared) else {
+    pub(super) async fn handle_source_done(
+        &mut self,
+        shared: &super::ReceiverShared,
+        round_id: u32,
+    ) {
+        if let Some(last_round_id) = self.last_source_done_round_id {
+            if round_id < last_round_id {
+                debug!(
+                    session_id = shared.session_id,
+                    round_id, last_round_id, "Lossless FEC receiver dropped stale SourceDone"
+                );
+                return;
+            }
+            if round_id == last_round_id {
+                if let Some(report) = self.last_round_need.clone() {
+                    debug!(
+                        session_id = shared.session_id,
+                        round_id,
+                        "Lossless FEC receiver replayed cached Need for duplicate SourceDone"
+                    );
+                    shared.send_fec_need(last_round_id, &report).await;
+                    self.complete_reported = matches!(report, NeedReport::Complete);
+                }
+                return;
+            }
+        }
+
+        let Some(report) = self.need_report(shared) else {
             return;
         };
-        shared.send_fec_status(&status).await;
-        self.complete_reported = matches!(status, FecStatus::Complete);
+        self.last_source_done_round_id = Some(round_id);
+        self.last_round_need = Some(report.clone());
+        shared.send_fec_need(round_id, &report).await;
+        self.complete_reported = matches!(report, NeedReport::Complete);
     }
 
     pub(super) fn is_complete(&self) -> bool {

@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use nextmini_messages::lossless_session::{FecStatus, PlainStatus};
+use nextmini_messages::lossless_session::NeedReport;
 
 use crate::node::session::runtime::{
     PreflightError, ReceiverRequest, SenderRequest, TransportRoute,
@@ -138,12 +138,14 @@ impl Display for StartError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CompletedReceiverReplay {
     Plain {
+        round_id: u32,
         route: TransportRoute,
-        status: PlainStatus,
+        report: NeedReport,
     },
     Fec {
+        round_id: u32,
         route: TransportRoute,
-        status: FecStatus,
+        report: NeedReport,
     },
 }
 

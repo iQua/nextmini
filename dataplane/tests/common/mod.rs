@@ -13,8 +13,8 @@ use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::{SessionConfig, TransportRoute};
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    PlainStatus,
+    self, LosslessSessionControl, LosslessSessionHeader, LosslessSessionKind,
+    LosslessSessionManifest, LosslessSessionMode, NeedReport,
 };
 use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
@@ -105,13 +105,7 @@ pub async fn recv_packet(packet_rx: &mut mpsc::Receiver<Packet>) -> Packet {
 }
 
 pub fn ready_frame(session_id: u64, peer_id: usize) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::Ready {
-            node_id: peer_id as u64,
-        },
-    )
+    control_frame(session_id, peer_id, LosslessSessionControl::Ready)
 }
 
 pub fn manifest_frame(
@@ -135,14 +129,6 @@ pub fn manifest_frame(
     )
 }
 
-pub fn block_ack_frame(session_id: u64, peer_id: usize, block_id: u64) -> InboundFrame {
-    control_frame(
-        session_id,
-        peer_id,
-        LosslessSessionControl::BlockAck { block_id },
-    )
-}
-
 pub fn block_data_frame(
     session_id: u64,
     peer_id: usize,
@@ -155,29 +141,66 @@ pub fn block_data_frame(
     }
 }
 
-pub fn plain_status_frame(session_id: u64, peer_id: usize, status: PlainStatus) -> InboundFrame {
+pub fn plain_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    report: NeedReport,
+) -> InboundFrame {
     control_frame(
         session_id,
         peer_id,
-        LosslessSessionControl::PlainStatus { status },
+        LosslessSessionControl::Need { round_id, report },
     )
 }
 
-pub fn fec_status_frame(session_id: u64, peer_id: usize, status: FecStatus) -> InboundFrame {
+pub fn fec_status_frame(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    report: NeedReport,
+) -> InboundFrame {
     control_frame(
         session_id,
         peer_id,
-        LosslessSessionControl::FecStatus { status },
+        LosslessSessionControl::Need { round_id, report },
     )
 }
 
-pub fn eot_frame(session_id: u64, peer_id: usize) -> InboundFrame {
-    control_frame(session_id, peer_id, LosslessSessionControl::Eot)
+pub fn source_done_frame(session_id: u64, peer_id: usize, round_id: u32) -> InboundFrame {
+    control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::SourceDone { round_id },
+    )
 }
 
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {
     InboundFrame {
         bytes: lossless_session::encode_control(session_id, &control),
+        peer_id: Some(peer_id),
+    }
+}
+
+pub fn legacy_control_frame(
+    session_id: u64,
+    peer_id: usize,
+    ctrl_kind: u8,
+    body: &[u8],
+) -> InboundFrame {
+    let mut bytes = vec![0u8; LosslessSessionHeader::LEN + body.len()];
+    LosslessSessionHeader {
+        magic: lossless_session::LOSSLESS_SESSION_MAGIC,
+        version: lossless_session::LOSSLESS_SESSION_VERSION,
+        kind: LosslessSessionKind::Control,
+        ctrl_kind,
+        session_id,
+        body_len: body.len() as u32,
+    }
+    .encode_into(&mut bytes[..LosslessSessionHeader::LEN]);
+    bytes[LosslessSessionHeader::LEN..].copy_from_slice(body);
+    InboundFrame {
+        bytes,
         peer_id: Some(peer_id),
     }
 }

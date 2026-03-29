@@ -10,8 +10,8 @@ use tokio::time::timeout;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
-    self, FecStatus, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode,
+    self, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, NeedReport,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -47,9 +47,9 @@ async fn sender_stripes_symbols_across_configured_trees() {
 
     let configured = tree_ids.into_iter().collect::<BTreeSet<_>>();
     let mut observed = BTreeSet::new();
-    let mut saw_eot = false;
+    let mut saw_source_done = false;
 
-    while observed.len() < configured.len() || !saw_eot {
+    while observed.len() < configured.len() || !saw_source_done {
         let packet = common::recv_packet(&mut harness.packet_rx).await;
         assert_eq!(packet.lossless_session_id(), Some(session_id));
 
@@ -59,7 +59,7 @@ async fn sender_stripes_symbols_across_configured_trees() {
         if let Some((_, control)) = lossless_session::decode_control(payload) {
             match control {
                 LosslessSessionControl::Manifest { .. } => {}
-                LosslessSessionControl::Eot => saw_eot = true,
+                LosslessSessionControl::SourceDone { .. } => saw_source_done = true,
                 other => panic!("unexpected control frame: {other:?}"),
             }
             continue;
@@ -76,7 +76,12 @@ async fn sender_stripes_symbols_across_configured_trees() {
     }
 
     ctrl_tx
-        .send(common::fec_status_frame(session_id, 2, FecStatus::Complete))
+        .send(common::fec_status_frame(
+            session_id,
+            2,
+            0,
+            NeedReport::Complete,
+        ))
         .await
         .expect("completion status should enqueue");
 

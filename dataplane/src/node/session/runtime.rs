@@ -7,7 +7,7 @@ use std::time::Instant;
 use ahash::AHashMap;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
@@ -83,6 +83,7 @@ pub struct ReceiverRequest {
 #[derive(Debug, Default)]
 pub struct ReceiverProgress {
     first_payload_unit_at: OnceLock<Instant>,
+    object_complete_at: OnceLock<Instant>,
 }
 
 impl ReceiverProgress {
@@ -95,6 +96,17 @@ impl ReceiverProgress {
     #[allow(dead_code)]
     pub fn first_payload_unit_at(&self) -> Option<Instant> {
         self.first_payload_unit_at.get().copied()
+    }
+
+    /// Record when the receiver first reached local object completion.
+    pub fn mark_object_complete(&self) {
+        let _ = self.object_complete_at.set(Instant::now());
+    }
+
+    /// Return the timestamp of local object completion, if any.
+    #[allow(dead_code)]
+    pub fn object_complete_at(&self) -> Option<Instant> {
+        self.object_complete_at.get().copied()
     }
 }
 
@@ -291,25 +303,44 @@ impl LosslessRuntime {
 
     /// Forward one inbound frame to the matching session task.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
-        if self.replay_completed_receiver(session, frame.clone()).await {
+        if let Some(header) = lossless_session::peek_header(&frame.bytes)
+            && header.version != lossless_session::LOSSLESS_SESSION_VERSION
+        {
+            warn!(
+                session_id = session,
+                wire_session_id = header.session_id,
+                observed_version = header.version,
+                expected_version = lossless_session::LOSSLESS_SESSION_VERSION,
+                kind = header.kind,
+                ctrl_kind = header.ctrl_kind,
+                "Lossless runtime: dropping frame with unsupported session version."
+            );
             return;
         }
 
-        let inbox = self.sessions.get(&session).map(|entry| entry.inbox.clone());
-
-        if let Some(inbox) = inbox {
-            if inbox.send(frame.clone()).await.is_err() {
+        match self.deliver_live_receiver(session, frame.clone()).await {
+            LiveDeliveryOutcome::Delivered => return,
+            LiveDeliveryOutcome::Closed => {
+                if self.replay_completed_receiver(session, frame.clone()).await {
+                    return;
+                }
                 warn!(
                     session_id = session,
                     "Lossless runtime: session dropped inbound frame."
                 );
+                return;
             }
-        } else {
-            warn!(
-                session_id = session,
-                "Lossless runtime: no session for inbound frame."
-            );
+            LiveDeliveryOutcome::Missing => {}
         }
+
+        if self.replay_completed_receiver(session, frame.clone()).await {
+            return;
+        }
+
+        warn!(
+            session_id = session,
+            "Lossless runtime: no session for inbound frame."
+        );
     }
 
     fn abort_session(&mut self, session_id: SessionId) {
@@ -381,7 +412,7 @@ impl LosslessRuntime {
         let message_sender = self.message_sender.clone();
         tokio::spawn(async move {
             let outcome = match task.await {
-                Ok(()) => SessionOutcome::Completed,
+                Ok(outcome) => outcome,
                 Err(_) => SessionOutcome::Aborted,
             };
             let _ = message_sender.send(LosslessRuntimeMessage::SessionExited {
@@ -511,17 +542,26 @@ impl LosslessRuntime {
         let Some(replay) = self.completed_receivers.get(&session) else {
             return false;
         };
+        let Some((_, LosslessSessionControl::SourceDone { round_id })) =
+            lossless_session::decode_control(&frame.bytes)
+        else {
+            return false;
+        };
         match replay {
-            CompletedReceiverReplay::Plain { route, status } => {
-                let should_replay = lossless_session::decode_block_data(&frame.bytes).is_some()
-                    || matches!(
-                        lossless_session::decode_control(&frame.bytes),
-                        Some((_, LosslessSessionControl::Eot))
+            CompletedReceiverReplay::Plain {
+                round_id: replay_round_id,
+                route,
+                report,
+            } => {
+                if round_id != *replay_round_id {
+                    debug!(
+                        session_id = session,
+                        round_id,
+                        replay_round_id,
+                        "Lossless runtime dropped stale or future replay attempt for a completed plain receiver"
                     );
-                if !should_replay {
                     return false;
                 }
-
                 control::send_control(
                     &self.processors,
                     control::FrameRoute {
@@ -532,23 +572,28 @@ impl LosslessRuntime {
                         dst_ip: route.dst_ip,
                         dst_port: route.dst_port,
                     },
-                    &LosslessSessionControl::PlainStatus {
-                        status: status.clone(),
+                    &LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
                     },
                 )
                 .await;
                 true
             }
-            CompletedReceiverReplay::Fec { route, status } => {
-                let should_replay = lossless_session::decode_block_symbol(&frame.bytes).is_some()
-                    || matches!(
-                        lossless_session::decode_control(&frame.bytes),
-                        Some((_, LosslessSessionControl::Eot))
+            CompletedReceiverReplay::Fec {
+                round_id: replay_round_id,
+                route,
+                report,
+            } => {
+                if round_id != *replay_round_id {
+                    debug!(
+                        session_id = session,
+                        round_id,
+                        replay_round_id,
+                        "Lossless runtime dropped stale or future replay attempt for a completed FEC receiver"
                     );
-                if !should_replay {
                     return false;
                 }
-
                 control::send_control(
                     &self.processors,
                     control::FrameRoute {
@@ -559,8 +604,9 @@ impl LosslessRuntime {
                         dst_ip: route.dst_ip,
                         dst_port: route.dst_port,
                     },
-                    &LosslessSessionControl::FecStatus {
-                        status: status.clone(),
+                    &LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
                     },
                 )
                 .await;
@@ -568,6 +614,29 @@ impl LosslessRuntime {
             }
         }
     }
+
+    async fn deliver_live_receiver(
+        &self,
+        session: SessionId,
+        frame: InboundFrame,
+    ) -> LiveDeliveryOutcome {
+        let Some(inbox) = self.sessions.get(&session).map(|entry| entry.inbox.clone()) else {
+            return LiveDeliveryOutcome::Missing;
+        };
+
+        if inbox.send(frame).await.is_ok() {
+            return LiveDeliveryOutcome::Delivered;
+        }
+
+        LiveDeliveryOutcome::Closed
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LiveDeliveryOutcome {
+    Delivered,
+    Closed,
+    Missing,
 }
 
 #[cfg(test)]
@@ -576,8 +645,9 @@ mod tests {
     use std::time::Duration;
 
     use tokio::sync::watch;
+    use tokio::time::timeout;
 
-    use nextmini_messages::lossless_session::{self, FecStatus, PlainStatus};
+    use nextmini_messages::lossless_session::{self, NeedReport};
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
@@ -588,7 +658,7 @@ mod tests {
     const RECEIVER_NODE_ID: usize = 62;
 
     #[tokio::test]
-    async fn deliver_frame_falls_back_to_completed_plain_receiver_when_inbox_is_closed() {
+    async fn deliver_frame_falls_back_to_completed_plain_receiver_on_source_done() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E401;
         let (inbox, inbox_rx) = mpsc::channel(1);
@@ -609,8 +679,9 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Plain {
+                round_id: 0,
                 route,
-                status: PlainStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -618,7 +689,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -629,15 +703,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_replays_fec_complete_for_late_symbol_and_eot() {
+    async fn deliver_frame_replays_fec_complete_for_source_done() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E402;
 
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Fec {
+                round_id: 0,
                 route,
-                status: FecStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -645,7 +720,10 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -658,7 +736,7 @@ mod tests {
                 InboundFrame {
                     bytes: lossless_session::encode_control(
                         session_id,
-                        &LosslessSessionControl::Eot,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
@@ -668,10 +746,63 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_prefers_completed_plain_replay_over_live_inbox_during_handoff() {
+    async fn deliver_frame_does_not_replay_completed_receiver_for_stale_or_future_rounds() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E40A;
+
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Plain {
+                round_id: 1,
+                route,
+                report: NeedReport::Complete,
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "stale round replay must be dropped"
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 2 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "future round replay must be dropped"
+        );
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_prefers_live_plain_inbox_over_completed_replay_during_handoff() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E403;
-        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
         let (state_sender, _) = watch::channel(SessionState::Running);
         let abort_task = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -688,8 +819,9 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Plain {
+                round_id: 0,
                 route,
-                status: PlainStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -697,21 +829,37 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_data(session_id, 0, b"abcdefgh"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
             .await;
 
         abort_task.abort();
-        assert_plain_complete(&mut packet_rx).await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "runtime-owned replay must not preempt a live receiver inbox during handoff"
+        );
+        let delivered = timeout(Duration::from_secs(2), inbox_rx.recv())
+            .await
+            .expect("timed out waiting for live plain handoff delivery")
+            .expect("live plain inbox should receive the duplicate frame");
+        assert!(matches!(
+            lossless_session::decode_control(&delivered.bytes),
+            Some((_, LosslessSessionControl::SourceDone { round_id: 0 }))
+        ));
     }
 
     #[tokio::test]
-    async fn deliver_frame_prefers_completed_fec_replay_over_live_inbox_during_handoff() {
+    async fn deliver_frame_prefers_live_fec_inbox_over_completed_replay_during_handoff() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E404;
-        let (inbox, _inbox_rx) = mpsc::channel(1);
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
         let (state_sender, _) = watch::channel(SessionState::Running);
         let abort_task = tokio::spawn(async {
             tokio::time::sleep(Duration::from_secs(60)).await;
@@ -728,8 +876,9 @@ mod tests {
         runtime.completed_receivers.insert(
             session_id,
             CompletedReceiverReplay::Fec {
+                round_id: 0,
                 route,
-                status: FecStatus::Complete,
+                report: NeedReport::Complete,
             },
         );
 
@@ -737,14 +886,72 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 7, b"ab"),
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
             .await;
 
         abort_task.abort();
-        assert_fec_complete(&mut packet_rx).await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "runtime-owned replay must not preempt a live receiver inbox during handoff"
+        );
+        let delivered = timeout(Duration::from_secs(2), inbox_rx.recv())
+            .await
+            .expect("timed out waiting for live FEC handoff delivery")
+            .expect("live FEC inbox should receive the duplicate frame");
+        assert!(matches!(
+            lossless_session::decode_control(&delivered.bytes),
+            Some((_, LosslessSessionControl::SourceDone { round_id: 0 }))
+        ));
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_drops_unsupported_version_before_dispatch() {
+        let (mut runtime, _packet_rx, _route) = test_runtime().await;
+        let session_id = 0xA11C_E405;
+        let (inbox, mut inbox_rx) = mpsc::channel(1);
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                inbox,
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+
+        let mut bytes =
+            lossless_session::encode_control(session_id, &LosslessSessionControl::Ready);
+        bytes[4] = lossless_session::LOSSLESS_SESSION_VERSION - 1;
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes,
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        abort_task.abort();
+        assert!(
+            timeout(Duration::from_millis(100), inbox_rx.recv())
+                .await
+                .is_err(),
+            "unsupported-version frames should be dropped before session delivery"
+        );
     }
 
     async fn test_runtime() -> (LosslessRuntime, mpsc::Receiver<Packet>, TransportRoute) {
@@ -805,8 +1012,9 @@ mod tests {
             lossless_session::decode_control(payload).expect("plain status should decode");
         assert_eq!(
             control,
-            LosslessSessionControl::PlainStatus {
-                status: PlainStatus::Complete,
+            LosslessSessionControl::Need {
+                round_id: 0,
+                report: NeedReport::Complete,
             }
         );
     }
@@ -823,8 +1031,9 @@ mod tests {
             lossless_session::decode_control(payload).expect("fec status should decode");
         assert_eq!(
             control,
-            LosslessSessionControl::FecStatus {
-                status: FecStatus::Complete,
+            LosslessSessionControl::Need {
+                round_id: 0,
+                report: NeedReport::Complete,
             }
         );
     }
