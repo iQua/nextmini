@@ -41,3 +41,6 @@ iperf-results.md
 
 # Memory report
 memory-report.txt
+
+# FEC local env
+examples/fec/.env
