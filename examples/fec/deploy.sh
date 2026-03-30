@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env.local}"
+ENV_FILE="${ENV_FILE:-$SCRIPT_DIR/.env-e}"
 
 require_cmd() {
   local cmd="$1"
@@ -23,7 +23,7 @@ require_var() {
 load_env() {
   if [[ ! -f "$ENV_FILE" ]]; then
     echo "Missing env file: $ENV_FILE" >&2
-    echo "Copy $SCRIPT_DIR/.env.local.example to $ENV_FILE and fill in local values." >&2
+    echo "Copy $SCRIPT_DIR/.env-e to $ENV_FILE and fill in local values." >&2
     exit 1
   fi
 
@@ -115,7 +115,6 @@ node_region() {
 
 main() {
   require_cmd doctl
-  require_cmd awk
 
   load_env
 
