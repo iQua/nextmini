@@ -10,6 +10,7 @@ use ahash::AHashMap;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
+use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
@@ -106,6 +107,9 @@ impl NetworkInterfaceHandle {
         let mut aggregates: AHashMap<FlowId, usize> = AHashMap::default();
 
         for packet in packets.iter() {
+            if packet.flow_id == PROBE_FLOW_ID {
+                continue;
+            }
             *aggregates.entry(packet.flow_id).or_default() += packet.packet_size;
         }
 
