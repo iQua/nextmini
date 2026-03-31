@@ -1031,6 +1031,18 @@ async fn handle_connection(
                             "Probe {} result: node {} → node {} = {:.2} Mbps",
                             probe_id, from_node_id, to_node_id, bandwidth_mbps,
                         );
+                        if let Err(e) = sqlx::query(
+                            "INSERT INTO probe_results (probe_id, from_node_id, to_node_id, bandwidth_mbps) VALUES ($1, $2, $3, $4)"
+                        )
+                            .bind(probe_id as i64)
+                            .bind(from_node_id as i32)
+                            .bind(to_node_id as i32)
+                            .bind(bandwidth_mbps)
+                            .execute(&*db_pool)
+                            .await
+                        {
+                            error!("Failed to insert probe result: {}", e);
+                        }
                     }
                 }
             }

@@ -18,6 +18,10 @@ pub(super) async fn reset_db(pool: &Pool<Postgres>) -> AnyResult<()> {
 
     // Drop controller-owned tables so schema bootstrap can be reapplied.
     for (table, sql) in [
+        (
+            "probe_results",
+            "DROP TABLE IF EXISTS probe_results CASCADE",
+        ),
         ("metrics", "DROP TABLE IF EXISTS metrics CASCADE"),
         ("app_flows", "DROP TABLE IF EXISTS app_flows CASCADE"),
         ("flow_routes", "DROP TABLE IF EXISTS flow_routes CASCADE"),
@@ -136,6 +140,16 @@ CREATE TABLE IF NOT EXISTS group_routes (
 "#,
     "CREATE INDEX IF NOT EXISTS idx_group_routes_group_id ON group_routes (group_id)",
     "CREATE INDEX IF NOT EXISTS idx_group_routes_src_node_id ON group_routes (src_node_id)",
+    r#"
+CREATE TABLE IF NOT EXISTS probe_results (
+    id SERIAL PRIMARY KEY,
+    probe_id BIGINT NOT NULL,
+    from_node_id INTEGER NOT NULL,
+    to_node_id INTEGER NOT NULL,
+    bandwidth_mbps DOUBLE PRECISION NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+)
+"#,
     r#"
 CREATE OR REPLACE FUNCTION notify_group_membership_change()
 RETURNS TRIGGER AS $$

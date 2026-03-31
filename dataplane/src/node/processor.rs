@@ -1225,7 +1225,6 @@ impl Processor {
         );
         true
     }
-
 }
 
 #[cfg(test)]
