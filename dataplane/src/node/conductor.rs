@@ -118,7 +118,6 @@ impl Conductor {
                     let mut tcp_server = TcpServer::new(
                         self.config.clone(),
                         self.processors.clone(),
-                        self.reporter.clone(),
                     );
 
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
@@ -132,12 +131,10 @@ impl Conductor {
                     let mut tcp_server_public = TcpServer::new(
                         self.config.clone(),
                         self.processors.clone(),
-                        self.reporter.clone(),
                     );
                     let mut tcp_server_private = TcpServer::new(
                         self.config.clone(),
                         self.processors.clone(),
-                        self.reporter.clone(),
                     );
 
                     let tcp_server_public_addr = format!("{}:{}", "0.0.0.0", public_port);

@@ -124,7 +124,6 @@ impl UdpServer {
                             config.clone(),
                             NetworkStream::Udp(udp_stream),
                             processors.clone(),
-                            reporter.clone(),
                             remote_node_id,
                         )
                         .await;

@@ -39,7 +39,6 @@ impl SchedulerWriter {
 
     pub async fn run(&mut self) {
         loop {
-            let mut probe_packets = Vec::new();
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
                     SchedulerWriterMessage::RateLimit(spec) => {
@@ -48,14 +47,6 @@ impl SchedulerWriter {
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
                         self.queue.set_flow_weight(flow_id, weight);
                     }
-                    SchedulerWriterMessage::ProbePackets(packets) => {
-                        probe_packets.extend(packets);
-                    }
-                }
-            }
-            if !probe_packets.is_empty() {
-                if let Err(e) = self.net_interface.send(probe_packets).await {
-                    error!("SchedulerWriter: Error sending probe packets: {}", e);
                 }
             }
 
