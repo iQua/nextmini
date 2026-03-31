@@ -159,7 +159,7 @@ CREATE TABLE IF NOT EXISTS probe_requests (
     id SERIAL PRIMARY KEY,
     from_node_id INTEGER NOT NULL,
     to_node_id INTEGER NOT NULL,
-    probe_bytes INTEGER NOT NULL DEFAULT 1400000,
+    probe_bytes INTEGER NOT NULL DEFAULT 1360000,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 )
 "#,
