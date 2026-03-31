@@ -1020,6 +1020,18 @@ async fn handle_connection(
                             );
                         }
                     }
+
+                    DataplaneToController::ProbeLinkResult {
+                        probe_id,
+                        from_node_id,
+                        to_node_id,
+                        bandwidth_mbps,
+                    } => {
+                        info!(
+                            "Probe {} result: node {} → node {} = {:.2} Mbps",
+                            probe_id, from_node_id, to_node_id, bandwidth_mbps,
+                        );
+                    }
                 }
             }
             Ok(Message::Ping(_)) => {

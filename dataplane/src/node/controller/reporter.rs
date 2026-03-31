@@ -19,6 +19,12 @@ pub struct FlowMetric {
 
 pub enum FlowMetricMessage {
     FlowMetric(FlowMetric),
+    ProbeResult {
+        probe_id: u64,
+        from_node_id: usize,
+        to_node_id: usize,
+        bandwidth_mbps: f64,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -37,6 +43,23 @@ impl ControllerReporterHandle {
         });
 
         Self { sender }
+    }
+
+    pub fn send_probe_result(
+        &self,
+        probe_id: u64,
+        from_node_id: usize,
+        to_node_id: usize,
+        bandwidth_mbps: f64,
+    ) {
+        if let Err(e) = self.sender.send(FlowMetricMessage::ProbeResult {
+            probe_id,
+            from_node_id,
+            to_node_id,
+            bandwidth_mbps,
+        }) {
+            error!("Error sending probe result to the controller reporter: {}", e);
+        }
     }
 
     pub fn send(&self, metrics: Vec<FlowMetric>) {
@@ -80,18 +103,27 @@ impl ControllerReporter {
             tokio::select! {
                 // receives new metrics data
                 Some(msg) = self.receiver.recv() => {
-                    let FlowMetricMessage::FlowMetric(metric) = msg;
-
-                    let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
-                        FlowMetric {
-                            flow_id: metric.flow_id,
-                            local_node_id: metric.local_node_id,
-                            remote_node_id: metric.remote_node_id,
-                            bytes: 0,
-                        },
-                    );
-
-                    flow_metric.bytes += metric.bytes;
+                    match msg {
+                        FlowMetricMessage::ProbeResult { probe_id, from_node_id, to_node_id, bandwidth_mbps } => {
+                            self.controller.send(DataplaneToController::ProbeLinkResult {
+                                probe_id,
+                                from_node_id,
+                                to_node_id,
+                                bandwidth_mbps,
+                            }).await;
+                        }
+                        FlowMetricMessage::FlowMetric(metric) => {
+                            let flow_metric = self.flow_metrics.entry(metric.flow_id).or_insert(
+                                FlowMetric {
+                                    flow_id: metric.flow_id,
+                                    local_node_id: metric.local_node_id,
+                                    remote_node_id: metric.remote_node_id,
+                                    bytes: 0,
+                                },
+                            );
+                            flow_metric.bytes += metric.bytes;
+                        }
+                    }
                 }
                 // timer tick: calculates flow rates and transmits to the controller
                 _ = metrics_tick.tick() => {
