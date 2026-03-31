@@ -75,4 +75,3 @@ SELECT * FROM probe_results ORDER BY created_at DESC LIMIT 5;
 ## Limitations
 
 - Probing only works when the sender initiated the TCP connection to the receiver (i.e. the sender received an `AddNode` from the controller). In the simple 3-node example, node 1 is always the listener, so probes **to** node 1 work (`--from 2 --to 1`) but probes **from** node 1 do not.
-- If the probe's final packet is lost, the receiver's in-memory tracking entry for that probe is never cleaned up.
