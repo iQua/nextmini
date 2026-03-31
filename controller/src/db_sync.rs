@@ -45,6 +45,24 @@ pub fn spawn_db_sync(
                         error!("Failed to sync group routes for group {}: {}", group_id, e);
                     }
                 }
+                DbEvent::ProbeRequested {
+                    id,
+                    from_node_id,
+                    to_node_id,
+                    probe_bytes,
+                } => {
+                    if let Err(e) = send_probe_link(
+                        &node_ws,
+                        id,
+                        from_node_id,
+                        to_node_id,
+                        probe_bytes,
+                    )
+                    .await
+                    {
+                        error!("Failed to send probe request {}: {}", id, e);
+                    }
+                }
             }
         }
         warn!("DB sync task exiting: event channel closed.");
@@ -220,6 +238,44 @@ fn multicast_nodes_to_notify(
         nodes.insert(node_id);
     }
     nodes
+}
+
+async fn send_probe_link(
+    node_ws: &NodeWriterMap,
+    request_id: i32,
+    from_node_id: i32,
+    to_node_id: i32,
+    probe_bytes: i32,
+) -> anyhow::Result<()> {
+    let msg = ControllerToDataplane::ProbeLink {
+        remote_node_id: to_node_id as usize,
+        probe_id: request_id as u64,
+        probe_bytes: probe_bytes as usize,
+    };
+    let msg_binary = rmp_serde::to_vec(&msg)?;
+
+    let ws_arc = {
+        node_ws
+            .read()
+            .await
+            .get(&(from_node_id as usize))
+            .cloned()
+    };
+    let Some(ws_arc) = ws_arc else {
+        anyhow::bail!("no websocket for node {}", from_node_id);
+    };
+
+    ws_arc
+        .lock()
+        .await
+        .send(Message::binary(msg_binary))
+        .await?;
+
+    info!(
+        "Sent ProbeLink {} to node {} (target node {}, {} bytes).",
+        request_id, from_node_id, to_node_id, probe_bytes
+    );
+    Ok(())
 }
 
 async fn send_to_node(

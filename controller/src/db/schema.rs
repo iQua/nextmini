@@ -19,6 +19,10 @@ pub(super) async fn reset_db(pool: &Pool<Postgres>) -> AnyResult<()> {
     // Drop controller-owned tables so schema bootstrap can be reapplied.
     for (table, sql) in [
         (
+            "probe_requests",
+            "DROP TABLE IF EXISTS probe_requests CASCADE",
+        ),
+        (
             "probe_results",
             "DROP TABLE IF EXISTS probe_results CASCADE",
         ),
@@ -149,6 +153,34 @@ CREATE TABLE IF NOT EXISTS probe_results (
     bandwidth_mbps DOUBLE PRECISION NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
 )
+"#,
+    r#"
+CREATE TABLE IF NOT EXISTS probe_requests (
+    id SERIAL PRIMARY KEY,
+    from_node_id INTEGER NOT NULL,
+    to_node_id INTEGER NOT NULL,
+    probe_bytes INTEGER NOT NULL DEFAULT 1400000,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+)
+"#,
+    r#"
+CREATE OR REPLACE FUNCTION notify_probe_request_function()
+RETURNS TRIGGER AS $$
+BEGIN
+    PERFORM pg_notify(
+        'probe_requested',
+        '{"id":"' || NEW.id || '","from_node_id":"' || NEW.from_node_id || '","to_node_id":"' || NEW.to_node_id || '","probe_bytes":"' || NEW.probe_bytes || '"}'
+    );
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql
+"#,
+    "DROP TRIGGER IF EXISTS probe_request_trigger ON probe_requests",
+    r#"
+CREATE TRIGGER probe_request_trigger
+AFTER INSERT ON probe_requests
+FOR EACH ROW
+EXECUTE FUNCTION notify_probe_request_function()
 "#,
     r#"
 CREATE OR REPLACE FUNCTION notify_group_membership_change()
