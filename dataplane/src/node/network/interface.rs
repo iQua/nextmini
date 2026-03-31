@@ -44,7 +44,7 @@ impl ProtocolWriter {
 pub struct NetworkInterfaceHandle {
     local_id: NodeId,
     remote_node_id: NodeId,
-    reporter: Option<ControllerReporterHandle>,
+    reporter: ControllerReporterHandle,
     pub writer: ProtocolWriter,
 }
 
@@ -54,20 +54,22 @@ impl NetworkInterfaceHandle {
         config: LocalConfig,
         stream: NetworkStream,
         processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
         remote_node_id: NodeId,
     ) -> Self {
         // unlike a typical actor that uses a channel for sending messages to the network interface actor,
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
         // for the sake of improved performance and simplicity.
         let local_id = config.node_id;
-        let network_interface = NetworkInterface::new(config, processors);
+        let network_interface =
+            NetworkInterface::new(config, processors).with_reporter(reporter.clone());
 
         let writer = network_interface.init(stream);
 
         Self {
             local_id,
             remote_node_id,
-            reporter: None,
+            reporter,
             writer,
         }
     }
@@ -82,7 +84,8 @@ impl NetworkInterfaceHandle {
     ) -> Self {
         let local_id = config.node_id;
 
-        let mut network_interface = NetworkInterface::new(config, processors);
+        let mut network_interface =
+            NetworkInterface::new(config, processors).with_reporter(reporter.clone());
 
         // there is no need to call tokio::spawn here, as the reader task will be
         // spawned in init() itself
@@ -93,7 +96,7 @@ impl NetworkInterfaceHandle {
         Self {
             local_id,
             remote_node_id,
-            reporter: Some(reporter),
+            reporter,
             writer,
         }
     }
@@ -109,19 +112,17 @@ impl NetworkInterfaceHandle {
         self.writer.write_packets(packets).await?;
 
         if !aggregates.is_empty() {
-            if let Some(reporter) = &self.reporter {
-                let mut flow_metrics = Vec::with_capacity(aggregates.len());
-                for (flow_id, bytes) in aggregates {
-                    flow_metrics.push(FlowMetric {
-                        flow_id,
-                        local_node_id: self.local_id,
-                        remote_node_id: self.remote_node_id,
-                        bytes,
-                    });
-                }
-
-                reporter.send(flow_metrics);
+            let mut flow_metrics = Vec::with_capacity(aggregates.len());
+            for (flow_id, bytes) in aggregates {
+                flow_metrics.push(FlowMetric {
+                    flow_id,
+                    local_node_id: self.local_id,
+                    remote_node_id: self.remote_node_id,
+                    bytes,
+                });
             }
+
+            self.reporter.send(flow_metrics);
         }
 
         Ok(())
@@ -132,6 +133,7 @@ impl NetworkInterfaceHandle {
 pub struct NetworkInterface {
     config: LocalConfig,
     processors: ProcessorHandle,
+    reporter: Option<ControllerReporterHandle>,
 }
 
 impl NetworkInterface {
@@ -139,7 +141,13 @@ impl NetworkInterface {
         Self {
             config,
             processors,
+            reporter: None,
         }
+    }
+
+    pub fn with_reporter(mut self, reporter: ControllerReporterHandle) -> Self {
+        self.reporter = Some(reporter);
+        self
     }
 
     pub async fn init_as_client(
@@ -190,7 +198,12 @@ impl NetworkInterface {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, self.processors.clone());
+                let tcp_reader = TcpReader::new(
+                    reader,
+                    self.processors.clone(),
+                    self.config.node_id,
+                    self.reporter.clone(),
+                );
                 let tcp_writer = TcpWriter::new(writer);
 
                 tokio::spawn(async move {

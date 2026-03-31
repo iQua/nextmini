@@ -273,6 +273,7 @@ impl TcpMaxClient {
             self.config.clone(),
             NetworkStream::Tcp(stream),
             self.processor.clone(),
+            self.reporter.clone(),
             remote_node_id,
         )
         .await;

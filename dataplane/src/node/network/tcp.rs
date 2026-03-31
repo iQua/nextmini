@@ -1,6 +1,7 @@
 use std::io::Cursor;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
+use ahash::AHashMap;
 use tokio::io::Result;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
@@ -9,6 +10,8 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::reporter::ControllerReporterHandle;
+use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
@@ -18,16 +21,19 @@ use crate::node::scheduler::sched::SchedulerHandle;
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
+    reporter: ControllerReporterHandle,
 }
 
 impl TcpServer {
     pub fn new(
         config: LocalConfig,
         processors: ProcessorHandle,
+        reporter: ControllerReporterHandle,
     ) -> Self {
         Self {
             config,
             processors,
+            reporter,
         }
     }
 
@@ -81,6 +87,7 @@ impl TcpServer {
                 self.config.clone(),
                 NetworkStream::Tcp(stream),
                 self.processors.clone(),
+                self.reporter.clone(),
                 remote_node_id,
             )
             .await;
@@ -169,26 +176,99 @@ impl TcpClient {
 pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
     processors: ProcessorHandle,
+    local_node_id: usize,
+    reporter: Option<ControllerReporterHandle>,
+    active_probes: AHashMap<u64, ProbeState>,
 }
 
+/// Tracks an in-flight bandwidth probe on the receive side.
+#[allow(dead_code)]
+struct ProbeState {
+    first_arrival: Instant,
+    bytes_received: usize,
+    sender_node_id: usize,
+}
+
+/// Probe payload layout (17-byte header inside TCP payload):
+///   [0]       flags  (0x00 = data, 0x01 = last packet)
+///   [1..9]    probe_id       (u64 BE)
+///   [9..17]   sender_node_id (u64 BE)
+///   [17..]    padding
+const PROBE_HEADER_LEN: usize = 17;
+
 impl TcpReader {
-    pub fn new(stream: ReadHalf<TcpStream>, processors: ProcessorHandle) -> Self {
-        Self { stream, processors }
+    pub fn new(
+        stream: ReadHalf<TcpStream>,
+        processors: ProcessorHandle,
+        local_node_id: usize,
+        reporter: Option<ControllerReporterHandle>,
+    ) -> Self {
+        Self {
+            stream,
+            processors,
+            local_node_id,
+            reporter,
+            active_probes: AHashMap::new(),
+        }
     }
 
     pub async fn run(mut self) {
         loop {
-            // reads a packet from the TCP connection
-            if let Ok(packet) = self.read_packet().await {
-                // forwards the packet to the processor
-                self.processors.process_packet(packet).await;
+            if let Ok(packet) = framing::read_packet(&mut self.stream).await {
+                if packet.flow_id == PROBE_FLOW_ID {
+                    self.handle_probe(packet);
+                } else {
+                    self.processors.process_packet(packet).await;
+                }
             }
         }
     }
 
-    /// Reads a single packet from the TCP connection.
-    async fn read_packet(&mut self) -> Result<Packet> {
-        framing::read_packet(&mut self.stream).await
+    fn handle_probe(&mut self, packet: Packet) {
+        let payload = match packet.tcp_payload() {
+            Some(p) if p.len() >= PROBE_HEADER_LEN => p,
+            _ => return,
+        };
+
+        let flags = payload[0];
+        let probe_id = u64::from_be_bytes(payload[1..9].try_into().unwrap());
+        let sender_node_id = u64::from_be_bytes(payload[9..17].try_into().unwrap()) as usize;
+
+        let state = self.active_probes.entry(probe_id).or_insert_with(|| ProbeState {
+            first_arrival: Instant::now(),
+            bytes_received: 0,
+            sender_node_id,
+        });
+        state.bytes_received += packet.packet_size;
+
+        if flags == 0x01 {
+            let elapsed = state.first_arrival.elapsed();
+            let bandwidth_mbps = if elapsed.as_nanos() > 0 {
+                (state.bytes_received as f64 * 8.0) / elapsed.as_secs_f64() / 1_000_000.0
+            } else {
+                0.0
+            };
+
+            info!(
+                "Probe {} from node {}: {} bytes in {:.3} ms = {:.2} Mbps",
+                probe_id,
+                sender_node_id,
+                state.bytes_received,
+                elapsed.as_secs_f64() * 1000.0,
+                bandwidth_mbps,
+            );
+
+            if let Some(reporter) = &self.reporter {
+                reporter.send_probe_result(
+                    probe_id,
+                    sender_node_id,
+                    self.local_node_id,
+                    bandwidth_mbps,
+                );
+            }
+
+            self.active_probes.remove(&probe_id);
+        }
     }
 }
 
