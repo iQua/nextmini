@@ -591,7 +591,8 @@ impl ControllerToDataplaneReceiver {
     }
 
     /// Probe payload:  [flags:1][probe_id:8][sender_node_id:8][padding]
-    const PROBE_PAYLOAD_SIZE: usize = 1400;
+    /// 1360 bytes of TCP payload + 20 IP + 20 TCP header = 1400-byte virtual packet.
+    const PROBE_PAYLOAD_SIZE: usize = 1360;
 
     fn send_probe(&self, remote_node_id: usize, probe_id: u64, probe_bytes: usize) {
         let scheduler = match self.schedulers.get(&remote_node_id) {
