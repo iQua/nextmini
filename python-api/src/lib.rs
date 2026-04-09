@@ -325,6 +325,7 @@ impl Dataplane {
                     total_bytes,
                     source_buffer: buffer.inner.clone(),
                     ready_grace_ms: runtime_config.ready_grace_ms,
+                    peer_report_timeout_ms: runtime_config.peer_report_timeout_ms,
                 };
                 let session = rt().block_on(handle.start_sender(cfg)).map_err(|err| {
                     PyRuntimeError::new_err(format!(

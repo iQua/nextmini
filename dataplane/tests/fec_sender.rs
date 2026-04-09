@@ -34,6 +34,7 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest: manifest.clone(),
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -149,6 +150,7 @@ async fn sender_starts_repair_after_first_receiver_need_without_waiting_for_ever
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -225,6 +227,7 @@ async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -325,6 +328,7 @@ async fn sender_merges_same_round_need_while_repair_is_still_in_flight() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -421,6 +425,7 @@ async fn sender_ignores_future_round_fec_need_while_waiting_for_reports() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -519,6 +524,7 @@ async fn sender_accepts_delayed_control_feedback_before_peer_report_timeout() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -601,6 +607,7 @@ async fn sender_retransmits_source_done_while_waiting_for_silent_peer_and_times_
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 
@@ -653,6 +660,7 @@ async fn sender_aborts_on_changed_same_round_fec_need_from_one_peer() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 

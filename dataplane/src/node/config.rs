@@ -689,9 +689,13 @@ pub struct LosslessConfig {
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
-    /// Grace period (ms) to wait for receiver READY before opening the data gate.
+    /// Grace period (ms) to wait for receiver READY during session start.
     #[serde(default = "default_ready_grace_ms")]
     pub ready_grace_ms: u64,
+
+    /// Maximum time to wait for post-`SourceDone` receiver feedback before aborting.
+    #[serde(default = "default_peer_report_timeout_ms")]
+    pub peer_report_timeout_ms: u64,
 
     /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
     #[serde(default = "default_fec_enabled")]
@@ -722,6 +726,7 @@ impl Default for LosslessConfig {
             default_block_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
+            peer_report_timeout_ms: 1500,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_tree_ids: vec![0],
@@ -732,6 +737,10 @@ impl Default for LosslessConfig {
 }
 
 const fn default_ready_grace_ms() -> u64 {
+    1500
+}
+
+const fn default_peer_report_timeout_ms() -> u64 {
     1500
 }
 

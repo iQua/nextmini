@@ -39,6 +39,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9])),
         },
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 

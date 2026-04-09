@@ -126,6 +126,7 @@ impl LosslessUnicastFlowManager {
                 total_bytes,
                 source_buffer,
                 ready_grace_ms: runtime_config.ready_grace_ms,
+                peer_report_timeout_ms: runtime_config.peer_report_timeout_ms,
             };
 
             if let Some(weight) = flow.flow_spec.flow_weight {
