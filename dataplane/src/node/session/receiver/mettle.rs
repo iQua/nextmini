@@ -16,6 +16,7 @@ pub(super) struct MettleReceiver {
     complete_reported: bool,
     last_reported_stalled_source_id: Option<u64>,
     last_reported_decoded_prefix_len: Option<u64>,
+    last_reported_replay_end_bin_id: Option<u64>,
     current_repair_burst_bins: u64,
 }
 
@@ -31,6 +32,7 @@ impl MettleReceiver {
             complete_reported: false,
             last_reported_stalled_source_id: None,
             last_reported_decoded_prefix_len: None,
+            last_reported_replay_end_bin_id: None,
             current_repair_burst_bins: MIN_REPAIR_BURST_BINS,
         }
     }
@@ -153,6 +155,8 @@ impl MettleReceiver {
         let stalled_source_id = self.decoder.first_undecoded_source_id()?;
         let decoded_prefix_len = self.decoder.decoded_prefix_len();
         let full_window_bins = self.params.window_bins().max(1);
+        let replay_base_bin_id = self.params.base(stalled_source_id);
+        let replay_window_end_bin_id = self.params.right_exclusive(stalled_source_id);
         let made_progress = match (
             self.last_reported_stalled_source_id,
             self.last_reported_decoded_prefix_len,
@@ -162,21 +166,39 @@ impl MettleReceiver {
             }
             _ => true,
         };
-        let burst_bins = if made_progress {
-            MIN_REPAIR_BURST_BINS.min(full_window_bins).max(1)
+
+        let replay_start_bin_id = if made_progress {
+            replay_base_bin_id
         } else {
-            self.current_repair_burst_bins
+            self.last_reported_replay_end_bin_id
+                .unwrap_or(replay_base_bin_id)
+        };
+        let (burst_bins, replay_start_bin_id, replay_end_bin_id) = if made_progress {
+            let burst_bins = MIN_REPAIR_BURST_BINS.min(full_window_bins).max(1);
+            let replay_end_bin_id =
+                (replay_start_bin_id + burst_bins).min(replay_window_end_bin_id);
+            (burst_bins, replay_start_bin_id, replay_end_bin_id)
+        } else if replay_start_bin_id < replay_window_end_bin_id {
+            let burst_bins = self
+                .current_repair_burst_bins
                 .saturating_mul(2)
                 .min(full_window_bins)
-                .max(1)
+                .max(1);
+            let replay_end_bin_id =
+                (replay_start_bin_id + burst_bins).min(replay_window_end_bin_id);
+            (burst_bins, replay_start_bin_id, replay_end_bin_id)
+        } else {
+            (
+                full_window_bins,
+                replay_base_bin_id,
+                replay_window_end_bin_id,
+            )
         };
 
         self.current_repair_burst_bins = burst_bins;
         self.last_reported_stalled_source_id = Some(stalled_source_id);
         self.last_reported_decoded_prefix_len = Some(decoded_prefix_len);
-        let replay_start_bin_id = self.params.base(stalled_source_id);
-        let replay_end_bin_id =
-            (replay_start_bin_id + burst_bins).min(self.params.right_exclusive(stalled_source_id));
+        self.last_reported_replay_end_bin_id = Some(replay_end_bin_id);
 
         debug!(
             session_id = shared.session_id,
