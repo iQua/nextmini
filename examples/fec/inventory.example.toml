@@ -62,14 +62,14 @@ symbols_per_block = 16
 
 [defaults]
 user = "ubuntu"
-identity_file = "~/.ssh/id_rsa"
-network_interface = "ens3"
-payload_size = "100MiB"
+identity_file = ""
+network_interface = ""
+payload_size = ""
 
 [controller]
 host = "controller.example.com"
 user = "runner"
-identity_file = "~/.ssh/id_rsa"
+identity_file = ""
 
 [images]
 controller = "registry.example.com:5000/nextmini-controller:latest"

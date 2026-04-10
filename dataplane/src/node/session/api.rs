@@ -147,6 +147,11 @@ pub(crate) enum CompletedReceiverReplay {
         route: TransportRoute,
         report: NeedReport,
     },
+    Mettle {
+        round_id: u32,
+        route: TransportRoute,
+        report: NeedReport,
+    },
 }
 
 /// Messages sent to the background lossless runtime task.

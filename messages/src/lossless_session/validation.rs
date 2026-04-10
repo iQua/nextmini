@@ -1,7 +1,8 @@
 use super::{
-    LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionControl,
-    LosslessSessionManifest, LosslessSessionMode, LosslessSessionValidationError,
-    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, NeedReport,
+    FecScheme, LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionControl,
+    LosslessSessionManifest, LosslessSessionMettleSymbol, LosslessSessionMode,
+    LosslessSessionValidationError, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
+    NeedReport,
 };
 
 impl NeedReport {
@@ -50,6 +51,15 @@ impl NeedReport {
                 }
                 Ok(())
             }
+            Self::Mettle { window } => {
+                if window.replay_start_bin_id >= window.replay_end_bin_id {
+                    return Err(LosslessSessionValidationError::MettleReplayWindowInvalid {
+                        replay_start_bin_id: window.replay_start_bin_id,
+                        replay_end_bin_id: window.replay_end_bin_id,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
@@ -79,6 +89,17 @@ impl NeedReport {
                             total_blocks,
                         });
                     }
+                }
+                Ok(())
+            }
+            Self::Mettle { window } => {
+                if window.stalled_source_id >= total_blocks {
+                    return Err(
+                        LosslessSessionValidationError::MettleReplaySourceOutOfRange {
+                            stalled_source_id: window.stalled_source_id,
+                            total_blocks,
+                        },
+                    );
                 }
                 Ok(())
             }
@@ -112,14 +133,11 @@ impl LosslessSessionManifest {
         }
 
         if let LosslessSessionMode::Fec(fec) = &self.mode {
-            if fec.scheme_kind().is_none() {
+            let Some(scheme) = fec.scheme_kind() else {
                 return Err(LosslessSessionValidationError::UnknownFecScheme {
                     scheme: fec.scheme,
                 });
-            }
-            if fec.symbols_per_block == 0 {
-                return Err(LosslessSessionValidationError::ZeroSymbolsPerBlock);
-            }
+            };
             if fec.tree_ids.is_empty() {
                 return Err(LosslessSessionValidationError::FecTreeIdsEmpty);
             }
@@ -131,6 +149,31 @@ impl LosslessSessionManifest {
             }
             if !fec.tree_ids.windows(2).all(|pair| pair[0] < pair[1]) {
                 return Err(LosslessSessionValidationError::TreeIdsMustBeSortedUnique);
+            }
+            match scheme {
+                FecScheme::RaptorQ => {
+                    if fec.symbols_per_block == 0 {
+                        return Err(LosslessSessionValidationError::ZeroSymbolsPerBlock);
+                    }
+                }
+                FecScheme::MettleV1 => {
+                    if fec.symbols_per_block != 0 {
+                        return Err(
+                            LosslessSessionValidationError::MettleSymbolsPerBlockMustBeZero {
+                                value: fec.symbols_per_block,
+                            },
+                        );
+                    }
+                    if fec.coded_rate_denominator == 0 {
+                        return Err(LosslessSessionValidationError::ZeroMettleRateDenominator);
+                    }
+                    if fec.coded_rate_numerator < fec.coded_rate_denominator {
+                        return Err(LosslessSessionValidationError::SubUnitMettleCodedRate {
+                            numerator: fec.coded_rate_numerator,
+                            denominator: fec.coded_rate_denominator,
+                        });
+                    }
+                }
             }
         }
 
@@ -195,10 +238,33 @@ impl LosslessSessionManifest {
         let LosslessSessionMode::Fec(fec) = &self.mode else {
             return Err(LosslessSessionValidationError::BlockSymbolRequiresFecMode);
         };
+        if fec.scheme_kind() != Some(FecScheme::RaptorQ) {
+            return Err(LosslessSessionValidationError::BlockSymbolRequiresRaptorQMode);
+        }
         self.validate_block_id(symbol.block_id)?;
         if !fec.tree_ids.contains(&symbol.tree_id) {
             return Err(
                 LosslessSessionValidationError::BlockSymbolTreeIdNotAdvertised {
+                    tree_id: symbol.tree_id,
+                },
+            );
+        }
+        Ok(())
+    }
+
+    pub fn validate_mettle_symbol(
+        &self,
+        symbol: &LosslessSessionMettleSymbol,
+    ) -> Result<(), LosslessSessionValidationError> {
+        let LosslessSessionMode::Fec(fec) = &self.mode else {
+            return Err(LosslessSessionValidationError::MettleSymbolRequiresMettleMode);
+        };
+        if fec.scheme_kind() != Some(FecScheme::MettleV1) {
+            return Err(LosslessSessionValidationError::MettleSymbolRequiresMettleMode);
+        }
+        if !fec.tree_ids.contains(&symbol.tree_id) {
+            return Err(
+                LosslessSessionValidationError::MettleSymbolTreeIdNotAdvertised {
                     tree_id: symbol.tree_id,
                 },
             );
@@ -226,10 +292,26 @@ impl LosslessSessionManifest {
                 if !self.mode.is_fec() && !blocks.is_empty() {
                     return Err(LosslessSessionValidationError::NeedRequiresFecMode);
                 }
+                let LosslessSessionMode::Fec(fec) = &self.mode else {
+                    return Err(LosslessSessionValidationError::NeedRequiresFecMode);
+                };
+                if fec.scheme_kind() != Some(FecScheme::RaptorQ) && !blocks.is_empty() {
+                    return Err(LosslessSessionValidationError::NeedRequiresFecMode);
+                }
                 NeedReport::Fec {
                     blocks: blocks.clone(),
                 }
                 .validate_against_total_blocks(self.total_blocks)
+            }
+            NeedReport::Mettle { window } => {
+                let LosslessSessionMode::Fec(fec) = &self.mode else {
+                    return Err(LosslessSessionValidationError::NeedRequiresMettleMode);
+                };
+                if fec.scheme_kind() != Some(FecScheme::MettleV1) {
+                    return Err(LosslessSessionValidationError::NeedRequiresMettleMode);
+                }
+                NeedReport::Mettle { window: *window }
+                    .validate_against_total_blocks(self.total_blocks)
             }
         }
     }

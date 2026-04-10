@@ -694,6 +694,9 @@ pub struct LosslessConfig {
     pub ready_grace_ms: u64,
 
     /// Maximum time to wait for post-`SourceDone` receiver feedback before aborting.
+    ///
+    /// WAN runs need enough budget for the slowest receiver in the frozen quorum to
+    /// observe `SourceDone`, derive its report, and return the control frame.
     #[serde(default = "default_peer_report_timeout_ms")]
     pub peer_report_timeout_ms: u64,
 
@@ -708,6 +711,18 @@ pub struct LosslessConfig {
     /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
+
+    /// Enable experimental METTLE instead of the block-RaptorQ FEC path.
+    #[serde(default = "default_mettle_enabled")]
+    pub mettle_enabled: bool,
+
+    /// Default METTLE coded-rate numerator used for internally derived manifests.
+    #[serde(default = "default_mettle_coded_rate_numerator")]
+    pub mettle_coded_rate_numerator: u16,
+
+    /// Default METTLE coded-rate denominator used for internally derived manifests.
+    #[serde(default = "default_mettle_coded_rate_denominator")]
+    pub mettle_coded_rate_denominator: u16,
 
     /// Effective processor ingress policy copied from `LocalConfig.feature`.
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
@@ -726,10 +741,13 @@ impl Default for LosslessConfig {
             default_block_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
-            peer_report_timeout_ms: 1500,
+            peer_report_timeout_ms: 5000,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_tree_ids: vec![0],
+            mettle_enabled: false,
+            mettle_coded_rate_numerator: 21,
+            mettle_coded_rate_denominator: 20,
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
         }
@@ -741,7 +759,7 @@ const fn default_ready_grace_ms() -> u64 {
 }
 
 const fn default_peer_report_timeout_ms() -> u64 {
-    1500
+    5000
 }
 
 const fn default_fec_enabled() -> bool {
@@ -754,6 +772,18 @@ const fn default_fec_default_symbols_per_block() -> u16 {
 
 fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
+}
+
+const fn default_mettle_enabled() -> bool {
+    false
+}
+
+const fn default_mettle_coded_rate_numerator() -> u16 {
+    21
+}
+
+const fn default_mettle_coded_rate_denominator() -> u16 {
+    20
 }
 
 #[allow(dead_code)]

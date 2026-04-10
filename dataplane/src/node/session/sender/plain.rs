@@ -115,6 +115,15 @@ impl super::ModeHooks for PlainSender {
                 );
                 self.protocol_error = true;
             }
+            Some(NeedReport::Mettle { .. }) => {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless plain sender rejected Need with mismatched report mode"
+                );
+                self.protocol_error = true;
+            }
             None => {}
         }
     }

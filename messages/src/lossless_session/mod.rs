@@ -7,6 +7,7 @@
 mod block_frames;
 mod control_frames;
 mod header;
+mod mettle_frames;
 #[cfg(test)]
 mod test_support;
 mod types;
@@ -17,4 +18,5 @@ pub use block_frames::{
 };
 pub use control_frames::{decode_control, encode_control};
 pub use header::{LosslessSessionHeader, LosslessSessionRawHeader, peek_header};
+pub use mettle_frames::{decode_mettle_symbol, encode_mettle_symbol};
 pub use types::*;

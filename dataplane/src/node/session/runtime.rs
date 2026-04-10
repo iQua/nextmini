@@ -386,7 +386,8 @@ impl LosslessRuntime {
                 value: req.session.block_size,
             }
         })?;
-        let policy = fec_policy::derive_sender_policy(&self.config)?;
+        let policy = fec_policy::derive_sender_policy(&self.config, req.session.session_id)?;
+        fec_policy::validate_mode_block_size(&policy.mode, req.session.block_size)?;
         let manifest = LosslessSessionManifest {
             block_size,
             total_bytes: req.total_bytes,
@@ -599,6 +600,38 @@ impl LosslessRuntime {
                         round_id,
                         replay_round_id,
                         "Lossless runtime dropped stale replay attempt for a completed FEC receiver"
+                    );
+                    return false;
+                }
+                control::send_control(
+                    &self.processors,
+                    control::FrameRoute {
+                        session_id: session,
+                        tree_id: None,
+                        src_ip: route.src_ip,
+                        src_port: route.src_port,
+                        dst_ip: route.dst_ip,
+                        dst_port: route.dst_port,
+                    },
+                    &LosslessSessionControl::Need {
+                        round_id,
+                        report: report.clone(),
+                    },
+                )
+                .await;
+                true
+            }
+            CompletedReceiverReplay::Mettle {
+                round_id: replay_round_id,
+                route,
+                report,
+            } => {
+                if round_id < *replay_round_id {
+                    debug!(
+                        session_id = session,
+                        round_id,
+                        replay_round_id,
+                        "Lossless runtime dropped stale replay attempt for a completed METTLE receiver"
                     );
                     return false;
                 }

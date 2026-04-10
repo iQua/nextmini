@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
 /// Single cutover protocol version for the block-first wire model.
-pub const LOSSLESS_SESSION_VERSION: u8 = 5;
+pub const LOSSLESS_SESSION_VERSION: u8 = 6;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -14,6 +14,7 @@ pub enum LosslessSessionKind {
     BlockData = 1,
     BlockSymbol = 2,
     Control = 3,
+    MettleSymbol = 4,
 }
 
 /// Control sub-kind (only meaningful when kind == Control).
@@ -48,6 +49,7 @@ impl LosslessSessionModeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FecScheme {
     RaptorQ = 1,
+    MettleV1 = 2,
 }
 
 impl FecScheme {
@@ -60,6 +62,7 @@ impl FecScheme {
     pub fn from_wire(raw: u8) -> Option<Self> {
         match raw {
             x if x == Self::RaptorQ as u8 => Some(Self::RaptorQ),
+            x if x == Self::MettleV1 as u8 => Some(Self::MettleV1),
             _ => None,
         }
     }
@@ -70,6 +73,9 @@ pub struct LosslessSessionFecMode {
     /// Raw wire scheme identifier to preserve clean handling for unknown schemes.
     pub scheme: u8,
     pub symbols_per_block: u16,
+    pub coded_rate_numerator: u16,
+    pub coded_rate_denominator: u16,
+    pub seed: u64,
     pub tree_ids: Vec<u16>,
 }
 
@@ -79,6 +85,26 @@ impl LosslessSessionFecMode {
         Self {
             scheme: FecScheme::RaptorQ.to_wire(),
             symbols_per_block,
+            coded_rate_numerator: 0,
+            coded_rate_denominator: 0,
+            seed: 0,
+            tree_ids,
+        }
+    }
+
+    #[must_use]
+    pub fn new_mettle(
+        coded_rate_numerator: u16,
+        coded_rate_denominator: u16,
+        seed: u64,
+        tree_ids: Vec<u16>,
+    ) -> Self {
+        Self {
+            scheme: FecScheme::MettleV1.to_wire(),
+            symbols_per_block: 0,
+            coded_rate_numerator,
+            coded_rate_denominator,
+            seed,
             tree_ids,
         }
     }
@@ -134,6 +160,13 @@ pub struct NeedBlock {
     pub deficit_symbols: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MettleReplayWindow {
+    pub stalled_source_id: u64,
+    pub replay_start_bin_id: u64,
+    pub replay_end_bin_id: u64,
+}
+
 /// End-of-round receiver feedback emitted after `SourceDone`.
 ///
 /// Empty plain/FEC payloads are canonicalized to `Complete` on encode.
@@ -142,6 +175,7 @@ pub enum NeedReport {
     Complete,
     Plain { ranges: Vec<MissingBlockRange> },
     Fec { blocks: Vec<NeedBlock> },
+    Mettle { window: MettleReplayWindow },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +189,14 @@ pub enum LosslessSessionValidationError {
         scheme: u8,
     },
     ZeroSymbolsPerBlock,
+    MettleSymbolsPerBlockMustBeZero {
+        value: u16,
+    },
+    ZeroMettleRateDenominator,
+    SubUnitMettleCodedRate {
+        numerator: u16,
+        denominator: u16,
+    },
     FecTreeIdsEmpty,
     TooManyTreeIds {
         configured: usize,
@@ -164,8 +206,11 @@ pub enum LosslessSessionValidationError {
     ZeroDeficitSymbols,
     BlockDataRequiresPlainMode,
     BlockSymbolRequiresFecMode,
+    BlockSymbolRequiresRaptorQMode,
+    MettleSymbolRequiresMettleMode,
     NeedRequiresPlainMode,
     NeedRequiresFecMode,
+    NeedRequiresMettleMode,
     BlockIdOutOfRange {
         block_id: u64,
         total_blocks: u64,
@@ -176,6 +221,9 @@ pub enum LosslessSessionValidationError {
         actual: u32,
     },
     BlockSymbolTreeIdNotAdvertised {
+        tree_id: u16,
+    },
+    MettleSymbolTreeIdNotAdvertised {
         tree_id: u16,
     },
     NeedRangesEmpty,
@@ -198,6 +246,14 @@ pub enum LosslessSessionValidationError {
         configured: usize,
         max: usize,
     },
+    MettleReplayWindowInvalid {
+        replay_start_bin_id: u64,
+        replay_end_bin_id: u64,
+    },
+    MettleReplaySourceOutOfRange {
+        stalled_source_id: u64,
+        total_blocks: u64,
+    },
 }
 
 pub const MAX_NEED_RANGES: usize = u8::MAX as usize;
@@ -212,6 +268,15 @@ pub struct LosslessSessionBlockData {
 pub struct LosslessSessionBlockSymbol {
     pub block_id: u64,
     pub symbol_id: u32,
+    pub tree_id: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LosslessSessionMettleSymbol {
+    pub bin_id: u64,
+    pub degree: u32,
+    pub xor_source_id: u64,
+    pub xor_source_sig: u64,
     pub tree_id: u16,
 }
 

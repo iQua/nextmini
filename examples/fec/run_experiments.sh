@@ -29,11 +29,27 @@ remote_cmd() {
   cmd+=("${user}@${host}" "$remote_script")
   "${cmd[@]}"
 }
+controller_remote_cmd() {
+  local script="$1" remote_script
+  local cmd=(ssh -n)
+  [[ -n "$CONTROLLER_KEY" ]] && cmd+=(-i "$CONTROLLER_KEY")
+  [[ "$CONTROLLER_SSH_PORT" != "22" ]] && cmd+=(-p "$CONTROLLER_SSH_PORT")
+  printf -v remote_script 'bash -lc %q' "$script"
+  cmd+=("${CONTROLLER_USER}@${CONTROLLER_HOST}" "$remote_script")
+  "${cmd[@]}"
+}
 copy_to() {
   local user="$1" host="$2" key="$3" port="$4" src="$5" dst="$6" cmd=(scp -o BatchMode=yes)
   [[ -n "$key" ]] && cmd+=(-i "$key")
   [[ "$port" != "22" ]] && cmd+=(-P "$port")
   cmd+=("$src" "${user}@${host}:$dst")
+  "${cmd[@]}"
+}
+controller_copy_to() {
+  local src="$1" dst="$2" cmd=(scp)
+  [[ -n "$CONTROLLER_KEY" ]] && cmd+=(-i "$CONTROLLER_KEY")
+  [[ "$CONTROLLER_SSH_PORT" != "22" ]] && cmd+=(-P "$CONTROLLER_SSH_PORT")
+  cmd+=("$src" "${CONTROLLER_USER}@${CONTROLLER_HOST}:$dst")
   "${cmd[@]}"
 }
 copy_from() {
@@ -58,7 +74,7 @@ wait_remote_file() {
 cleanup_case() {
   local purge="$1" suffix=""
   [[ "$purge" == "true" ]] && suffix="; rm -rf ~/$REMOTE_RUN_DIR"
-  remote_cmd "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "docker rm -f fec-ctrl-$RUN_ID fec-pg-$RUN_ID >/dev/null 2>&1 || true$suffix" || true
+  controller_remote_cmd "docker rm -f fec-ctrl-$RUN_ID fec-pg-$RUN_ID >/dev/null 2>&1 || true$suffix" || true
   for node_id in $ACTIVE_NODE_IDS; do
     remote_node "$node_id" "docker rm -f fec-node-$node_id-$RUN_ID >/dev/null 2>&1 || true$suffix" || true
   done
@@ -67,6 +83,7 @@ cleanup_case() {
 start_controller() {
   local script
   read -r -d '' script <<EOF || true
+set -euo pipefail
 mkdir -p ~/$REMOTE_RUN_DIR
 docker network inspect $CONTROLLER_NETWORK >/dev/null 2>&1 || docker network create $CONTROLLER_NETWORK >/dev/null
 docker run -d --name fec-pg-$RUN_ID --network $CONTROLLER_NETWORK --network-alias postgres \
@@ -84,13 +101,13 @@ docker run -d --name fec-ctrl-$RUN_ID --network $CONTROLLER_NETWORK \
   -e RUST_LOG=info \
   -v \$HOME/$REMOTE_RUN_DIR/controller-config.toml:/var/nextmini/config.toml:ro \
   $CONTROLLER_IMAGE /var/nextmini/controller >/dev/null
-for _ in \$(seq 1 60); do
-  (echo >/dev/tcp/127.0.0.1/$CONTROLLER_PORT) >/dev/null 2>&1 && exit 0
-  sleep 1
-done
-exit 1
 EOF
-  remote_cmd "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "$script"
+  controller_remote_cmd "$script"
+  local deadline=$((SECONDS + 60))
+  until controller_remote_cmd "(echo >/dev/tcp/127.0.0.1/$CONTROLLER_PORT) >/dev/null 2>&1"; do
+    (( SECONDS < deadline )) || return 1
+    sleep 1
+  done
 }
 
 start_node() {
@@ -98,9 +115,10 @@ start_node() {
   if [[ "$role" == "worker" ]]; then
     extra="--role receiver --node-id $node_id --expected-bytes $PAYLOAD_SIZE_BYTES --receive-timeout-ms $RECEIVE_TIMEOUT_MS"
   elif [[ "$role" == "trainer" ]]; then
-    extra="--role source --controller-config /run/controller-config.toml --receiver-ids ${RECEIVER_IDS// /,} --tensor-path /run/payload.bin"
+    extra="--role source --controller-config /run/controller-config.toml --receiver-ids ${RECEIVER_IDS// /,} --tensor-path /run/payload.bin --receive-timeout-ms $RECEIVE_TIMEOUT_MS"
   fi
   read -r -d '' script <<EOF || true
+set -euo pipefail
 mkdir -p ~/$REMOTE_RUN_DIR/artifacts
 docker image inspect $NODE_IMAGE >/dev/null 2>&1 || docker pull $NODE_IMAGE >/dev/null
 docker run -d --name fec-node-$node_id-$RUN_ID \
@@ -129,17 +147,18 @@ collect_logs() {
   for node_id in $ACTIVE_NODE_IDS; do
     remote_node "$node_id" "docker logs fec-node-$node_id-$RUN_ID 2>&1" >"$LOGS_DIR/node-$node_id.log" || true
   done
-  remote_cmd "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "docker logs fec-ctrl-$RUN_ID 2>&1" >"$LOGS_DIR/controller.log" || true
+  controller_remote_cmd "docker logs fec-ctrl-$RUN_ID 2>&1" >"$LOGS_DIR/controller.log" || true
 }
 
 run_case() {
   local metadata_path="$RUN_DIR/tensor-metadata.json"
   local node_id role verify_failed=0 source_hash receiver_path receiver_hash
+  local startup_node_ids="${STARTUP_NODE_IDS:-$ACTIVE_NODE_IDS}"
 
   cleanup_case false
   printf '{"path":"/run/payload.bin","bytes":%s}\n' "$PAYLOAD_SIZE_BYTES" >"$metadata_path"
-  remote_cmd "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "mkdir -p ~/$REMOTE_RUN_DIR"
-  copy_to "$CONTROLLER_USER" "$CONTROLLER_HOST" "$CONTROLLER_KEY" "$CONTROLLER_SSH_PORT" "$CONTROLLER_CONFIG_PATH" "~/$REMOTE_RUN_DIR/controller-config.toml"
+  controller_remote_cmd "mkdir -p ~/$REMOTE_RUN_DIR"
+  controller_copy_to "$CONTROLLER_CONFIG_PATH" "~/$REMOTE_RUN_DIR/controller-config.toml"
   start_controller
   for node_id in $ACTIVE_NODE_IDS; do
     role="$(node_value NODE_ROLE "$node_id")"
@@ -150,6 +169,9 @@ run_case() {
       copy_to_node "$node_id" "$CONTROLLER_CONFIG_PATH" "~/$REMOTE_RUN_DIR/controller-config.toml"
       copy_to_node "$node_id" "$PAYLOAD_PATH" "~/$REMOTE_RUN_DIR/payload.bin"
     fi
+  done
+  for node_id in $startup_node_ids; do
+    role="$(node_value NODE_ROLE "$node_id")"
     start_node "$node_id" "$role"
   done
   wait_remote_file "$SOURCE_NODE_ID" "~/$REMOTE_RUN_DIR/artifacts/group-info.json" "$GROUP_TIMEOUT"

@@ -30,7 +30,7 @@ The design reference for the rewrite lives in
 |-------|---------|-------------|
 | `default_block_size` | `8500` | Default transfer block size in bytes. |
 | `data_bucket` | `None` | Optional token bucket for sender pacing. |
-| `ready_grace_ms` | `1500` | Grace window before the sender opens the data gate when not all receivers have sent `Ready`. |
+| `ready_grace_ms` | `1500` | Grace window before the sender aborts session start if not all receivers have sent `Ready`. |
 | `fec_enabled` | `false` | Global FEC enable switch. Plain mode remains the default. |
 | `fec_default_symbols_per_block` | `32` | Default `symbols_per_block` for runtime-derived FEC manifests. Must be greater than zero. |
 | `fec_default_tree_ids` | `[0]` | Ordered unique tree ID list used for FEC symbol striping. Must be non-empty. |

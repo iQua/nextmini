@@ -1,14 +1,15 @@
 use super::{
     LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode, LosslessSessionHeader,
     LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode, LosslessSessionModeKind,
-    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, MissingBlockRange, NeedBlock,
-    NeedReport,
+    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, MettleReplayWindow, MissingBlockRange,
+    NeedBlock, NeedReport,
 };
 
-const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
+const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2 + 8;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
+const NEED_METTLE_WINDOW_LEN: usize = 8 + 8 + 8;
 
 /// Stack-friendly scratch size for common control frames.
 ///
@@ -59,6 +60,7 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
                     NEED_FIXED_BODY_LEN + (blocks.len() * NEED_BLOCK_LEN)
                 }
             }
+            NeedReport::Mettle { .. } => NEED_FIXED_BODY_LEN + NEED_METTLE_WINDOW_LEN,
         },
     }
 }
@@ -83,11 +85,28 @@ fn encode_control_into<'a>(
     let ctrl_kind = match control {
         LosslessSessionControl::Manifest { manifest } => {
             let body_start = LosslessSessionHeader::LEN;
-            let (scheme, symbols_per_block, tree_ids) = match &manifest.mode {
-                LosslessSessionMode::Plain => (0u8, 0u16, &[][..]),
-                LosslessSessionMode::Fec(fec) => {
-                    (fec.scheme, fec.symbols_per_block, fec.tree_ids.as_slice())
-                }
+            let (
+                scheme,
+                symbols_per_block,
+                coded_rate_numerator,
+                coded_rate_denominator,
+                seed,
+                tree_ids,
+            ) = match &manifest.mode {
+                LosslessSessionMode::Plain => (0u8, 0u16, 0u16, 0u16, 0u64, &[][..]),
+                LosslessSessionMode::Fec(fec) => (
+                    fec.scheme,
+                    fec.symbols_per_block,
+                    fec.coded_rate_numerator,
+                    fec.coded_rate_denominator,
+                    fec.seed,
+                    fec.tree_ids.as_slice(),
+                ),
+            };
+            let (scheme_param_a, scheme_param_b) = if symbols_per_block != 0 {
+                (symbols_per_block, 0u16)
+            } else {
+                (coded_rate_numerator, coded_rate_denominator)
             };
             assert!(
                 tree_ids.len() <= MAX_MANIFEST_TREE_IDS,
@@ -103,8 +122,9 @@ fn encode_control_into<'a>(
                 .copy_from_slice(&manifest.total_bytes.to_be_bytes());
             buf[body_start + 16..body_start + 24]
                 .copy_from_slice(&manifest.total_blocks.to_be_bytes());
-            buf[body_start + 24..body_start + 26].copy_from_slice(&symbols_per_block.to_be_bytes());
-            buf[body_start + 26..body_start + 28].copy_from_slice(&0u16.to_be_bytes());
+            buf[body_start + 24..body_start + 26].copy_from_slice(&scheme_param_a.to_be_bytes());
+            buf[body_start + 26..body_start + 28].copy_from_slice(&scheme_param_b.to_be_bytes());
+            buf[body_start + 28..body_start + 36].copy_from_slice(&seed.to_be_bytes());
 
             let mut pos = body_start + MANIFEST_FIXED_BODY_LEN;
             for tree_id in tree_ids {
@@ -168,6 +188,17 @@ fn encode_control_into<'a>(
                         pos += NEED_BLOCK_LEN;
                     }
                 }
+                NeedReport::Mettle { window } => {
+                    buf[body_start + 4] = 3;
+                    buf[body_start + 5..body_start + 7].copy_from_slice(&1u16.to_be_bytes());
+                    buf[body_start + 7] = 0;
+                    let mut pos = body_start + NEED_FIXED_BODY_LEN;
+                    buf[pos..pos + 8].copy_from_slice(&window.stalled_source_id.to_be_bytes());
+                    pos += 8;
+                    buf[pos..pos + 8].copy_from_slice(&window.replay_start_bin_id.to_be_bytes());
+                    pos += 8;
+                    buf[pos..pos + 8].copy_from_slice(&window.replay_end_bin_id.to_be_bytes());
+                }
             }
             LosslessSessionCtrlKind::Need as u8
         }
@@ -214,7 +245,9 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let block_size = u32::from_be_bytes(body[4..8].try_into().ok()?);
             let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
             let total_blocks = u64::from_be_bytes(body[16..24].try_into().ok()?);
-            let symbols_per_block = u16::from_be_bytes(body[24..26].try_into().ok()?);
+            let scheme_param_a = u16::from_be_bytes(body[24..26].try_into().ok()?);
+            let scheme_param_b = u16::from_be_bytes(body[26..28].try_into().ok()?);
+            let seed = u64::from_be_bytes(body[28..36].try_into().ok()?);
 
             if body.len() != MANIFEST_FIXED_BODY_LEN + (tree_count * 2) {
                 return None;
@@ -229,16 +262,37 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
 
             let mode = match mode_kind {
                 LosslessSessionModeKind::Plain => {
-                    if scheme != 0 || symbols_per_block != 0 || !tree_ids.is_empty() {
+                    if scheme != 0
+                        || scheme_param_a != 0
+                        || scheme_param_b != 0
+                        || seed != 0
+                        || !tree_ids.is_empty()
+                    {
                         return None;
                     }
                     LosslessSessionMode::Plain
                 }
-                LosslessSessionModeKind::Fec => LosslessSessionMode::Fec(LosslessSessionFecMode {
-                    scheme,
-                    symbols_per_block,
-                    tree_ids,
-                }),
+                LosslessSessionModeKind::Fec => {
+                    let fec = match super::FecScheme::from_wire(scheme) {
+                        Some(super::FecScheme::MettleV1) => LosslessSessionFecMode {
+                            scheme,
+                            symbols_per_block: 0,
+                            coded_rate_numerator: scheme_param_a,
+                            coded_rate_denominator: scheme_param_b,
+                            seed,
+                            tree_ids,
+                        },
+                        _ => LosslessSessionFecMode {
+                            scheme,
+                            symbols_per_block: scheme_param_a,
+                            coded_rate_numerator: 0,
+                            coded_rate_denominator: 0,
+                            seed: 0,
+                            tree_ids,
+                        },
+                    };
+                    LosslessSessionMode::Fec(fec)
+                }
             };
             let manifest = LosslessSessionManifest {
                 block_size,
@@ -320,6 +374,27 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                         pos += NEED_BLOCK_LEN;
                     }
                     NeedReport::Fec { blocks }
+                }
+                3 => {
+                    if report_count != 1
+                        || body.len() != NEED_FIXED_BODY_LEN + NEED_METTLE_WINDOW_LEN
+                    {
+                        return None;
+                    }
+                    let pos = NEED_FIXED_BODY_LEN;
+                    NeedReport::Mettle {
+                        window: MettleReplayWindow {
+                            stalled_source_id: u64::from_be_bytes(
+                                body[pos..pos + 8].try_into().ok()?,
+                            ),
+                            replay_start_bin_id: u64::from_be_bytes(
+                                body[pos + 8..pos + 16].try_into().ok()?,
+                            ),
+                            replay_end_bin_id: u64::from_be_bytes(
+                                body[pos + 16..pos + 24].try_into().ok()?,
+                            ),
+                        },
+                    }
                 }
                 _ => return None,
             };

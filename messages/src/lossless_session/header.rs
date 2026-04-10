@@ -5,7 +5,7 @@ use super::{LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION, LosslessSessionKin
 /// Layout (big-endian):
 /// - magic:      u32  (LOSSLESS_SESSION_MAGIC)
 /// - version:    u8   (LOSSLESS_SESSION_VERSION)
-/// - kind:       u8   (1=BlockData, 2=BlockSymbol, 3=Control)
+/// - kind:       u8   (1=BlockData, 2=BlockSymbol, 3=Control, 4=MettleSymbol)
 /// - ctrl_kind:  u8   (control sub-kind when kind=Control, else 0)
 /// - reserved:   u8   (0; alignment/padding)
 /// - session_id: u64  (flow/session demux)
@@ -57,6 +57,7 @@ impl LosslessSessionHeader {
             1 => LosslessSessionKind::BlockData,
             2 => LosslessSessionKind::BlockSymbol,
             3 => LosslessSessionKind::Control,
+            4 => LosslessSessionKind::MettleSymbol,
             _ => return None,
         };
         Some((

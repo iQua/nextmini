@@ -8,9 +8,15 @@ public_network_addr = "$host"
 public_network_port = "8080"
 node_id = $node_id
 channel_backpressure = true
+channel_capacity = $channel_capacity
 
 [lossless_runtime_config]
 default_block_size = $block_size
+ready_grace_ms = $ready_grace_ms
+peer_report_timeout_ms = $peer_report_timeout_ms
 fec_enabled = $fec_enabled
+mettle_enabled = $mettle_enabled
 fec_default_tree_ids = [$tree_ids]
 fec_default_symbols_per_block = $symbols_per_block
+mettle_coded_rate_numerator = $mettle_coded_rate_numerator
+mettle_coded_rate_denominator = $mettle_coded_rate_denominator

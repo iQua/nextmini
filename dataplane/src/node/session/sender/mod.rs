@@ -7,6 +7,8 @@
 
 mod block_symbol_frame;
 mod fec;
+mod mettle;
+mod mettle_symbol_frame;
 mod plain;
 mod state;
 
@@ -16,7 +18,8 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, NeedReport,
+    self, FecScheme, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -28,6 +31,7 @@ use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute}
 use crate::node::session::timing;
 
 use self::fec::FecSender;
+use self::mettle::MettleSender;
 use self::plain::PlainSender;
 use self::state::{ActiveSessionQuorum, QuorumLiveness};
 
@@ -101,6 +105,7 @@ pub(super) struct SenderShared {
 enum SenderMode {
     Plain(PlainSender),
     Fec(FecSender),
+    Mettle(MettleSender),
 }
 
 /// Source object wrapper used to derive block payloads and source symbols.
@@ -174,7 +179,13 @@ impl SessionSender {
         );
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-            LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+            LosslessSessionMode::Fec(fec) => match fec.scheme_kind() {
+                Some(FecScheme::RaptorQ) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+                Some(FecScheme::MettleV1) => {
+                    SenderMode::Mettle(MettleSender::new(&manifest, plan, &source)?)
+                }
+                None => return Err("unknown fec scheme in sender manifest"),
+            },
         };
 
         Ok(Self {
@@ -212,14 +223,20 @@ impl SessionSender {
         let ready = match &mut self.mode {
             SenderMode::Plain(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
             SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
+            SenderMode::Mettle(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
         };
-        if !ready {
-            return SessionOutcome::Aborted;
-        }
-
-        let outcome = match &mut self.mode {
-            SenderMode::Plain(mode) => mode.run(&mut self.shared, ctrl_rx).await,
-            SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+        let outcome = if !ready {
+            warn!(
+                session_id = self.shared.session.session_id,
+                "Lossless sender aborted before payload because not all configured receivers sent Ready"
+            );
+            SessionOutcome::Aborted
+        } else {
+            match &mut self.mode {
+                SenderMode::Plain(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+                SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+                SenderMode::Mettle(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+            }
         };
         info!(
             session_id = self.shared.session.session_id,
@@ -302,8 +319,9 @@ impl SenderShared {
             warn!(
                 session_id = self.session.session_id,
                 ?missing,
-                "Lossless sender opening data gate before all receivers sent Ready"
+                "Lossless sender aborted because not all receivers sent Ready before ready_grace expired"
             );
+            return false;
         }
 
         self.freeze_active_quorum();

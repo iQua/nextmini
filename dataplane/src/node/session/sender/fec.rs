@@ -384,6 +384,10 @@ impl FecSender {
                     self.protocol_error = true;
                     return;
                 }
+                NeedReport::Mettle { .. } => {
+                    self.protocol_error = true;
+                    return;
+                }
             }
         }
 
@@ -487,6 +491,16 @@ impl super::ModeHooks for FecSender {
                 }
             }
             NeedReport::Plain { .. } => {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless FEC sender rejected Need with mismatched report mode"
+                );
+                self.protocol_error = true;
+                return;
+            }
+            NeedReport::Mettle { .. } => {
                 warn!(
                     session_id = shared.session.session_id,
                     peer_id,

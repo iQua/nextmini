@@ -7,12 +7,15 @@
 //! remaining per-block deficits for the next retransmit round.
 
 mod fec;
+mod mettle;
 mod plain;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::ops::Bound::{Excluded, Unbounded};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
@@ -29,6 +32,7 @@ use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
 
 use self::fec::FecReceiver;
+use self::mettle::{MettleReceiver, params_from_manifest as mettle_params_from_manifest};
 use self::plain::PlainReceiver;
 
 /// Run one receiver session until the transfer is complete or the channel closes.
@@ -56,7 +60,13 @@ struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
     lifecycle: ReceiverLifecycle,
+    pending_controls: VecDeque<InboundFrame>,
+    pending_payloads: VecDeque<InboundFrame>,
+    source_done_front_seen_at: Option<Instant>,
 }
+
+const SOURCE_DONE_DRAIN_GRACE: Duration = Duration::from_millis(250);
+const METTLE_SOURCE_DONE_DRAIN_GRACE: Duration = Duration::from_millis(25);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReceiverLifecycle {
@@ -81,6 +91,7 @@ pub(super) struct ReceiverShared {
 enum ReceiverMode {
     Plain(PlainReceiver),
     Fec(FecReceiver),
+    Mettle(MettleReceiver),
 }
 
 impl SessionReceiver {
@@ -99,6 +110,9 @@ impl SessionReceiver {
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
+            pending_controls: VecDeque::new(),
+            pending_payloads: VecDeque::new(),
+            source_done_front_seen_at: None,
         }
     }
 
@@ -114,22 +128,7 @@ impl SessionReceiver {
         );
 
         loop {
-            let frame = if self.is_passive_complete() {
-                let passive_timeout = timing::session_finish_timeout_for(
-                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
-                );
-                tokio::select! {
-                    maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep(passive_timeout) => {
-                        self.finish_session("session_finish_timeout");
-                        break;
-                    }
-                }
-            } else {
-                rx.recv().await
-            };
-
-            let Some(frame) = frame else {
+            let Some(frame) = self.next_inbound_frame(rx).await else {
                 self.finish_session("receiver_channel_closed");
                 break;
             };
@@ -140,6 +139,8 @@ impl SessionReceiver {
                 self.handle_block_data_frame(frame).await;
             } else if lossless_session::decode_block_symbol(&frame.bytes).is_some() {
                 self.handle_block_symbol_frame(frame).await;
+            } else if lossless_session::decode_mettle_symbol(&frame.bytes).is_some() {
+                self.handle_mettle_symbol_frame(frame).await;
             }
 
             if self.reported_complete() {
@@ -160,10 +161,121 @@ impl SessionReceiver {
         );
     }
 
+    async fn next_inbound_frame(
+        &mut self,
+        rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> Option<InboundFrame> {
+        loop {
+            self.drain_ready_frames(rx);
+            self.reset_source_done_deferral_if_needed();
+            if self.should_defer_front_control(Instant::now()) {
+                return self.pending_payloads.pop_front();
+            }
+            if let Some(wait) = self.source_done_drain_wait(Instant::now()) {
+                let maybe_frame = tokio::time::timeout(wait, rx.recv()).await;
+                match maybe_frame {
+                    Ok(Some(frame)) => {
+                        self.enqueue_frame(frame);
+                        continue;
+                    }
+                    Ok(None) => return None,
+                    Err(_) => {}
+                }
+            }
+            if let Some(frame) = self.pending_controls.pop_front() {
+                self.reset_source_done_deferral_if_needed();
+                return Some(frame);
+            }
+            if let Some(frame) = self.pending_payloads.pop_front() {
+                return Some(frame);
+            }
+
+            let maybe_frame = if self.is_passive_complete() {
+                let passive_timeout = timing::session_finish_timeout_for(
+                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
+                );
+                tokio::select! {
+                    maybe_frame = rx.recv() => maybe_frame,
+                    _ = tokio::time::sleep(passive_timeout) => {
+                        self.finish_session("session_finish_timeout");
+                        return None;
+                    }
+                }
+            } else {
+                rx.recv().await
+            };
+
+            let frame = maybe_frame?;
+            self.enqueue_frame(frame);
+        }
+    }
+
+    fn drain_ready_frames(&mut self, rx: &mut mpsc::Receiver<InboundFrame>) {
+        while let Ok(frame) = rx.try_recv() {
+            self.enqueue_frame(frame);
+        }
+    }
+
+    fn enqueue_frame(&mut self, frame: InboundFrame) {
+        if lossless_session::decode_control(&frame.bytes).is_some() {
+            self.pending_controls.push_back(frame);
+        } else {
+            self.pending_payloads.push_back(frame);
+        }
+    }
+
+    fn should_defer_front_control(&mut self, now: Instant) -> bool {
+        if !self.front_control_is_source_done() || self.pending_payloads.is_empty() {
+            return false;
+        }
+
+        let started_at = self.source_done_front_seen_at.get_or_insert(now);
+        now.duration_since(*started_at) < self.source_done_drain_grace()
+    }
+
+    fn source_done_drain_wait(&mut self, now: Instant) -> Option<Duration> {
+        if !self.front_control_is_source_done() || !self.pending_payloads.is_empty() {
+            return None;
+        }
+
+        let started_at = self.source_done_front_seen_at.get_or_insert(now);
+        let elapsed = now.duration_since(*started_at);
+        let grace = self.source_done_drain_grace();
+        if elapsed >= grace {
+            None
+        } else {
+            Some(grace - elapsed)
+        }
+    }
+
+    fn source_done_drain_grace(&self) -> Duration {
+        match self.mode.as_ref() {
+            Some(ReceiverMode::Mettle(_)) => METTLE_SOURCE_DONE_DRAIN_GRACE,
+            _ => SOURCE_DONE_DRAIN_GRACE,
+        }
+    }
+
+    fn front_control_is_source_done(&self) -> bool {
+        let Some(frame) = self.pending_controls.front() else {
+            return false;
+        };
+        matches!(
+            lossless_session::decode_control(&frame.bytes),
+            Some((_, LosslessSessionControl::SourceDone { .. }))
+        )
+    }
+
+    fn reset_source_done_deferral_if_needed(&mut self) {
+        if !self.front_control_is_source_done() {
+            self.source_done_front_seen_at = None;
+        }
+    }
+
     fn reported_complete(&self) -> bool {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
             Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
+            Some(ReceiverMode::Mettle(mode)) => mode.is_complete(),
             None => false,
         }
     }
@@ -222,6 +334,9 @@ impl SessionReceiver {
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
+                if let Some(ReceiverMode::Mettle(mode)) = self.mode.as_mut() {
+                    mode.handle_source_done(&self.shared, round_id).await;
+                }
             }
         }
     }
@@ -240,6 +355,14 @@ impl SessionReceiver {
             return;
         };
         mode.handle_block_symbol_frame(&mut self.shared, frame)
+            .await;
+    }
+
+    async fn handle_mettle_symbol_frame(&mut self, frame: InboundFrame) {
+        let Some(ReceiverMode::Mettle(mode)) = self.mode.as_mut() else {
+            return;
+        };
+        mode.handle_mettle_symbol_frame(&mut self.shared, frame)
             .await;
     }
 
@@ -277,12 +400,21 @@ impl SessionReceiver {
         };
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver::default()),
-            LosslessSessionMode::Fec(fec) => {
-                let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
-                    return;
-                };
-                ReceiverMode::Fec(FecReceiver::new(geometry))
-            }
+            LosslessSessionMode::Fec(fec) => match fec.scheme_kind() {
+                Some(nextmini_messages::lossless_session::FecScheme::RaptorQ) => {
+                    let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
+                        return;
+                    };
+                    ReceiverMode::Fec(FecReceiver::new(geometry))
+                }
+                Some(nextmini_messages::lossless_session::FecScheme::MettleV1) => {
+                    let Ok(params) = mettle_params_from_manifest(&manifest) else {
+                        return;
+                    };
+                    ReceiverMode::Mettle(MettleReceiver::new(params, plan.total_blocks()))
+                }
+                None => return,
+            },
         };
 
         let Some(object_len) = plan.total_bytes_usize() else {
@@ -339,6 +471,14 @@ impl SessionReceiver {
             Some(ReceiverMode::Fec(mode)) if self.reported_complete() => {
                 let round_id = mode.last_source_done_round_id()?;
                 Some(CompletedReceiverReplay::Fec {
+                    round_id,
+                    route: self.shared.route,
+                    report: NeedReport::Complete,
+                })
+            }
+            Some(ReceiverMode::Mettle(mode)) if self.reported_complete() => {
+                let round_id = mode.last_source_done_round_id()?;
+                Some(CompletedReceiverReplay::Mettle {
                     round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,

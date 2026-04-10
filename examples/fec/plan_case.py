@@ -71,9 +71,14 @@ def plan_case(cfg: dict, case_name: str) -> None:
     trainer = next(node for node in nodes_by_id.values() if node["role"] == "trainer")
     source_id = int(trainer["node_id"])
     receiver_ids = [int(node_id) for node_id in case["receiver_ids"]]
-    relay_ids = [int(node_id) for node_id in case["relay_ids"]]
+    relay_ids = [int(node_id) for node_id in case.get("relay_ids", [])]
     tree_ids = [int(tree_id) for tree_id in case["tree_ids"]]
-    active_node_ids = [source_id, *receiver_ids, *relay_ids[: len(tree_ids) * RELAYS_PER_TREE]]
+    explicit_edges = [tuple(e) for e in case["edges"]] if "edges" in case else None
+    if explicit_edges is not None:
+        edge_node_ids = {nid for edge in explicit_edges for nid in edge}
+        active_node_ids = [source_id, *receiver_ids, *[nid for nid in relay_ids if nid in edge_node_ids]]
+    else:
+        active_node_ids = [source_id, *receiver_ids, *relay_ids[: len(tree_ids) * RELAYS_PER_TREE]]
 
     run_id = f"{time.strftime('%Y%m%d-%H%M%S')}-{case_name}-{time.time_ns() % 1_000_000:06d}"
     out_root = Path(cfg.get("paths", {}).get("local_output_root", "/tmp/nextmini-fec")).expanduser()
@@ -87,10 +92,11 @@ def plan_case(cfg: dict, case_name: str) -> None:
     remote_root = str(cfg.get("paths", {}).get("remote_run_root", "~/fec-runs")).strip().removeprefix("~/")
     controller_host = cfg["controller"]["host"]
     controller_cfg = run_dir / "controller-config.toml"
+    edges = explicit_edges if explicit_edges is not None else compute_edges(source_id, receiver_ids, relay_ids, tree_ids)
     controller_cfg.write_text(
         CONTROLLER_TEMPLATE.substitute(
             n_nodes=len(dict.fromkeys(active_node_ids)),
-            edges=", ".join(f"[{src}, {dst}]" for src, dst in compute_edges(source_id, receiver_ids, relay_ids, tree_ids)),
+            edges=", ".join(f"[{src}, {dst}]" for src, dst in edges),
         )
     )
 
@@ -99,10 +105,14 @@ def plan_case(cfg: dict, case_name: str) -> None:
             "RUN_ID": run_id,
             "CASE_NAME": case_name,
             "BLOCK_SIZE": int(case["block_size"]),
-            "FEC_MODE": "on" if case["mode"] == "fec" else "off",
+            "FEC_MODE": "on" if case["mode"] in {"fec", "mettle"} else "off",
             "SOURCE_NODE_ID": source_id,
             "RECEIVER_IDS": " ".join(str(node_id) for node_id in receiver_ids),
             "ACTIVE_NODE_IDS": " ".join(str(node_id) for node_id in dict.fromkeys(active_node_ids)),
+            "STARTUP_NODE_IDS": " ".join(
+                str(node_id)
+                for node_id in dict.fromkeys(case.get("startup_order", active_node_ids))
+            ),
             "RUN_DIR": run_dir,
             "LOGS_DIR": logs_dir,
             "PAYLOAD_PATH": payload_path,
@@ -128,9 +138,15 @@ def plan_case(cfg: dict, case_name: str) -> None:
                 network_interface=node["network_interface"],
                 node_id=node_id,
                 block_size=int(case["block_size"]),
-                fec_enabled=str(case["mode"] == "fec").lower(),
+                ready_grace_ms=int(case.get("ready_grace_ms", defaults.get("ready_grace_ms", 1500))),
+                peer_report_timeout_ms=int(case.get("peer_report_timeout_ms", defaults.get("peer_report_timeout_ms", 5000))),
+                fec_enabled=str(case["mode"] in {"fec", "mettle"}).lower(),
+                mettle_enabled=str(case["mode"] == "mettle").lower(),
                 tree_ids=", ".join(str(tree_id) for tree_id in tree_ids),
                 symbols_per_block=int(case["symbols_per_block"]),
+                mettle_coded_rate_numerator=int(case.get("mettle_coded_rate_numerator", defaults.get("mettle_coded_rate_numerator", 21))),
+                mettle_coded_rate_denominator=int(case.get("mettle_coded_rate_denominator", defaults.get("mettle_coded_rate_denominator", 20))),
+                channel_capacity=int(case.get("channel_capacity", defaults.get("channel_capacity", 1000))),
             )
         )
         emit_many(
