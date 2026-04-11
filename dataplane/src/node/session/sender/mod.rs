@@ -1,9 +1,11 @@
-//! Sender task for block-first lossless sessions.
+//! Sender task for lossless sessions.
 //!
 //! Plain mode sends complete blocks on the default tree and converges with
 //! end-of-round status feedback. FEC mode sends source symbols first, emits
 //! `SourceDone { round_id }` after the source sweep, and only then responds to
-//! aggregate round status feedback with extra fountain symbols.
+//! aggregate round status feedback with extra fountain symbols. METTLE keeps
+//! the shared manifest/ready shell but treats `SourceDone` as a tail marker
+//! while accepting live repair and completion feedback throughout the stream.
 
 mod block_symbol_frame;
 mod fec;
@@ -57,7 +59,7 @@ pub async fn run(
 
 /// Mode-specific sender hooks invoked by the shared control path.
 pub(super) trait ModeHooks {
-    /// Observe end-of-round Need feedback from a receiver.
+    /// Observe receiver Need feedback for the current sender epoch.
     fn on_need(
         &mut self,
         _shared: &mut SenderShared,
@@ -180,9 +182,15 @@ impl SessionSender {
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
             LosslessSessionMode::Fec(fec) => match fec.scheme_kind() {
-                Some(FecScheme::RaptorQ) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+                Some(FecScheme::RaptorQ) => {
+                    SenderMode::Fec(FecSender::new(&manifest, plan, cfg.tree_schedule.clone())?)
+                }
                 Some(FecScheme::MettleV1) => {
-                    SenderMode::Mettle(MettleSender::new(&manifest, plan, &source)?)
+                    SenderMode::Mettle(MettleSender::new(
+                        &manifest,
+                        plan,
+                        cfg.tree_schedule.clone(),
+                    )?)
                 }
                 None => return Err("unknown fec scheme in sender manifest"),
             },
@@ -663,7 +671,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_grace_freezes_quorum_before_pre_payload_control_drain() {
+    async fn ready_grace_aborts_incomplete_quorum() {
         let mut shared = test_sender_shared();
         let (ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
 
@@ -675,27 +683,8 @@ mod tests {
             .await
             .expect("ready should enqueue");
 
-        assert!(shared.negotiate_ready(&mut ctrl_rx, &mut NoopMode).await);
-        assert!(shared.active_quorum.is_frozen());
-
-        ctrl_tx
-            .send(InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
-                peer_id: Some(23),
-            })
-            .await
-            .expect("late ready should enqueue");
-        shared.drain_controls(&mut ctrl_rx, &mut NoopMode);
-
-        assert_eq!(
-            shared
-                .active_quorum
-                .active_members()
-                .iter()
-                .copied()
-                .collect::<Vec<_>>(),
-            vec![22]
-        );
+        assert!(!shared.negotiate_ready(&mut ctrl_rx, &mut NoopMode).await);
+        assert!(!shared.active_quorum.is_frozen());
     }
 
     #[tokio::test]
@@ -782,7 +771,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ready_grace_completion_only_waits_for_active_quorum() {
+    async fn sender_aborts_when_ready_grace_expires_before_all_receivers_are_ready() {
         let processors = ProcessorHandle::new(LocalConfig {
             node_id: 0,
             n_nodes: 1,
@@ -812,7 +801,9 @@ mod tests {
                 total_blocks: 0,
                 mode: LosslessSessionMode::Plain,
             },
+            tree_schedule: vec![0],
             ready_grace_ms: 1,
+            peer_report_timeout_ms: 30,
             topology_ready: None,
         };
         let mut sender = SessionSender::new(cfg, processors).expect("sender should build");
@@ -830,31 +821,17 @@ mod tests {
             .await
             .expect("ready control should enqueue");
         tokio::time::sleep(Duration::from_millis(10)).await;
-        ctrl_tx
-            .send(InboundFrame {
-                bytes: lossless_session::encode_control(
-                    9,
-                    &LosslessSessionControl::Need {
-                        round_id: 0,
-                        report: NeedReport::Complete,
-                    },
-                ),
-                peer_id: Some(22),
-            })
-            .await
-            .expect("need should enqueue");
-
         assert_eq!(
             tokio::time::timeout(Duration::from_secs(1), sender_task)
                 .await
                 .expect("sender task should finish")
                 .expect("sender task should not panic"),
-            SessionOutcome::Completed
+            SessionOutcome::Aborted
         );
     }
 
     #[tokio::test]
-    async fn zero_byte_sender_completes_immediately_when_ready_grace_freezes_empty_quorum() {
+    async fn zero_byte_sender_aborts_when_ready_grace_expires_without_any_ready() {
         let processors = ProcessorHandle::new(LocalConfig {
             node_id: 0,
             n_nodes: 1,
@@ -884,7 +861,9 @@ mod tests {
                 total_blocks: 0,
                 mode: LosslessSessionMode::Plain,
             },
+            tree_schedule: vec![0],
             ready_grace_ms: 1,
+            peer_report_timeout_ms: 30,
             topology_ready: None,
         };
         let sender = SessionSender::new(cfg, processors).expect("sender should build");
@@ -897,7 +876,7 @@ mod tests {
             })
             .await
             .expect("sender task should finish"),
-            SessionOutcome::Completed
+            SessionOutcome::Aborted
         );
     }
 

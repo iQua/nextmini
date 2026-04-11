@@ -108,6 +108,10 @@ impl QuorumLiveness {
     pub(super) fn solicitation_count(&self) -> u32 {
         self.solicitation_count
     }
+
+    pub(super) fn peer_report_timeout(&self) -> Duration {
+        self.peer_report_timeout
+    }
 }
 
 #[cfg(test)]

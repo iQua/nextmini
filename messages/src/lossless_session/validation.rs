@@ -385,6 +385,9 @@ mod tests {
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode {
                 scheme: 99,
                 symbols_per_block: 0,
+                coded_rate_numerator: 0,
+                coded_rate_denominator: 0,
+                seed: 0,
                 tree_ids: vec![],
             }),
         };

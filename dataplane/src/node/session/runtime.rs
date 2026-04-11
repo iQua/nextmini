@@ -127,6 +127,8 @@ pub struct SenderConfig {
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
     pub manifest: LosslessSessionManifest,
+    /// Local sender striping schedule used to choose trees for payload symbols.
+    pub tree_schedule: Vec<u16>,
     /// Maximum time to wait for READY frames during session start.
     pub ready_grace_ms: u64,
     /// Maximum time to wait for frozen-quorum feedback after `SourceDone`.
@@ -403,6 +405,7 @@ impl LosslessRuntime {
             receiver_ids: req.receiver_ids,
             source_buffer: req.source_buffer,
             manifest,
+            tree_schedule: policy.tree_schedule,
             ready_grace_ms: req.ready_grace_ms,
             peer_report_timeout_ms: req.peer_report_timeout_ms,
             topology_ready: None,
@@ -626,12 +629,12 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
-                if round_id < *replay_round_id {
+                if round_id != *replay_round_id {
                     debug!(
                         session_id = session,
                         round_id,
                         replay_round_id,
-                        "Lossless runtime dropped stale replay attempt for a completed METTLE receiver"
+                        "Lossless runtime dropped mismatched tail replay attempt for a completed METTLE receiver"
                     );
                     return false;
                 }
@@ -770,6 +773,35 @@ mod tests {
             )
             .await;
         assert_fec_complete(&mut packet_rx).await;
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 0 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert_fec_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_replays_mettle_complete_for_source_done() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E403;
+
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Mettle {
+                round_id: 0,
+                route,
+                report: NeedReport::Complete,
+            },
+        );
 
         runtime
             .deliver_frame(
@@ -1040,7 +1072,10 @@ mod tests {
         assert_plain_complete_for_round(packet_rx, 0).await;
     }
 
-    async fn assert_plain_complete_for_round(packet_rx: &mut mpsc::Receiver<Packet>, round_id: u32) {
+    async fn assert_plain_complete_for_round(
+        packet_rx: &mut mpsc::Receiver<Packet>,
+        round_id: u32,
+    ) {
         let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for replayed plain status")

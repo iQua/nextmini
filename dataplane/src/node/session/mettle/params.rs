@@ -211,15 +211,27 @@ impl MettleParams {
     }
 
     #[must_use]
+    pub fn right_exclusive_for_total(self, source_id: u64, total_sources: u64) -> u64 {
+        self.base(source_id) + self.window_bins_for_total(source_id, total_sources)
+    }
+
+    #[must_use]
     pub fn source_count_for_bytes(self, total_bytes: usize) -> u64 {
         total_bytes.div_ceil(self.source_symbol_bytes) as u64
     }
 
     #[must_use]
     pub fn edges_for(self, source_id: u64) -> SourceEdges {
+        self.edges_for_total(source_id, None)
+    }
+
+    #[must_use]
+    pub fn edges_for_total(self, source_id: u64, total_sources: impl Into<Option<u64>>) -> SourceEdges {
         let base = self.base(source_id);
-        let right_exclusive = self.right_exclusive(source_id);
-        let width = self.window_bins() as u32;
+        let width = self
+            .window_bins_with_optional_total(source_id, total_sources.into())
+            .clamp(PAPER_EDGE_COUNT as u64, u64::from(u32::MAX)) as u32;
+        let right_exclusive = base + u64::from(width);
 
         let mut edges = [0_u64; PAPER_EDGE_COUNT];
         edges[0] = match self.profile {
@@ -253,6 +265,39 @@ impl MettleParams {
         }
 
         edges
+    }
+
+    fn window_bins_for_total(self, source_id: u64, total_sources: u64) -> u64 {
+        self.window_bins_with_optional_total(source_id, Some(total_sources))
+    }
+
+    fn window_bins_with_optional_total(self, source_id: u64, total_sources: Option<u64>) -> u64 {
+        let baseline = self.window_bins();
+        if !self.tail_compression {
+            return baseline;
+        }
+
+        let Some(total_sources) = total_sources else {
+            return baseline;
+        };
+        let coupling_window = u64::from(self.coupling_window);
+        if total_sources <= coupling_window {
+            return baseline;
+        }
+
+        let tail_start = total_sources - coupling_window;
+        if source_id < tail_start {
+            return baseline;
+        }
+
+        let tail_offset = source_id - tail_start;
+        let factor = if coupling_window <= 1 {
+            2.0
+        } else {
+            1.0 + (tail_offset as f64 / (coupling_window - 1) as f64)
+        };
+        let compressed = (baseline as f64 / factor).ceil() as u64;
+        compressed.clamp(PAPER_EDGE_COUNT as u64, baseline)
     }
 
     fn sample_uniform_bin(

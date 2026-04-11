@@ -712,6 +712,14 @@ pub struct LosslessConfig {
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
 
+    /// Optional local tree schedule used by senders to approximate weighted tree striping.
+    ///
+    /// When empty, senders fall back to `fec_default_tree_ids` in round-robin order.
+    /// This schedule is local runtime state only; the wire manifest still carries
+    /// unique tree identifiers.
+    #[serde(default)]
+    pub fec_default_tree_schedule: Vec<u16>,
+
     /// Enable experimental METTLE instead of the block-RaptorQ FEC path.
     #[serde(default = "default_mettle_enabled")]
     pub mettle_enabled: bool,
@@ -745,6 +753,7 @@ impl Default for LosslessConfig {
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_tree_ids: vec![0],
+            fec_default_tree_schedule: Vec::new(),
             mettle_enabled: false,
             mettle_coded_rate_numerator: 21,
             mettle_coded_rate_denominator: 20,
@@ -1035,8 +1044,14 @@ mod tests {
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
         );
+        assert!(
+            !lossless.mettle_enabled,
+            "METTLE must be explicit opt-in by default"
+        );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
+        assert_eq!(lossless.mettle_coded_rate_numerator, 21);
+        assert_eq!(lossless.mettle_coded_rate_denominator, 20);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,

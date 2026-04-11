@@ -27,7 +27,7 @@ enum RoundPhase {
 pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
     symbols_per_block: u16,
-    tree_ids: Vec<u16>,
+    tree_schedule: Vec<u16>,
     geometry: SymbolGeometry,
     next_tree_rr: usize,
     current_source_cache: Option<(u64, Vec<Bytes>)>,
@@ -55,6 +55,7 @@ impl FecSender {
     pub(super) fn new(
         manifest: &LosslessSessionManifest,
         plan: BlockPlan,
+        tree_schedule: Vec<u16>,
     ) -> Result<Self, &'static str> {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build fec sender for plain manifest");
@@ -76,7 +77,7 @@ impl FecSender {
                 })
                 .collect(),
             symbols_per_block: fec.symbols_per_block,
-            tree_ids: fec.tree_ids.clone(),
+            tree_schedule,
             geometry,
             next_tree_rr: 0,
             current_source_cache: None,
@@ -258,13 +259,13 @@ impl FecSender {
         symbol_id: u32,
         payload: &[u8],
     ) -> bool {
-        if self.tree_ids.is_empty() {
+        if self.tree_schedule.is_empty() {
             return false;
         }
 
-        let tree_count = self.tree_ids.len();
+        let tree_count = self.tree_schedule.len();
         let start_idx = self.next_tree_rr;
-        let initial_tree_id = self.tree_ids[start_idx];
+        let initial_tree_id = self.tree_schedule[start_idx];
         block_symbol_frame::encode_into(
             &mut self.frame_scratch,
             shared.session.session_id,
@@ -276,7 +277,7 @@ impl FecSender {
 
         for offset in 0..tree_count {
             let idx = (start_idx + offset) % tree_count;
-            let tree_id = self.tree_ids[idx];
+            let tree_id = self.tree_schedule[idx];
             if offset > 0 {
                 block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
@@ -626,7 +627,7 @@ mod tests {
     async fn fec_sender_drops_future_round_need() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut sender = FecSender::new(&manifest, plan, vec![7, 9]).expect("sender should build");
         sender.phase = RoundPhase::WaitingForReports;
         sender.current_round_id = 0;
         let mut shared = test_sender_shared(manifest.clone());
@@ -652,7 +653,7 @@ mod tests {
     async fn fec_sender_drops_need_after_round_closure() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut sender = FecSender::new(&manifest, plan, vec![7, 9]).expect("sender should build");
         sender.phase = RoundPhase::SendingData;
         sender.current_round_id = 0;
         let mut shared = test_sender_shared(manifest.clone());
@@ -678,7 +679,7 @@ mod tests {
     async fn fec_sender_bounds_speculative_repair_until_more_quorum_reports_arrive() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut sender = FecSender::new(&manifest, plan, vec![7, 9]).expect("sender should build");
         sender.phase = RoundPhase::WaitingForReports;
         sender.current_round_id = 0;
         let mut shared = test_sender_shared(manifest.clone());

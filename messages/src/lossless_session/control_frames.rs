@@ -22,12 +22,14 @@ const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
         MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2),
         NEED_FIXED_BODY_LEN + (MAX_NEED_RANGES * NEED_RANGE_LEN),
         NEED_FIXED_BODY_LEN + (MAX_NEED_BLOCKS * NEED_BLOCK_LEN),
+        NEED_FIXED_BODY_LEN + NEED_METTLE_WINDOW_LEN,
     );
 
 #[cfg(test)]
-const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize) -> usize {
+const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize, tail: usize) -> usize {
     let first = if lhs > mid { lhs } else { mid };
-    if first > rhs { first } else { rhs }
+    let second = if first > rhs { first } else { rhs };
+    if second > tail { second } else { tail }
 }
 
 fn manifest_tree_ids(mode: &LosslessSessionMode) -> &[u16] {

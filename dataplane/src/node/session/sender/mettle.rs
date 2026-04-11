@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
@@ -11,7 +11,7 @@ use nextmini_messages::lossless_session::{
 use crate::node::processor::SendOutcome;
 use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
-use crate::node::session::mettle::encoder::{EncodedStream, Encoder, MettleBin};
+use crate::node::session::mettle::encoder::{Encoder, MettleBin};
 use crate::node::session::mettle::params::{CodedRate, MettleParams};
 use crate::node::session::plan::BlockPlan;
 
@@ -37,16 +37,23 @@ struct ReplayCursor {
 }
 
 pub(super) struct MettleSender {
-    stream: EncodedStream,
-    tree_ids: Vec<u16>,
+    encoder: Encoder,
+    total_sources: u64,
+    next_source_id: u64,
+    nominal_queue: VecDeque<MettleBin>,
+    tail_flushed: bool,
+    tree_schedule: Vec<u16>,
     next_tree_rr: usize,
     frame_scratch: Vec<u8>,
     phase: Phase,
     current_round_id: u32,
-    nominal_cursor: usize,
+    tail_source_done_sent: bool,
     replay_cursor: Option<ReplayCursor>,
-    round_reports: BTreeMap<usize, NeedReport>,
+    replay_resume_phase: Option<Phase>,
+    pending_reports: BTreeMap<usize, NeedReport>,
+    completed_peers: BTreeSet<usize>,
     first_repair_request_seen_at: Option<Instant>,
+    last_repair_activity_at: Instant,
     round_complete: bool,
     protocol_error: bool,
     nominal_bins_sent: u64,
@@ -57,12 +64,13 @@ pub(super) struct MettleSender {
 }
 
 const REPAIR_REPORT_COALESCE_GRACE: Duration = Duration::from_millis(100);
+const NOMINAL_QUEUE_TARGET_BINS: usize = 256;
 
 impl MettleSender {
     pub(super) fn new(
         manifest: &LosslessSessionManifest,
         plan: BlockPlan,
-        source: &super::BlockSource,
+        tree_schedule: Vec<u16>,
     ) -> Result<Self, &'static str> {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build mettle sender for plain manifest");
@@ -78,30 +86,28 @@ impl MettleSender {
         )
         .map_err(|_| "invalid mettle coded rate")?;
         let params = MettleParams::paper_default(source_symbol_bytes, rate, fec.seed)
-            .map_err(|_| "invalid mettle params")?;
-
-        let mut encoder = Encoder::new(params);
-        for block_id in 0..plan.total_blocks() {
-            let Some(span) = plan.block_span(block_id) else {
-                return Err("invalid mettle block span");
-            };
-            let payload = source.block_payload(span);
-            let _ = encoder.push_source(&payload);
-        }
-        let stream = encoder.finish();
-        debug_assert_eq!(stream.total_sources, plan.total_blocks());
+            .map_err(|_| "invalid mettle params")?
+            .with_tail_compression(true);
+        let total_sources = plan.total_blocks();
 
         Ok(Self {
-            stream,
-            tree_ids: fec.tree_ids.clone(),
+            encoder: Encoder::new_with_total_sources(params, total_sources),
+            total_sources,
+            next_source_id: 0,
+            nominal_queue: VecDeque::new(),
+            tail_flushed: false,
+            tree_schedule,
             next_tree_rr: 0,
             frame_scratch: Vec::new(),
             phase: Phase::SendingNominal,
             current_round_id: 0,
-            nominal_cursor: 0,
+            tail_source_done_sent: false,
             replay_cursor: None,
-            round_reports: BTreeMap::new(),
+            replay_resume_phase: None,
+            pending_reports: BTreeMap::new(),
+            completed_peers: BTreeSet::new(),
             first_repair_request_seen_at: None,
+            last_repair_activity_at: Instant::now(),
             round_complete: false,
             protocol_error: false,
             nominal_bins_sent: 0,
@@ -126,9 +132,18 @@ impl MettleSender {
                 break;
             }
 
+            if self.phase != Phase::SendingReplay && self.repair_burst_is_ready() {
+                self.schedule_replay_from_reports(shared, self.phase);
+                if self.protocol_error || self.round_complete {
+                    continue;
+                }
+            }
+
+            self.fill_nominal_queue(shared);
             if let Some((kind, bin)) = self.next_bin() {
                 shared.pace(bin.payload.len()).await;
                 if self.try_send_bin(shared, &bin) {
+                    self.advance_after_emit(kind);
                     self.record_emitted_bin(kind, &bin);
                     shared.mark_payload_emitted();
                     continue;
@@ -139,39 +154,46 @@ impl MettleSender {
                 continue;
             }
 
+            if self.phase == Phase::SendingReplay {
+                let resume_phase = self
+                    .replay_resume_phase
+                    .take()
+                    .unwrap_or(Phase::SendingNominal);
+                self.phase = resume_phase;
+                continue;
+            }
+
             if self.phase != Phase::WaitingForReports {
-                shared.send_source_done(self.current_round_id).await;
+                if !self.tail_source_done_sent {
+                    shared.send_source_done(self.current_round_id).await;
+                    self.tail_source_done_sent = true;
+                    self.last_repair_activity_at = Instant::now();
+                }
                 self.phase = Phase::WaitingForReports;
-                self.round_reports.clear();
-                self.first_repair_request_seen_at = None;
                 if shared.active_quorum_is_empty() {
                     self.round_complete = true;
                     break;
                 }
-                shared.start_quorum_feedback_wait();
                 continue;
             }
 
-            if self.should_finish_report_round(shared.active_quorum.active_members().len()) {
-                self.finish_report_round(shared);
-                continue;
+            if self.all_quorum_peers_complete(shared) {
+                self.round_complete = true;
+                break;
             }
 
-            if self.first_repair_request_seen_at.is_some() {
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    return SessionOutcome::Aborted;
-                }
-                continue;
+            if self.repair_wait_timed_out(shared) {
+                warn!(
+                    session_id = shared.session.session_id,
+                    reason = "peer_report_timeout",
+                    missing = ?self.incomplete_quorum_peers(shared),
+                    "Lossless METTLE sender timed out waiting for repair progress after tail"
+                );
+                return SessionOutcome::Aborted;
             }
 
-            match shared
-                .wait_for_quorum_feedback(ctrl_rx, self, self.current_round_id)
-                .await
-            {
-                super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
-                super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
-                    return SessionOutcome::Aborted;
-                }
+            if !shared.wait_for_signal(ctrl_rx, self).await {
+                return SessionOutcome::Aborted;
             }
         }
 
@@ -190,19 +212,18 @@ impl MettleSender {
 
     fn next_bin(&mut self) -> Option<(EmissionKind, MettleBin)> {
         match self.phase {
-            Phase::SendingNominal => {
-                let bin = self.stream.bins.get(self.nominal_cursor)?.clone();
-                self.nominal_cursor += 1;
-                Some((EmissionKind::Nominal, bin))
-            }
+            Phase::SendingNominal => self
+                .nominal_queue
+                .front()
+                .cloned()
+                .map(|bin| (EmissionKind::Nominal, bin)),
             Phase::SendingReplay => {
-                let cursor = self.replay_cursor.as_mut()?;
-                while let Some(bin) = self.stream.bins.get(cursor.next_index) {
+                let cursor = self.replay_cursor.as_ref()?;
+                while let Some(bin) = self.encoder.emitted_bins().get(cursor.next_index) {
                     if bin.bin_id >= cursor.end_bin_id {
                         self.replay_cursor = None;
                         return None;
                     }
-                    cursor.next_index += 1;
                     return Some((EmissionKind::Replay, bin.clone()));
                 }
                 self.replay_cursor = None;
@@ -212,11 +233,20 @@ impl MettleSender {
         }
     }
 
-    fn should_finish_report_round(&self, quorum_len: usize) -> bool {
-        if self.round_reports.len() == quorum_len {
-            return true;
+    fn advance_after_emit(&mut self, kind: EmissionKind) {
+        match kind {
+            EmissionKind::Nominal => {
+                let _ = self.nominal_queue.pop_front();
+            }
+            EmissionKind::Replay => {
+                if let Some(cursor) = self.replay_cursor.as_mut() {
+                    cursor.next_index += 1;
+                }
+            }
         }
+    }
 
+    fn repair_burst_is_ready(&self) -> bool {
         self.first_repair_request_seen_at
             .is_some_and(|seen_at| seen_at.elapsed() >= REPAIR_REPORT_COALESCE_GRACE)
     }
@@ -235,13 +265,13 @@ impl MettleSender {
     }
 
     fn try_send_bin(&mut self, shared: &mut super::SenderShared, bin: &MettleBin) -> bool {
-        if self.tree_ids.is_empty() {
+        if self.tree_schedule.is_empty() {
             return false;
         }
 
-        let tree_count = self.tree_ids.len();
+        let tree_count = self.tree_schedule.len();
         let start_idx = self.next_tree_rr;
-        let initial_tree_id = self.tree_ids[start_idx];
+        let initial_tree_id = self.tree_schedule[start_idx];
         mettle_symbol_frame::encode_into(
             &mut self.frame_scratch,
             shared.session.session_id,
@@ -255,7 +285,7 @@ impl MettleSender {
 
         for offset in 0..tree_count {
             let idx = (start_idx + offset) % tree_count;
-            let tree_id = self.tree_ids[idx];
+            let tree_id = self.tree_schedule[idx];
             if offset > 0 {
                 mettle_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded mettle symbol should accept tree-id patch");
@@ -291,8 +321,36 @@ impl MettleSender {
         false
     }
 
-    fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
-        let merged = match select_replay_window(self.round_reports.values()) {
+    fn all_quorum_peers_complete(&self, shared: &super::SenderShared) -> bool {
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .all(|peer_id| self.completed_peers.contains(peer_id))
+    }
+
+    fn repair_wait_timed_out(&self, shared: &super::SenderShared) -> bool {
+        self.tail_source_done_sent
+            && !self.all_quorum_peers_complete(shared)
+            && self.last_repair_activity_at.elapsed() >= shared.quorum_liveness.peer_report_timeout()
+    }
+
+    fn incomplete_quorum_peers(&self, shared: &super::SenderShared) -> Vec<usize> {
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| !self.completed_peers.contains(peer_id))
+            .collect()
+    }
+
+    fn schedule_replay_from_reports(
+        &mut self,
+        shared: &mut super::SenderShared,
+        resume_phase: Phase,
+    ) {
+        let merged = match select_replay_window(self.pending_reports.values()) {
             Ok(window) => window,
             Err(()) => {
                 self.protocol_error = true;
@@ -300,22 +358,21 @@ impl MettleSender {
             }
         };
 
-        shared.clear_quorum_feedback_wait();
-        self.round_reports.clear();
+        self.pending_reports.clear();
         self.first_repair_request_seen_at = None;
 
         let Some(window) = merged else {
-            self.round_complete = true;
+            if resume_phase == Phase::WaitingForReports && self.all_quorum_peers_complete(shared) {
+                self.round_complete = true;
+            }
             return;
         };
 
-        let next_index = self
-            .stream
-            .bins
-            .partition_point(|bin| bin.bin_id < window.replay_start_bin_id);
+        let emitted_bins = self.encoder.emitted_bins();
+        let next_index = emitted_bins.partition_point(|bin| bin.bin_id < window.replay_start_bin_id);
         if self
-            .stream
-            .bins
+            .encoder
+            .emitted_bins()
             .get(next_index)
             .is_none_or(|bin| bin.bin_id >= window.replay_end_bin_id)
         {
@@ -332,7 +389,6 @@ impl MettleSender {
         info!(
             session_id = shared.session.session_id,
             current_round_id = self.current_round_id,
-            next_round_id = self.current_round_id.saturating_add(1),
             replay_round_index = self.replay_rounds_started + 1,
             replay_start_bin_id = window.replay_start_bin_id,
             replay_end_bin_id = window.replay_end_bin_id,
@@ -343,13 +399,44 @@ impl MettleSender {
             replay_payload_bytes_sent_so_far = self.replay_payload_bytes_sent,
             "Lossless sender scheduled METTLE replay window"
         );
+        self.last_repair_activity_at = Instant::now();
         self.replay_rounds_started = self.replay_rounds_started.saturating_add(1);
-        self.current_round_id = self.current_round_id.saturating_add(1);
         self.phase = Phase::SendingReplay;
+        self.replay_resume_phase = Some(resume_phase);
         self.replay_cursor = Some(ReplayCursor {
             next_index,
             end_bin_id: window.replay_end_bin_id,
         });
+    }
+
+    fn fill_nominal_queue(&mut self, shared: &super::SenderShared) {
+        if self.phase != Phase::SendingNominal
+            || self.nominal_queue.len() >= NOMINAL_QUEUE_TARGET_BINS
+        {
+            return;
+        }
+
+        while self.nominal_queue.len() < NOMINAL_QUEUE_TARGET_BINS {
+            if self.next_source_id < self.total_sources {
+                let Some(span) = shared.plan.block_span(self.next_source_id) else {
+                    self.protocol_error = true;
+                    return;
+                };
+                let payload = shared.source.block_payload(span);
+                let emitted = self.encoder.push_source(&payload);
+                self.next_source_id += 1;
+                self.nominal_queue.extend(emitted);
+                continue;
+            }
+
+            if !self.tail_flushed {
+                self.nominal_queue.extend(self.encoder.flush_tail());
+                self.tail_flushed = true;
+                continue;
+            }
+
+            break;
+        }
     }
 }
 
@@ -392,15 +479,6 @@ impl super::ModeHooks for MettleSender {
         round_id: u32,
         report: NeedReport,
     ) {
-        if self.phase != Phase::WaitingForReports {
-            debug!(
-                session_id = shared.session.session_id,
-                peer_id,
-                round_id,
-                "Lossless METTLE sender dropped Need because no report round is open"
-            );
-            return;
-        }
         if round_id != self.current_round_id {
             debug!(
                 session_id = shared.session.session_id,
@@ -411,27 +489,60 @@ impl super::ModeHooks for MettleSender {
             );
             return;
         }
-        if let Some(existing) = self.round_reports.get(&peer_id) {
-            if existing != &report {
-                warn!(
-                    session_id = shared.session.session_id,
-                    peer_id,
-                    round_id,
-                    "Lossless METTLE sender rejected changed same-round Need from a quorum peer"
-                );
-                self.protocol_error = true;
-            }
-            return;
-        }
-
         match &report {
             NeedReport::Complete | NeedReport::Mettle { .. } => {
-                if matches!(report, NeedReport::Mettle { .. })
-                    && self.first_repair_request_seen_at.is_none()
-                {
-                    self.first_repair_request_seen_at = Some(Instant::now());
+                let now = Instant::now();
+                if let Some(existing) = self.pending_reports.get(&peer_id) {
+                    if existing == &report {
+                        self.last_repair_activity_at = now;
+                        return;
+                    }
+                    match (existing, &report) {
+                        (NeedReport::Complete, NeedReport::Mettle { .. }) => {
+                            debug!(
+                                session_id = shared.session.session_id,
+                                peer_id,
+                                round_id,
+                                "Lossless METTLE sender ignored same-round repair after completion from a quorum peer"
+                            );
+                            return;
+                        }
+                        _ => {
+                            debug!(
+                                session_id = shared.session.session_id,
+                                peer_id,
+                                round_id,
+                                previous = ?existing,
+                                updated = ?report,
+                                "Lossless METTLE sender replaced same-round Need from a quorum peer"
+                            );
+                        }
+                    }
                 }
-                self.round_reports.insert(peer_id, report);
+                match report {
+                    NeedReport::Complete => {
+                        self.completed_peers.insert(peer_id);
+                        self.pending_reports.remove(&peer_id);
+                    }
+                    NeedReport::Mettle { .. } => {
+                        if self.completed_peers.contains(&peer_id) {
+                            debug!(
+                                session_id = shared.session.session_id,
+                                peer_id,
+                                round_id,
+                                "Lossless METTLE sender ignored repair after peer already completed"
+                            );
+                            self.last_repair_activity_at = now;
+                            return;
+                        }
+                        if self.first_repair_request_seen_at.is_none() {
+                            self.first_repair_request_seen_at = Some(now);
+                        }
+                        self.pending_reports.insert(peer_id, report);
+                    }
+                    NeedReport::Plain { .. } | NeedReport::Fec { .. } => unreachable!(),
+                }
+                self.last_repair_activity_at = now;
             }
             NeedReport::Plain { .. } | NeedReport::Fec { .. } => {
                 warn!(
@@ -451,7 +562,7 @@ impl super::ModeHooks for MettleSender {
             .active_members()
             .iter()
             .copied()
-            .filter(|peer_id| !self.round_reports.contains_key(peer_id))
+            .filter(|peer_id| !self.completed_peers.contains(peer_id))
             .collect()
     }
 }

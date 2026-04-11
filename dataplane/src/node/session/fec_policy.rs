@@ -32,6 +32,7 @@ pub enum PreflightError {
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
+    TreeScheduleReferencesUnknownTree { tree_ids: Vec<u16> },
     MultiTreeRequiresTreeVisibleIngress,
 }
 
@@ -39,6 +40,7 @@ pub enum PreflightError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct SenderPolicy {
     pub mode: LosslessSessionMode,
+    pub tree_schedule: Vec<u16>,
 }
 
 /// Validate that a configured block size fits in the wire manifest.
@@ -78,10 +80,12 @@ pub(super) fn derive_sender_policy(
     if !runtime_config.fec_enabled {
         return Ok(SenderPolicy {
             mode: LosslessSessionMode::Plain,
+            tree_schedule: Vec::new(),
         });
     }
 
     let tree_ids = derive_sender_tree_ids(runtime_config)?;
+    let tree_schedule = derive_sender_tree_schedule(runtime_config, &tree_ids)?;
     if runtime_config.mettle_enabled {
         let rate = CodedRate::new(
             u32::from(runtime_config.mettle_coded_rate_numerator),
@@ -99,6 +103,7 @@ pub(super) fn derive_sender_policy(
                 seed,
                 tree_ids,
             )),
+            tree_schedule,
         });
     }
 
@@ -112,6 +117,7 @@ pub(super) fn derive_sender_policy(
             symbols_per_block,
             tree_ids,
         )),
+        tree_schedule,
     })
 }
 
@@ -137,6 +143,27 @@ fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, P
     }
 
     Ok(requested_tree_ids)
+}
+
+fn derive_sender_tree_schedule(
+    runtime_config: &LosslessConfig,
+    tree_ids: &[u16],
+) -> Result<Vec<u16>, PreflightError> {
+    if runtime_config.fec_default_tree_schedule.is_empty() {
+        return Ok(tree_ids.to_vec());
+    }
+
+    if runtime_config
+        .fec_default_tree_schedule
+        .iter()
+        .any(|tree_id| !tree_ids.contains(tree_id))
+    {
+        return Err(PreflightError::TreeScheduleReferencesUnknownTree {
+            tree_ids: runtime_config.fec_default_tree_schedule.clone(),
+        });
+    }
+
+    Ok(runtime_config.fec_default_tree_schedule.clone())
 }
 
 fn derive_mettle_seed(session_id: u64) -> u64 {
@@ -180,6 +207,10 @@ impl Display for PreflightError {
                 f,
                 "configured fec tree_ids length {configured} exceeds wire manifest capacity {max}"
             ),
+            Self::TreeScheduleReferencesUnknownTree { tree_ids } => write!(
+                f,
+                "fec tree schedule may only reference configured manifest tree_ids (got {tree_ids:?})"
+            ),
             Self::MultiTreeRequiresTreeVisibleIngress => write!(
                 f,
                 "collaborative multi-tree fec requires tree-visible non-blocking ingress for this session path"
@@ -188,4 +219,66 @@ impl Display for PreflightError {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nextmini_messages::lossless_session::FecScheme;
 
+    #[test]
+    fn derive_sender_policy_selects_mettle_when_enabled() {
+        let cfg = LosslessConfig {
+            fec_enabled: true,
+            mettle_enabled: true,
+            fec_default_tree_ids: vec![1, 3],
+            mettle_coded_rate_numerator: 21,
+            mettle_coded_rate_denominator: 20,
+            ..Default::default()
+        };
+
+        let policy = derive_sender_policy(&cfg, 99).expect("mettle policy");
+        let LosslessSessionMode::Fec(fec) = policy.mode else {
+            panic!("expected fec mode");
+        };
+        assert_eq!(fec.scheme_kind(), Some(FecScheme::MettleV1));
+        assert_eq!(fec.coded_rate_numerator, 21);
+        assert_eq!(fec.coded_rate_denominator, 20);
+        assert_eq!(fec.tree_ids, vec![1, 3]);
+        assert_eq!(fec.symbols_per_block, 0);
+    }
+
+    #[test]
+    fn derive_sender_policy_rejects_invalid_mettle_rate() {
+        let cfg = LosslessConfig {
+            fec_enabled: true,
+            mettle_enabled: true,
+            mettle_coded_rate_numerator: 19,
+            mettle_coded_rate_denominator: 20,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            derive_sender_policy(&cfg, 99),
+            Err(PreflightError::InvalidMettleCodedRate {
+                numerator: 19,
+                denominator: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn validate_mode_block_size_rejects_oversized_mettle_payloads() {
+        let mode = LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(21, 20, 9, vec![1]));
+
+        assert_eq!(
+            validate_mode_block_size(&mode, max_mettle_symbol_payload_bytes() + 1),
+            Err(PreflightError::MettleBlockSizeExceedsFramedPacket {
+                value: max_mettle_symbol_payload_bytes() + 1,
+                max_payload: max_mettle_symbol_payload_bytes(),
+            })
+        );
+        assert_eq!(
+            validate_mode_block_size(&mode, max_mettle_symbol_payload_bytes()),
+            Ok(())
+        );
+    }
+}

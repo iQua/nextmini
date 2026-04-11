@@ -167,9 +167,12 @@ pub struct MettleReplayWindow {
     pub replay_end_bin_id: u64,
 }
 
-/// End-of-round receiver feedback emitted after `SourceDone`.
+/// Receiver feedback for lossless convergence and completion.
 ///
-/// Empty plain/FEC payloads are canonicalized to `Complete` on encode.
+/// Plain and block-FEC modes primarily emit this after `SourceDone`. METTLE
+/// may emit the same control live while peeling stalls or completes before the
+/// tail marker arrives. Empty plain/FEC payloads are canonicalized to
+/// `Complete` on encode.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum NeedReport {
     Complete,
@@ -282,8 +285,10 @@ pub struct LosslessSessionMettleSymbol {
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// Version 5 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
-/// -> Need` protocol. `Need` is the only live receiver-to-sender report.
+/// Version 5 keeps a shared `Manifest -> Ready -> payload -> control` envelope.
+/// Plain and block-FEC modes still use `SourceDone -> Need` as an end-of-round
+/// summary step. METTLE uses the same fields but interprets `SourceDone` as a
+/// tail/end-of-stream marker and may emit live `Need` reports before the tail.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },

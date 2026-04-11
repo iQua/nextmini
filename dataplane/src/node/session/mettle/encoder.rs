@@ -26,6 +26,7 @@ pub struct EncodedStream {
 #[derive(Debug)]
 pub struct Encoder {
     params: MettleParams,
+    total_sources: Option<u64>,
     next_source_id: u64,
     total_bytes: usize,
     emitted_bins: Vec<MettleBin>,
@@ -71,8 +72,14 @@ impl BinAccumulator {
 impl Encoder {
     #[must_use]
     pub fn new(params: MettleParams) -> Self {
+        Self::new_with_total_sources(params, None)
+    }
+
+    #[must_use]
+    pub fn new_with_total_sources(params: MettleParams, total_sources: impl Into<Option<u64>>) -> Self {
         Self {
             params,
+            total_sources: total_sources.into(),
             next_source_id: 0,
             total_bytes: 0,
             emitted_bins: Vec::new(),
@@ -87,7 +94,7 @@ impl Encoder {
 
         let padded = pad_source_symbol(source_bytes, self.params.source_symbol_bytes);
         let source_sig = source_signature(self.params.seed, source_id);
-        for bin_id in self.params.edges_for(source_id) {
+        for bin_id in self.params.edges_for_total(source_id, self.total_sources) {
             self.open_bins
                 .entry(bin_id)
                 .or_insert_with(|| BinAccumulator::new(self.params.source_symbol_bytes))
@@ -100,9 +107,29 @@ impl Encoder {
         emitted
     }
 
-    pub fn finish(mut self) -> EncodedStream {
+    #[must_use]
+    pub fn emitted_bins(&self) -> &[MettleBin] {
+        &self.emitted_bins
+    }
+
+    #[must_use]
+    pub fn total_sources(&self) -> u64 {
+        self.next_source_id
+    }
+
+    #[must_use]
+    pub fn total_bytes(&self) -> usize {
+        self.total_bytes
+    }
+
+    pub fn flush_tail(&mut self) -> Vec<MettleBin> {
         let tail_bins = drain_before(&mut self.open_bins, u64::MAX);
-        self.emitted_bins.extend(tail_bins);
+        self.emitted_bins.extend(tail_bins.iter().cloned());
+        tail_bins
+    }
+
+    pub fn finish(mut self) -> EncodedStream {
+        self.flush_tail();
         let bins = self.emitted_bins;
         let final_bin_exclusive = bins.last().map_or(0, |bin| bin.bin_id + 1);
         EncodedStream {
@@ -116,8 +143,8 @@ impl Encoder {
 
     #[must_use]
     pub fn encode_all(params: MettleParams, object: &[u8]) -> EncodedStream {
-        let mut encoder = Self::new(params);
         let expected_sources = params.source_count_for_bytes(object.len());
+        let mut encoder = Self::new_with_total_sources(params, expected_sources);
         for chunk in object.chunks(params.source_symbol_bytes) {
             let _ = encoder.push_source(chunk);
         }
@@ -154,4 +181,17 @@ pub(super) fn xor_into(dst: &mut [u8], src: &[u8]) {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::node::session::mettle::params::{CodedRate, MettleParams};
 
+    #[test]
+    fn nominal_encoder_is_deterministic() {
+        let params = MettleParams::paper_default(8, CodedRate::new(21, 20).unwrap(), 11).unwrap();
+        let object = b"abcdefgh01234567ijklmnop76543210";
+        let left = Encoder::encode_all(params, object);
+        let right = Encoder::encode_all(params, object);
+        assert_eq!(left, right);
+    }
+}

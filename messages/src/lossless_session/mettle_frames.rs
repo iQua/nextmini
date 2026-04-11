@@ -82,4 +82,25 @@ pub fn decode_mettle_symbol(
     ))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
 
+    #[test]
+    fn roundtrip_mettle_symbol() {
+        let payload = b"mettle symbol";
+        let symbol = LosslessSessionMettleSymbol {
+            bin_id: 17,
+            degree: 3,
+            xor_source_id: 9,
+            xor_source_sig: 99,
+            tree_id: 5,
+        };
+        let buf = encode_mettle_symbol(42, symbol, payload);
+        let (hdr, decoded, body) = decode_mettle_symbol(&buf).expect("decode mettle symbol");
+        assert_eq!(hdr.session_id, 42);
+        assert_eq!(hdr.kind, LosslessSessionKind::MettleSymbol);
+        assert_eq!(decoded, symbol);
+        assert_eq!(body, payload);
+    }
+}

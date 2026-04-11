@@ -21,6 +21,13 @@ pub struct DecoderStats {
     pub decoded_sources: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecoderStallHint {
+    pub stalled_source_id: u64,
+    pub replay_start_bin_id: u64,
+    pub replay_end_limit_bin_id: u64,
+}
+
 #[derive(Debug, Clone)]
 struct BinState {
     degree: u32,
@@ -122,6 +129,57 @@ impl Decoder {
             .count() as u64
     }
 
+    #[must_use]
+    pub fn stall_hint(&self, lookahead_sources: u64) -> Option<DecoderStallHint> {
+        let stalled_source_id = self.first_undecoded_source_id()?;
+        let fallback_end = self
+            .params
+            .right_exclusive_for_total(stalled_source_id, self.total_sources);
+        let mut best_hint: Option<DecoderStallHint> = None;
+        let lookahead_end = stalled_source_id
+            .saturating_add(lookahead_sources.max(1))
+            .min(self.total_sources);
+
+        for source_id in stalled_source_id..lookahead_end {
+            let window_start = self.params.base(source_id);
+            let window_end = self
+                .params
+                .right_exclusive_for_total(source_id, self.total_sources);
+            let Some(first_missing_bin_id) = self.first_missing_bin_in_range(window_start, window_end)
+            else {
+                continue;
+            };
+            let candidate = DecoderStallHint {
+                stalled_source_id: source_id,
+                replay_start_bin_id: first_missing_bin_id,
+                replay_end_limit_bin_id: window_end,
+            };
+            if best_hint.is_none_or(|current| {
+                (candidate.replay_start_bin_id, candidate.stalled_source_id)
+                    < (current.replay_start_bin_id, current.stalled_source_id)
+            }) {
+                best_hint = Some(candidate);
+            }
+        }
+
+        Some(best_hint.unwrap_or(DecoderStallHint {
+            stalled_source_id,
+            replay_start_bin_id: self.params.base(stalled_source_id),
+            replay_end_limit_bin_id: fallback_end,
+        }))
+    }
+
+    fn first_missing_bin_in_range(&self, start_bin_id: u64, end_bin_id: u64) -> Option<u64> {
+        let mut expected_bin_id = start_bin_id;
+        for (&received_bin_id, _) in self.received_bins.range(start_bin_id..end_bin_id) {
+            if received_bin_id > expected_bin_id {
+                return Some(expected_bin_id);
+            }
+            expected_bin_id = received_bin_id.saturating_add(1);
+        }
+        (expected_bin_id < end_bin_id).then_some(expected_bin_id)
+    }
+
     fn apply_pending_peels(&mut self, bin_id: u64, bin: &mut BinState) {
         let Some(source_ids) = self.pending_peels.remove(&bin_id) else {
             return;
@@ -170,7 +228,7 @@ impl Decoder {
             self.decoded_sources[source_id as usize] = Some(decoded.clone());
             newly_decoded.push(decoded.clone());
 
-            for neighbor_bin_id in self.params.edges_for(source_id) {
+            for neighbor_bin_id in self.params.edges_for_total(source_id, self.total_sources) {
                 if let Some(neighbor) = self.received_bins.get_mut(&neighbor_bin_id) {
                     peel_one(neighbor, source_id, expected_sig, &decoded.payload);
                     if neighbor.degree == 1 {

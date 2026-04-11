@@ -1,6 +1,7 @@
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, MettleReplayWindow, NeedReport,
 };
+use tokio::time::{Duration, Instant};
 use tracing::{debug, info};
 
 use crate::node::session::api::InboundFrame;
@@ -9,7 +10,6 @@ use crate::node::session::mettle::encoder::MettleBin;
 use crate::node::session::mettle::params::{CodedRate, MettleParams};
 
 pub(super) struct MettleReceiver {
-    params: MettleParams,
     decoder: Decoder,
     last_source_done_round_id: Option<u32>,
     last_round_need: Option<NeedReport>,
@@ -18,14 +18,18 @@ pub(super) struct MettleReceiver {
     last_reported_decoded_prefix_len: Option<u64>,
     last_reported_replay_end_bin_id: Option<u64>,
     current_repair_burst_bins: u64,
+    last_progress_at: Option<Instant>,
+    last_streaming_need_at: Option<Instant>,
 }
 
 const MIN_REPAIR_BURST_BINS: u64 = 64;
+const REPAIR_STALL_LOOKAHEAD_SOURCES: u64 = 16;
+const STREAMING_STALL_INTERVAL: Duration = Duration::from_millis(250);
+const STREAMING_NEED_MIN_GAP: Duration = Duration::from_millis(250);
 
 impl MettleReceiver {
     pub(super) fn new(params: MettleParams, total_sources: u64) -> Self {
         Self {
-            params,
             decoder: Decoder::new(params, total_sources),
             last_source_done_round_id: None,
             last_round_need: None,
@@ -34,6 +38,8 @@ impl MettleReceiver {
             last_reported_decoded_prefix_len: None,
             last_reported_replay_end_bin_id: None,
             current_repair_burst_bins: MIN_REPAIR_BURST_BINS,
+            last_progress_at: None,
+            last_streaming_need_at: None,
         }
     }
 
@@ -66,6 +72,7 @@ impl MettleReceiver {
             return;
         }
 
+        let decoded_prefix_before = self.decoder.decoded_prefix_len();
         shared.mark_first_payload_unit();
         let decoded = self.decoder.receive_bin(MettleBin {
             bin_id: symbol.bin_id,
@@ -78,6 +85,15 @@ impl MettleReceiver {
             shared.write_block(source.source_id, &source.payload).await;
             shared.complete_blocks.insert(source.source_id);
         }
+
+        let decoded_prefix_after = self.decoder.decoded_prefix_len();
+        if decoded_prefix_after > decoded_prefix_before {
+            self.last_progress_at = Some(Instant::now());
+            if matches!(self.last_round_need, Some(NeedReport::Mettle { .. })) {
+                self.last_round_need = None;
+            }
+        }
+        self.maybe_send_streaming_feedback(shared).await;
     }
 
     pub(super) async fn handle_source_done(
@@ -107,7 +123,12 @@ impl MettleReceiver {
             }
         }
 
-        let Some(report) = self.need_report(shared) else {
+        self.last_source_done_round_id = Some(round_id);
+        let Some(report) = self
+            .last_round_need
+            .clone()
+            .or_else(|| self.need_report(shared))
+        else {
             return;
         };
         match &report {
@@ -116,7 +137,7 @@ impl MettleReceiver {
                     session_id = shared.session_id,
                     round_id,
                     decoded_prefix_len = self.decoder.decoded_prefix_len(),
-                    "Lossless METTLE receiver reported completion"
+                    "Lossless METTLE receiver reported completion after tail"
                 );
             }
             NeedReport::Mettle { window } => {
@@ -131,12 +152,11 @@ impl MettleReceiver {
                         .saturating_sub(window.replay_start_bin_id),
                     decoded_prefix_len = self.decoder.decoded_prefix_len(),
                     current_repair_burst_bins = self.current_repair_burst_bins,
-                    "Lossless METTLE receiver requested repair burst"
+                    "Lossless METTLE receiver replayed tail repair state"
                 );
             }
             NeedReport::Plain { .. } | NeedReport::Fec { .. } => {}
         }
-        self.last_source_done_round_id = Some(round_id);
         self.last_round_need = Some(report.clone());
         shared.send_fec_need(round_id, &report).await;
         self.complete_reported = matches!(report, NeedReport::Complete);
@@ -146,17 +166,24 @@ impl MettleReceiver {
         self.complete_reported
     }
 
+    pub(super) async fn handle_idle(&mut self, shared: &super::ReceiverShared) {
+        self.maybe_send_streaming_feedback(shared).await;
+    }
+
     fn need_report(&mut self, shared: &super::ReceiverShared) -> Option<NeedReport> {
         let plan = shared.plan?;
         if plan.total_blocks() == 0 || shared.has_all_blocks() || self.decoder.is_complete() {
             return Some(NeedReport::Complete);
         }
 
-        let stalled_source_id = self.decoder.first_undecoded_source_id()?;
+        let stall_hint = self.decoder.stall_hint(REPAIR_STALL_LOOKAHEAD_SOURCES)?;
+        let stalled_source_id = stall_hint.stalled_source_id;
         let decoded_prefix_len = self.decoder.decoded_prefix_len();
-        let full_window_bins = self.params.window_bins().max(1);
-        let replay_base_bin_id = self.params.base(stalled_source_id);
-        let replay_window_end_bin_id = self.params.right_exclusive(stalled_source_id);
+        let replay_base_bin_id = stall_hint.replay_start_bin_id;
+        let replay_window_end_bin_id = stall_hint.replay_end_limit_bin_id;
+        let full_window_bins = replay_window_end_bin_id
+            .saturating_sub(replay_base_bin_id)
+            .max(1);
         let made_progress = match (
             self.last_reported_stalled_source_id,
             self.last_reported_decoded_prefix_len,
@@ -207,6 +234,8 @@ impl MettleReceiver {
             full_window_bins,
             burst_bins,
             made_progress,
+            hint_replay_start_bin_id = stall_hint.replay_start_bin_id,
+            hint_replay_end_limit_bin_id = stall_hint.replay_end_limit_bin_id,
             replay_start_bin_id,
             replay_end_bin_id,
             "Lossless METTLE receiver computed repair burst"
@@ -218,6 +247,62 @@ impl MettleReceiver {
                 replay_end_bin_id,
             },
         })
+    }
+
+    async fn maybe_send_streaming_feedback(&mut self, shared: &super::ReceiverShared) {
+        if self.complete_reported {
+            return;
+        }
+
+        let now = Instant::now();
+        if self.decoder.is_complete() || shared.has_all_blocks() {
+            let round_id = self.last_source_done_round_id.unwrap_or(0);
+            let report = NeedReport::Complete;
+            debug!(
+                session_id = shared.session_id,
+                round_id,
+                "Lossless METTLE receiver emitted streaming completion"
+            );
+            shared.send_fec_need(round_id, &report).await;
+            self.last_streaming_need_at = Some(now);
+            self.complete_reported = true;
+            self.last_round_need = Some(report);
+            return;
+        }
+
+        let Some(last_progress_at) = self.last_progress_at else {
+            self.last_progress_at = Some(now);
+            return;
+        };
+        if now.duration_since(last_progress_at) < STREAMING_STALL_INTERVAL {
+            return;
+        }
+        if self
+            .last_streaming_need_at
+            .is_some_and(|last| now.duration_since(last) < STREAMING_NEED_MIN_GAP)
+        {
+            return;
+        }
+
+        let Some(report) = self.need_report(shared) else {
+            return;
+        };
+        let NeedReport::Mettle { window } = &report else {
+            return;
+        };
+
+        let round_id = self.last_source_done_round_id.unwrap_or(0);
+        debug!(
+            session_id = shared.session_id,
+            round_id,
+            stalled_source_id = window.stalled_source_id,
+            replay_start_bin_id = window.replay_start_bin_id,
+            replay_end_bin_id = window.replay_end_bin_id,
+            "Lossless METTLE receiver emitted streaming repair request"
+        );
+        shared.send_fec_need(round_id, &report).await;
+        self.last_streaming_need_at = Some(now);
+        self.last_round_need = Some(report);
     }
 }
 
@@ -239,4 +324,5 @@ pub(super) fn params_from_manifest(
     .map_err(|_| "invalid mettle coded rate")?;
     MettleParams::paper_default(source_symbol_bytes, rate, fec.seed)
         .map_err(|_| "invalid mettle params")
+        .map(|params| params.with_tail_compression(true))
 }

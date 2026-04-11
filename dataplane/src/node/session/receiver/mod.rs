@@ -1,10 +1,12 @@
-//! Receiver task for block-first lossless sessions.
+//! Receiver task for lossless sessions.
 //!
 //! The receiver accepts a manifest, records completed plain blocks locally, and
 //! optionally accumulates FEC symbols until a block can be decoded. After
 //! `SourceDone(round_id)`, plain mode emits end-of-round `Need` feedback while
 //! FEC mode emits one aggregate `Need` describing either completion or the
-//! remaining per-block deficits for the next retransmit round.
+//! remaining per-block deficits for the next retransmit round. METTLE keeps the
+//! same control envelope but treats `SourceDone` as a tail marker and may emit
+//! streaming `Need`/`Complete` control before that marker arrives.
 
 mod fec;
 mod mettle;
@@ -67,6 +69,7 @@ struct SessionReceiver {
 
 const SOURCE_DONE_DRAIN_GRACE: Duration = Duration::from_millis(250);
 const METTLE_SOURCE_DONE_DRAIN_GRACE: Duration = Duration::from_millis(25);
+const ACTIVE_IDLE_POLL: Duration = Duration::from_millis(10);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ReceiverLifecycle {
@@ -128,7 +131,22 @@ impl SessionReceiver {
         );
 
         loop {
-            let Some(frame) = self.next_inbound_frame(rx).await else {
+            let next_frame = if self.is_passive_complete() {
+                self.next_inbound_frame(rx).await
+            } else {
+                match tokio::time::timeout(ACTIVE_IDLE_POLL, self.next_inbound_frame(rx)).await {
+                    Ok(frame) => frame,
+                    Err(_) => {
+                        self.handle_idle().await;
+                        if self.reported_complete() {
+                            self.enter_passive_complete();
+                        }
+                        continue;
+                    }
+                }
+            };
+
+            let Some(frame) = next_frame else {
                 self.finish_session("receiver_channel_closed");
                 break;
             };
@@ -159,6 +177,12 @@ impl SessionReceiver {
             lifecycle = ?self.lifecycle,
             "Lossless receiver finished"
         );
+    }
+
+    async fn handle_idle(&mut self) {
+        if let Some(ReceiverMode::Mettle(mode)) = self.mode.as_mut() {
+            mode.handle_idle(&self.shared).await;
+        }
     }
 
     async fn next_inbound_frame(

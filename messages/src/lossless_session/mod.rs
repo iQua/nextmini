@@ -1,8 +1,11 @@
 //! Wire protocol definitions for dataplane lossless sessions.
 //!
-//! Version 5 is the flag-day `Manifest -> Ready -> payload sweep ->
-//! SourceDone -> Need` protocol. The normative rewrite rules live in
-//! `plans/simple-lossless.md`.
+//! Version 5 is the flag-day `Manifest -> Ready -> payload -> control` lossless
+//! protocol. Plain and block-FEC modes still use `SourceDone -> Need` as an
+//! end-of-round summary step. METTLE keeps the same wire envelope but treats
+//! `SourceDone` as a tail/end-of-stream marker and may emit live streaming
+//! `Need`/`Complete` reports before that tail marker arrives. The normative
+//! rewrite rules live in `plans/simple-lossless.md`.
 
 mod block_frames;
 mod control_frames;
