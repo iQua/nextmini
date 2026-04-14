@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::num::NonZeroUsize;
 
+use mettle::test_support::{
+    Decoder as TestDecoder, Encoder as TestEncoder, edge_bin_ids_with_terminal_source_count,
+};
+use mettle::{MettleParams, OverheadRatio};
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
-
-use crate::decoder::MettleDecoder;
-use crate::encoder::{MettleBin, MettleEncoder};
-use crate::{MettleParams, OverheadRatio};
 
 const PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT: usize = 100_000;
 const PAPER_CODING_EFFICIENCY_METTLE_SEED: u64 = 0;
@@ -222,15 +222,15 @@ fn mettle_source_payload(_source_id: u64) -> [u8; PAPER_CODING_EFFICIENCY_METTLE
 }
 
 fn deliver_mettle_bin(
-    decoder: &mut MettleDecoder,
+    decoder: &mut TestDecoder,
     delivered_bin_ids: &mut HashSet<u128>,
     channel_state: &mut ChannelState,
-    bin: MettleBin,
+    bin_id: u128,
+    payload: Vec<u8>,
 ) {
-    let (bin_id, payload) = bin.into_parts();
     if channel_state.delivers_next_packet() {
         delivered_bin_ids.insert(bin_id);
-        let _ = decoder.push_bin(MettleBin::new(bin_id, payload));
+        let _ = decoder.push_bin(bin_id, payload);
     }
 }
 
@@ -240,29 +240,28 @@ fn mettle_source_is_fully_erased(
     terminal_source_count: u64,
     delivered_bin_ids: &HashSet<u128>,
 ) -> bool {
-    params
-        .edge_bin_ids_with_terminal_source_count(
-            source_id,
-            PAPER_CODING_EFFICIENCY_METTLE_SEED,
-            Some(terminal_source_count),
-        )
+    edge_bin_ids_with_terminal_source_count(
+        params,
+        source_id,
+        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+        Some(terminal_source_count),
+    )
         .into_iter()
         .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
 }
 
 fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> bool {
-    // The paper's coding-efficiency experiment only cares about recoverability.
     let params = mettle_params(case.mettle_overhead_ratio);
     let source_symbol_bytes =
         NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
     let terminal_source_count = source_count as u64;
-    let mut encoder = MettleEncoder::new_terminated(
+    let mut encoder = TestEncoder::new_terminated(
         params,
         source_symbol_bytes,
         PAPER_CODING_EFFICIENCY_METTLE_SEED,
         terminal_source_count,
     );
-    let mut decoder = MettleDecoder::new_terminated(
+    let mut decoder = TestDecoder::new_terminated(
         params,
         source_symbol_bytes,
         PAPER_CODING_EFFICIENCY_METTLE_SEED,
@@ -272,21 +271,23 @@ fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: us
     let mut channel_state = ChannelState::new(case.channel, seed ^ 0xC0DE_CAFE_F00D_BAAD);
 
     for source_id in 0..terminal_source_count {
-        for bin in encoder.push_source(&mettle_source_payload(source_id)) {
+        for (bin_id, payload) in encoder.push_source(&mettle_source_payload(source_id)) {
             deliver_mettle_bin(
                 &mut decoder,
                 &mut delivered_bin_ids,
                 &mut channel_state,
-                bin,
+                bin_id,
+                payload,
             );
         }
     }
-    for bin in encoder.finish() {
+    for (bin_id, payload) in encoder.finish() {
         deliver_mettle_bin(
             &mut decoder,
             &mut delivered_bin_ids,
             &mut channel_state,
-            bin,
+            bin_id,
+            payload,
         );
     }
 

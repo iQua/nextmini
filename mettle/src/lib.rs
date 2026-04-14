@@ -5,8 +5,7 @@ mod compare;
 mod decode_speed;
 mod encoder;
 mod params;
-#[cfg(test)]
-mod paper_coding_efficiency;
+pub mod test_support;
 #[cfg(test)]
 mod validation;
 

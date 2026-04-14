@@ -289,12 +289,10 @@ impl MettleDecoder {
         })
     }
 
-    #[cfg(test)]
     pub(crate) fn next_source_id(&self) -> u64 {
         self.next_decoded_source_id
     }
 
-    #[cfg(test)]
     pub(crate) fn skip_next_source_without_edges(&mut self) -> Vec<DecodedSource> {
         self.push_decoded_prefix_payload(vec![0; self.source_symbol_bytes.get()]);
         self.next_decoded_source_id += 1;
