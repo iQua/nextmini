@@ -247,13 +247,14 @@ fn deliver_mettle_bin(
 fn mettle_source_is_fully_erased(
     params: MettleParams,
     source_id: u64,
+    graph_seed: u64,
     terminal_source_count: u64,
     delivered_bin_ids: &HashSet<u128>,
 ) -> bool {
     edge_bin_ids_with_terminal_source_count(
         params,
         source_id,
-        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+        graph_seed,
         Some(terminal_source_count),
     )
         .into_iter()
@@ -263,6 +264,7 @@ fn mettle_source_is_fully_erased(
 fn isolated_error_floor_run_length(
     params: MettleParams,
     first_source_id: u64,
+    graph_seed: u64,
     terminal_source_count: u64,
     delivered_bin_ids: &HashSet<u128>,
 ) -> u64 {
@@ -272,6 +274,7 @@ fn isolated_error_floor_run_length(
         if !mettle_source_is_fully_erased(
             params,
             source_id,
+            graph_seed,
             terminal_source_count,
             delivered_bin_ids,
         ) {
@@ -290,6 +293,7 @@ fn mettle_trial_outcome(
 ) -> MettleTrialOutcome {
     let params = case_params(case);
     let terminal_source_count = source_count as u64;
+    let graph_seed = mettle_graph_seed(seed);
     let (mut decoder, delivered_bin_ids) = replay_mettle_trial(case, seed, source_count);
 
     loop {
@@ -300,6 +304,7 @@ fn mettle_trial_outcome(
         let stalled_run_length = isolated_error_floor_run_length(
             params,
             next_source_id,
+            graph_seed,
             terminal_source_count,
             &delivered_bin_ids,
         );
@@ -337,16 +342,17 @@ fn replay_mettle_trial(
     let source_symbol_bytes =
         NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
     let terminal_source_count = source_count as u64;
+    let graph_seed = mettle_graph_seed(seed);
     let mut encoder = TestEncoder::new_terminated(
         params,
         source_symbol_bytes,
-        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+        graph_seed,
         terminal_source_count,
     );
     let mut decoder = TestDecoder::new_terminated(
         params,
         source_symbol_bytes,
-        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+        graph_seed,
         terminal_source_count,
     );
     let mut delivered_bin_ids = HashSet::new();
@@ -409,7 +415,7 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                     let edge_bin_ids = edge_bin_ids_with_terminal_source_count(
                         case_params(case),
                         next_source_id,
-                        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+                        mettle_graph_seed(trial as u64 + 1),
                         Some(source_count as u64),
                     );
                     let edge_details = edge_bin_ids
@@ -529,6 +535,13 @@ const fn div_ceil(lhs: usize, rhs: usize) -> usize {
 
 fn case_params(case: CodingEfficiencyCase) -> MettleParams {
     mettle_params(case.mettle_overhead_ratio)
+}
+
+fn mettle_graph_seed(trial_seed: u64) -> u64 {
+    match std::env::var("METTLE_TABLE_IV_GRAPH_SEED_MODE").as_deref() {
+        Ok("fixed") => PAPER_CODING_EFFICIENCY_METTLE_SEED,
+        _ => PAPER_CODING_EFFICIENCY_METTLE_SEED ^ trial_seed,
+    }
 }
 
 #[test]
