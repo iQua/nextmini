@@ -26,6 +26,7 @@ pub(crate) struct MettleDecoder {
     next_decoded_source_id: u64,
     seed: u64,
     decoded_prefix_payloads: Vec<Vec<u8>>,
+    decoded_prefix_bin_xors: BTreeMap<u128, Vec<u8>>,
     seen_bin_ids: BTreeSet<u128>,
     received_bins: BTreeMap<u128, Vec<u8>>,
 }
@@ -38,6 +39,7 @@ impl MettleDecoder {
             next_decoded_source_id: 0,
             seed,
             decoded_prefix_payloads: Vec::new(),
+            decoded_prefix_bin_xors: BTreeMap::new(),
             seen_bin_ids: BTreeSet::new(),
             received_bins: BTreeMap::new(),
         }
@@ -54,6 +56,11 @@ impl MettleDecoder {
             return Vec::new();
         }
         self.peel_known_prefix_from_bin(bin_id, &mut payload);
+        if bin_id == self.params.tle_bin_id(self.next_decoded_source_id) {
+            let mut decoded = vec![self.decode_next_source(payload)];
+            decoded.extend(self.drain_decodable_prefix());
+            return decoded;
+        }
         if self.bin_has_no_undecoded_touchers(bin_id) {
             return Vec::new();
         }
@@ -69,17 +76,19 @@ impl MettleDecoder {
                 .received_bins
                 .remove(&bin_id)
                 .expect("just matched decodable bin");
-            self.peel_source_from_open_bins(self.next_decoded_source_id, &payload);
-            self.decoded_prefix_payloads.push(payload.clone());
-            decoded.push(DecodedSource {
-                source_id: self.next_decoded_source_id,
-                payload,
-            });
-            self.next_decoded_source_id += 1;
-            self.drop_bins_closed_by_prefix();
+            decoded.push(self.decode_next_source(payload));
         }
 
         decoded
+    }
+
+    fn decode_next_source(&mut self, payload: Vec<u8>) -> DecodedSource {
+        let source_id = self.next_decoded_source_id;
+        self.apply_decoded_source_edges(source_id, &payload);
+        self.decoded_prefix_payloads.push(payload.clone());
+        self.next_decoded_source_id += 1;
+        self.drop_bins_closed_by_prefix();
+        DecodedSource { source_id, payload }
     }
 
     fn find_unique_bin_for_next_source(&self) -> Option<u128> {
@@ -112,15 +121,24 @@ impl MettleDecoder {
         })
     }
 
-    fn peel_source_from_open_bins(&mut self, source_id: u64, payload: &[u8]) {
+    fn apply_decoded_source_edges(&mut self, source_id: u64, payload: &[u8]) {
         for bin_id in self.params.edge_bin_ids(source_id, self.seed) {
             if let Some(bin_payload) = self.received_bins.get_mut(&bin_id) {
                 xor_payload(bin_payload, payload);
             }
+            let peeled_prefix = self
+                .decoded_prefix_bin_xors
+                .entry(bin_id)
+                .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
+            xor_payload(peeled_prefix, payload);
         }
     }
 
     fn peel_known_prefix_from_bin(&self, bin_id: u128, payload: &mut [u8]) {
+        if let Some(peeled_prefix) = self.decoded_prefix_bin_xors.get(&bin_id) {
+            xor_payload(payload, peeled_prefix);
+            return;
+        }
         let Some(latest_source_id) = self.latest_source_id_for_bin(bin_id) else {
             return;
         };
@@ -148,6 +166,7 @@ impl MettleDecoder {
             .collect::<Vec<_>>();
         for bin_id in closed_bin_ids {
             self.received_bins.remove(&bin_id);
+            self.decoded_prefix_bin_xors.remove(&bin_id);
         }
     }
 
