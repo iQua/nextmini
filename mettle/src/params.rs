@@ -53,14 +53,14 @@ impl MettleParams {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
+    fn tle_bin_id(self, source_id: u64) -> u128 {
         let expansion_numerator =
             u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
         (u128::from(source_id) * expansion_numerator) / u128::from(self.overhead.denominator())
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    pub(crate) fn window_end_bin(self, source_id: u64) -> u128 {
+    fn window_end_exclusive(self, source_id: u64) -> u128 {
         let expansion_numerator =
             u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
         (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * expansion_numerator
@@ -71,6 +71,25 @@ impl MettleParams {
                     != 0,
             )
     }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn second_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
+        let eta = sample_half_binomial(
+            self.second_edge_trials(source_id),
+            mix_entropy(seed, source_id, 2),
+        );
+        self.second_edge_bin_id_for_eta(source_id, eta)
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn second_edge_trials(self, source_id: u64) -> u128 {
+        self.window_end_exclusive(source_id) - self.tle_bin_id(source_id) - 1
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn second_edge_bin_id_for_eta(self, source_id: u64, eta: u128) -> u128 {
+        self.window_end_exclusive(source_id) - 1 - eta
+    }
 }
 
 const fn gcd(mut lhs: u32, mut rhs: u32) -> u32 {
@@ -80,6 +99,35 @@ const fn gcd(mut lhs: u32, mut rhs: u32) -> u32 {
         rhs = remainder;
     }
     lhs
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn mix_entropy(seed: u64, source_id: u64, edge_index: u64) -> u64 {
+    seed ^ source_id.rotate_left(21) ^ edge_index.rotate_left(42)
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn sample_half_binomial(trials: u128, mut state: u64) -> u128 {
+    let mut successes = 0;
+    let mut remaining = trials;
+
+    while remaining != 0 {
+        if next_entropy(&mut state) & 1 == 0 {
+            successes += 1;
+        }
+        remaining -= 1;
+    }
+
+    successes
+}
+
+#[cfg_attr(not(test), allow(dead_code))]
+fn next_entropy(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut value = *state;
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
 }
 
 #[cfg(test)]
@@ -138,17 +186,50 @@ mod tests {
     #[test]
     fn window_end_bin_matches_ceiling_of_scaled_right_boundary() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.window_end_bin(0), 630);
-        assert_eq!(params.window_end_bin(1), 632);
-        assert_eq!(params.window_end_bin(7), 638);
+        assert_eq!(params.window_end_exclusive(0), 630);
+        assert_eq!(params.window_end_exclusive(1), 632);
+        assert_eq!(params.window_end_exclusive(7), 638);
     }
 
     #[test]
     fn half_open_window_width_follows_the_direct_boundary_formula() {
         let params = MettleParams::new(OverheadRatio::new(1, 7).expect("valid overhead"));
-        assert_eq!(params.window_end_bin(0), 686);
-        assert_eq!(params.window_end_bin(1), 687);
-        assert_eq!(params.window_end_bin(0) - params.tle_bin_id(0), 686);
-        assert_eq!(params.window_end_bin(11) - params.tle_bin_id(11), 687);
+        assert_eq!(params.window_end_exclusive(0), 686);
+        assert_eq!(params.window_end_exclusive(1), 687);
+        assert_eq!(params.window_end_exclusive(0) - params.tle_bin_id(0), 686);
+        assert_eq!(params.window_end_exclusive(11) - params.tle_bin_id(11), 687);
+    }
+
+    #[test]
+    fn second_edge_stays_inside_half_open_window() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_id = 37;
+        let edge = params.second_edge_bin_id(source_id, 0x1234_5678_9ABC_DEF0);
+
+        assert!(params.tle_bin_id(source_id) <= edge);
+        assert!(edge < params.window_end_exclusive(source_id));
+    }
+
+    #[test]
+    fn second_edge_is_deterministic_for_same_seed() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let first = params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+        let second = params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn second_edge_uses_full_half_open_support_at_the_left_boundary() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.second_edge_trials(0), 629);
+        assert_eq!(params.second_edge_bin_id_for_eta(0, 0), 629);
+        assert_eq!(params.second_edge_bin_id_for_eta(0, 629), 0);
+    }
+
+    #[test]
+    fn second_edge_matches_fixed_golden() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 363);
     }
 }
