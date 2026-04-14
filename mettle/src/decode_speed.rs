@@ -27,7 +27,7 @@ fn benchmark_flat_data(source_count: usize) -> Vec<u8> {
 fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Vec<MettleBin>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(BENCH_SYMBOL_SIZE).expect("non-zero");
-    let mut encoder = MettleEncoder::new(params, source_symbol_bytes, 0);
+    let mut encoder = MettleEncoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut emitted_bins = Vec::new();
 
     for source in benchmark_sources(source_count) {
@@ -35,7 +35,7 @@ fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Ve
     }
     emitted_bins.extend(encoder.finish());
 
-    let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+    let mut decoder = MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded_sources = 0usize;
     let mut completion_prefix = Vec::new();
 
@@ -101,9 +101,11 @@ fn decode_speed_fixtures_build() {
 fn mettle_decode_once(
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
+    source_count: usize,
     bins: Vec<MettleBin>,
 ) -> usize {
-    let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+    let mut decoder =
+        MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded = 0;
 
     for bin in bins {
@@ -140,7 +142,7 @@ fn benchmark_decode_ratio(source_count: usize, iterations: usize) -> (usize, u12
     let mettle_start = Instant::now();
     let mut mettle_decoded = 0;
     for bins in mettle_runs {
-        mettle_decoded += mettle_decode_once(mettle_params, mettle_symbol_bytes, bins);
+        mettle_decoded += mettle_decode_once(mettle_params, mettle_symbol_bytes, source_count, bins);
     }
     let mettle_elapsed = mettle_start.elapsed();
 

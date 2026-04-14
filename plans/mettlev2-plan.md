@@ -49,12 +49,13 @@ As of `2026-04-14`, local branch `mettlev2` is here:
 - in progress: `NEX-93` online peel decoder
 - done: `NEX-94` codec-core validation harness
 - done: `NEX-95` local decode-speed checkpoint
-- in progress: `NEX-105` codec benchmark matrix
+- done: `NEX-102` tail compression
+- done: `NEX-105` codec benchmark matrix
 
 Current blocker:
 
 - the local release checkpoint now stays clearly faster than RaptorQ across Table V's `k` values
-- paper-completeness work still remains before runtime / wire integration, especially `NEX-102` tail compression and `NEX-103` fair comparison
+- paper-completeness work still remains before runtime / wire integration, especially `NEX-103` fair comparison
 
 ## Work Sequence
 
@@ -179,4 +180,4 @@ The first latency-matched decode-speed claims in the paper are based on the smal
 
 ## Immediate Next Step
 
-Keep tightening `NEX-93` only where it moves the implementation closer to the paper, then finish `NEX-105` and `NEX-102` before starting runtime / wire integration.
+Keep tightening `NEX-93` only where it moves the implementation closer to the paper, then finish `NEX-103` before starting runtime / wire integration.
