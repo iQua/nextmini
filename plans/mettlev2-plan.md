@@ -48,12 +48,13 @@ As of `2026-04-14`, local branch `mettlev2` is here:
 - done: `NEX-92` incremental encoder
 - in progress: `NEX-93` online peel decoder
 - done: `NEX-94` codec-core validation harness
-- blocked: `NEX-95` decode-speed checkpoint
+- done: `NEX-95` local decode-speed checkpoint
+- in progress: `NEX-105` codec benchmark matrix
 
 Current blocker:
 
-- the local release benchmark is still slower than RaptorQ instead of faster
-- until `NEX-95` passes, do not start `NEX-96` or later runtime / wire work
+- the local release checkpoint now stays clearly faster than RaptorQ across Table V's `k` values
+- paper-completeness work still remains before runtime / wire integration, especially `NEX-102` tail compression and `NEX-103` fair comparison
 
 ## Work Sequence
 
@@ -70,7 +71,7 @@ Current blocker:
 
 Gate:
 
-- do not proceed to `NEX-96` until `NEX-95` is convincing
+- do not proceed to `NEX-96` until `NEX-95` is convincing and the local benchmark matrix remains stable
 
 ### PR-02 Minimal nextmini integration
 
@@ -178,4 +179,4 @@ The first latency-matched decode-speed claims in the paper are based on the smal
 
 ## Immediate Next Step
 
-Finish `NEX-93` only where it is required for a paper-faithful codec, then stay inside `NEX-95` until the decode-speed gate is honestly passed or the paper-faithful baseline proves a mismatch with the current implementation strategy.
+Keep tightening `NEX-93` only where it moves the implementation closer to the paper, then finish `NEX-105` and `NEX-102` before starting runtime / wire integration.
