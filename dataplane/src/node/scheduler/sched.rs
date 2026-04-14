@@ -25,6 +25,8 @@ pub enum SchedulerReaderMessage {
 pub enum SchedulerWriterMessage {
     RateLimit(TokenBucketSpec),
     SetFlowWeight(FlowId, usize),
+    /// Bypass queue and rate limiter — sent directly to the network interface.
+    ProbePackets(Vec<Packet>),
 }
 
 /// The handle for the scheduler actor, which is between the processors and the network interface.
@@ -72,6 +74,19 @@ impl SchedulerHandle {
         {
             error!(
                 "SchedulerHandle: Error sending a rate limit to the scheduler: {}.",
+                e
+            );
+        }
+    }
+
+    /// Sends probe packets directly, bypassing queue and rate limiter.
+    pub fn send_probe_bypass(&self, packets: Vec<Packet>) {
+        if let Err(e) = self
+            .writer_sender
+            .send(SchedulerWriterMessage::ProbePackets(packets))
+        {
+            error!(
+                "SchedulerHandle: Error sending probe packets to the scheduler: {}.",
                 e
             );
         }

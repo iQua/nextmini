@@ -34,7 +34,7 @@ use crate::config::{Config, get_config};
 use crate::db::{
     add_group_member, create_group, init_db, load_group_directory, load_group_members,
     remove_group_member, setup_flow_notification, setup_group_notification,
-    setup_route_notification,
+    setup_probe_notification, setup_route_notification,
 };
 use crate::db_sync::spawn_db_sync;
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
@@ -159,6 +159,7 @@ async fn main() {
     setup_route_notification(db_pool.clone(), db_event_sender.clone()).await;
     setup_flow_notification(db_pool.clone(), db_event_sender.clone()).await;
     setup_group_notification(db_pool.clone(), db_event_sender.clone()).await;
+    setup_probe_notification(db_pool.clone(), db_event_sender.clone()).await;
 
     loop {
         let (stream, _) = match listener.accept().await {
@@ -1018,6 +1019,30 @@ async fn handle_connection(
                                 "SetGroupRoutesMulti: failed to update routes for group {}: {}",
                                 group_id, e
                             );
+                        }
+                    }
+
+                    DataplaneToController::ProbeLinkResult {
+                        probe_id,
+                        from_node_id,
+                        to_node_id,
+                        bandwidth_mbps,
+                    } => {
+                        info!(
+                            "Probe {} result: node {} → node {} = {:.2} Mbps",
+                            probe_id, from_node_id, to_node_id, bandwidth_mbps,
+                        );
+                        if let Err(e) = sqlx::query(
+                            "INSERT INTO probe_results (probe_id, from_node_id, to_node_id, bandwidth_mbps) VALUES ($1, $2, $3, $4)"
+                        )
+                            .bind(probe_id as i64)
+                            .bind(from_node_id as i32)
+                            .bind(to_node_id as i32)
+                            .bind(bandwidth_mbps)
+                            .execute(&*db_pool)
+                            .await
+                        {
+                            error!("Failed to insert probe result: {}", e);
                         }
                     }
                 }

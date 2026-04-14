@@ -39,6 +39,7 @@ impl SchedulerWriter {
 
     pub async fn run(&mut self) {
         loop {
+            let mut probe_packets = Vec::new();
             while let Ok(message) = self.receiver.try_recv() {
                 match message {
                     SchedulerWriterMessage::RateLimit(spec) => {
@@ -47,12 +48,39 @@ impl SchedulerWriter {
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
                         self.queue.set_flow_weight(flow_id, weight);
                     }
+                    SchedulerWriterMessage::ProbePackets(packets) => {
+                        probe_packets.extend(packets);
+                    }
+                }
+            }
+            if !probe_packets.is_empty() {
+                if let Err(e) = self.net_interface.send(probe_packets).await {
+                    error!("SchedulerWriter: Error sending probe packets: {}", e);
                 }
             }
 
-            // waits for notification if queues are empty
+            // waits for notification if queues are empty,
+            // but also wake on control messages (e.g. probe packets)
             while self.queue.is_empty() {
-                self.queues_not_empty.notified().await;
+                tokio::select! {
+                    _ = self.queues_not_empty.notified() => {},
+                    msg = self.receiver.recv() => {
+                        match msg {
+                            Some(SchedulerWriterMessage::ProbePackets(packets)) => {
+                                if let Err(e) = self.net_interface.send(packets).await {
+                                    error!("SchedulerWriter: Error sending probe packets: {}", e);
+                                }
+                            }
+                            Some(SchedulerWriterMessage::RateLimit(spec)) => {
+                                self.token_bucket = Some(TokenBucket::new(spec));
+                            }
+                            Some(SchedulerWriterMessage::SetFlowWeight(flow_id, weight)) => {
+                                self.queue.set_flow_weight(flow_id, weight);
+                            }
+                            None => {}
+                        }
+                    }
+                }
             }
 
             // Collect and send packets from scheduler queues

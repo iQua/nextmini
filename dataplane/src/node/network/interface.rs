@@ -10,6 +10,7 @@ use ahash::AHashMap;
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::{ControllerReporterHandle, FlowMetric};
+use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::quic::{QuicClient, QuicReader, QuicWriter};
 use crate::node::network::tcp::{TcpClient, TcpReader, TcpWriter};
 use crate::node::network::udp::{UdpClient, UdpReader, UdpStream, UdpWriter};
@@ -61,7 +62,8 @@ impl NetworkInterfaceHandle {
         // we directly return the protocol's writer (such as TcpWriter or QuicWriter) to the caller,
         // for the sake of improved performance and simplicity.
         let local_id = config.node_id;
-        let network_interface = NetworkInterface::new(config, processors);
+        let network_interface =
+            NetworkInterface::new(config, processors).with_reporter(reporter.clone());
 
         let writer = network_interface.init(stream);
 
@@ -83,7 +85,8 @@ impl NetworkInterfaceHandle {
     ) -> Self {
         let local_id = config.node_id;
 
-        let mut network_interface = NetworkInterface::new(config, processors);
+        let mut network_interface =
+            NetworkInterface::new(config, processors).with_reporter(reporter.clone());
 
         // there is no need to call tokio::spawn here, as the reader task will be
         // spawned in init() itself
@@ -104,6 +107,9 @@ impl NetworkInterfaceHandle {
         let mut aggregates: AHashMap<FlowId, usize> = AHashMap::default();
 
         for packet in packets.iter() {
+            if packet.flow_id == PROBE_FLOW_ID {
+                continue;
+            }
             *aggregates.entry(packet.flow_id).or_default() += packet.packet_size;
         }
 
@@ -131,11 +137,21 @@ impl NetworkInterfaceHandle {
 pub struct NetworkInterface {
     config: LocalConfig,
     processors: ProcessorHandle,
+    reporter: Option<ControllerReporterHandle>,
 }
 
 impl NetworkInterface {
     pub fn new(config: LocalConfig, processors: ProcessorHandle) -> Self {
-        Self { config, processors }
+        Self {
+            config,
+            processors,
+            reporter: None,
+        }
+    }
+
+    pub fn with_reporter(mut self, reporter: ControllerReporterHandle) -> Self {
+        self.reporter = Some(reporter);
+        self
     }
 
     pub async fn init_as_client(
@@ -186,7 +202,12 @@ impl NetworkInterface {
             NetworkStream::Tcp(stream) => {
                 let (reader, writer) = tokio::io::split(stream);
 
-                let tcp_reader = TcpReader::new(reader, self.processors.clone());
+                let tcp_reader = TcpReader::new(
+                    reader,
+                    self.processors.clone(),
+                    self.config.node_id,
+                    self.reporter.clone(),
+                );
                 let tcp_writer = TcpWriter::new(writer);
 
                 tokio::spawn(async move {

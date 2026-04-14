@@ -106,6 +106,13 @@ pub enum DataplaneToController {
         group_id: GroupId,
         trees: Vec<GroupRouteTree>,
     },
+    /// Reports link probe measurement from the receiving node.
+    ProbeLinkResult {
+        probe_id: u64,
+        from_node_id: usize,
+        to_node_id: usize,
+        bandwidth_mbps: f64,
+    },
 }
 
 /// The new app flow message reported to controller from a src node to dest node.
@@ -437,6 +444,13 @@ pub enum ControllerToDataplane {
         group_id: GroupId,
         src_node_id: usize,
         routes: Vec<GroupRoutingTableEntry>,
+    },
+    /// Instructs a node to send probe traffic to a neighbor and measure bandwidth.
+    ProbeLink {
+        remote_node_id: usize,
+        probe_id: u64,
+        /// Total bytes of probe data to push through the link.
+        probe_bytes: usize,
     },
 }
 

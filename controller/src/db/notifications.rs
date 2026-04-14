@@ -126,6 +126,66 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc:
     });
 }
 
+pub async fn setup_probe_notification(
+    db_pool: Arc<Pool<Postgres>>,
+    sender: mpsc::Sender<DbEvent>,
+) {
+    let mut listener = match PgListener::connect_with(&db_pool).await {
+        Ok(l) => l,
+        Err(e) => {
+            error!("Failed to connect probe request listener: {}", e);
+            return;
+        }
+    };
+    if let Err(e) = listener.listen("probe_requested").await {
+        error!("Failed to listen to probe_requested: {}", e);
+        return;
+    }
+
+    tokio::spawn(async move {
+        let mut stream = listener.into_stream();
+        while let Some(notification) = stream.next().await {
+            match notification {
+                Ok(notif) => {
+                    let payload = notif.payload();
+                    let Some((id, from_node_id, to_node_id, probe_bytes)) =
+                        parse_probe_request_payload(payload)
+                    else {
+                        warn!("Ignored malformed probe_requested payload: {}", payload);
+                        continue;
+                    };
+                    info!(
+                        "Probe request {}: node {} → node {} ({} bytes)",
+                        id, from_node_id, to_node_id, probe_bytes
+                    );
+                    if let Err(e) = sender
+                        .send(DbEvent::ProbeRequested {
+                            id,
+                            from_node_id,
+                            to_node_id,
+                            probe_bytes,
+                        })
+                        .await
+                    {
+                        warn!("Dropping probe event (receiver closed): {}", e);
+                        return;
+                    }
+                }
+                Err(e) => error!("Error receiving probe notification: {}", e),
+            }
+        }
+    });
+}
+
+fn parse_probe_request_payload(payload: &str) -> Option<(i32, i32, i32, i32)> {
+    let v = serde_json::from_str::<serde_json::Value>(payload).ok()?;
+    let id = v.get("id").and_then(parse_json_i32)?;
+    let from = v.get("from_node_id").and_then(parse_json_i32)?;
+    let to = v.get("to_node_id").and_then(parse_json_i32)?;
+    let bytes = v.get("probe_bytes").and_then(parse_json_i32)?;
+    Some((id, from, to, bytes))
+}
+
 fn parse_group_sync_payload(payload: &str) -> Option<(i32, Option<u32>)> {
     let parsed = serde_json::from_str::<serde_json::Value>(payload).ok()?;
 

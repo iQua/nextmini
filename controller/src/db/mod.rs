@@ -13,7 +13,8 @@ pub use groups::{
 };
 pub use init::init_db;
 pub use notifications::{
-    setup_flow_notification, setup_group_notification, setup_route_notification,
+    setup_flow_notification, setup_group_notification, setup_probe_notification,
+    setup_route_notification,
 };
 
 pub(crate) use group_routes::{RecomputedGroupRoutes, recompute_group_routes};
