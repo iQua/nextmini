@@ -7,17 +7,17 @@ use crate::MettleParams;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct MettleBin {
-    pub(crate) bin_id: u128,
-    pub(crate) payload: Vec<u8>,
+    bin_id: u128,
+    payload: Vec<u8>,
 }
 
 #[derive(Debug)]
 pub(crate) struct MettleEncoder {
-    pub(crate) params: MettleParams,
-    pub(crate) source_symbol_bytes: NonZeroUsize,
-    pub(crate) next_source_id: u64,
-    pub(crate) seed: u64,
-    pub(crate) open_bins: BTreeMap<u128, Vec<u8>>,
+    params: MettleParams,
+    source_symbol_bytes: NonZeroUsize,
+    next_source_id: u64,
+    seed: u64,
+    open_bins: BTreeMap<u128, Vec<u8>>,
 }
 
 impl MettleEncoder {
@@ -68,6 +68,7 @@ fn xor_payload(dst: &mut [u8], src: &[u8]) {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::num::NonZeroUsize;
 
     use crate::{MettleParams, OverheadRatio};
@@ -102,5 +103,28 @@ mod tests {
             }]
         );
         assert_eq!(encoder.next_source_id, 1);
+    }
+
+    #[test]
+    fn push_source_keeps_overlapping_future_bin_open() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let (seed, shared_bin) = (0..1024_u64)
+            .find_map(|seed| {
+                let first: BTreeSet<_> = params.edge_bin_ids(0, seed).into_iter().collect();
+                let second: BTreeSet<_> = params.edge_bin_ids(1, seed).into_iter().collect();
+
+                first.intersection(&second).copied().find(|&bin_id| bin_id > 1).map(|bin_id| (seed, bin_id))
+            })
+            .expect("overlapping future bin");
+        let mut encoder = MettleEncoder::new(params, NonZeroUsize::new(1).expect("non-zero"), seed);
+
+        let first_emitted = encoder.push_source(&[0b1010_0000]);
+        assert_eq!(first_emitted, vec![MettleBin { bin_id: 0, payload: vec![0b1010_0000] }]);
+        assert!(encoder.open_bins.contains_key(&shared_bin));
+
+        let second_emitted = encoder.push_source(&[0b1100_0000]);
+
+        assert!(!second_emitted.iter().any(|bin| bin.bin_id == shared_bin));
+        assert_eq!(encoder.open_bins.get(&shared_bin), Some(&vec![0b0110_0000]));
     }
 }
