@@ -3,7 +3,7 @@ use std::time::Instant;
 
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
 
-use crate::decoder::MettleDecoder;
+use crate::decoder::{DecodedSource, MettleDecoder};
 use crate::encoder::{MettleBin, MettleEncoder};
 use crate::{MettleParams, OverheadRatio};
 
@@ -24,6 +24,14 @@ fn benchmark_flat_data(source_count: usize) -> Vec<u8> {
     benchmark_sources(source_count).into_iter().flatten().collect()
 }
 
+fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
+    benchmark_sources(source_count)
+        .into_iter()
+        .enumerate()
+        .map(|(source_id, payload)| (source_id as u64, payload))
+        .collect()
+}
+
 fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Vec<MettleBin>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(BENCH_SYMBOL_SIZE).expect("non-zero");
@@ -36,13 +44,20 @@ fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Ve
     emitted_bins.extend(encoder.finish());
 
     let mut decoder = MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
-    let mut decoded_sources = 0usize;
+    let mut decoded_sources = Vec::new();
     let mut completion_prefix = Vec::new();
+    let expected = expected_mettle_decode(source_count);
 
     for bin in emitted_bins {
-        decoded_sources += decoder.push_bin(bin.clone()).len();
+        decoded_sources.extend(
+            decoder
+                .push_bin(bin.clone())
+                .into_iter()
+                .map(DecodedSource::into_parts),
+        );
         completion_prefix.push(bin);
-        if decoded_sources == source_count {
+        if decoded_sources.len() == source_count {
+            assert_eq!(decoded_sources, expected);
             return (params, source_symbol_bytes, completion_prefix);
         }
     }
