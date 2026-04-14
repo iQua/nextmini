@@ -4,18 +4,19 @@ use crate::decoder::{DecodedSource, MettleDecoder};
 use crate::encoder::{MettleBin, MettleEncoder};
 use crate::{MettleParams, OverheadRatio};
 
-const EXPECTED_SMALL_STREAM_BINS: [(u128, [u8; 2]); 11] = [
+const EXPECTED_SMALL_STREAM_BINS: [(u128, [u8; 2]); 12] = [
     (0, [1, 2]),
     (1, [3, 4]),
     (2, [5, 6]),
+    (165, [5, 6]),
+    (214, [3, 4]),
+    (241, [5, 6]),
+    (289, [5, 6]),
     (332, [3, 4]),
-    (334, [5, 6]),
     (336, [1, 2]),
-    (482, [2, 6]),
-    (494, [5, 6]),
-    (547, [1, 2]),
-    (556, [3, 4]),
-    (570, [5, 6]),
+    (375, [3, 4]),
+    (483, [1, 2]),
+    (548, [1, 2]),
 ];
 
 fn small_source_stream() -> (MettleParams, NonZeroUsize, Vec<Vec<u8>>, Vec<MettleBin>) {

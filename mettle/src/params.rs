@@ -52,10 +52,23 @@ impl MettleParams {
         self.overhead
     }
 
+    fn expansion_numerator(self) -> u128 {
+        u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator())
+    }
+
     pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
-        let expansion_numerator =
-            u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
-        (u128::from(source_id) * expansion_numerator) / u128::from(self.overhead.denominator())
+        (u128::from(source_id) * self.expansion_numerator())
+            / u128::from(self.overhead.denominator())
+    }
+
+    pub(crate) fn latest_source_id_for_bin(self, bin_id: u128) -> Option<u64> {
+        let denominator = u128::from(self.overhead.denominator());
+        let expansion_numerator = u128::from(self.overhead.numerator()) + denominator;
+        let scaled = bin_id
+            .checked_add(1)?
+            .checked_mul(denominator)?
+            .checked_sub(1)?;
+        u64::try_from(scaled / expansion_numerator).ok()
     }
 
     pub(crate) fn edge_bin_ids_with_terminal_source_count(
@@ -86,15 +99,30 @@ impl MettleParams {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn window_end_exclusive(self, source_id: u64) -> u128 {
-        let expansion_numerator =
-            u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
-        (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * expansion_numerator
-            / u128::from(self.overhead.denominator())
-            + u128::from(
-                ((u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * expansion_numerator)
-                    % u128::from(self.overhead.denominator())
-                    != 0,
-            )
+        let scaled =
+            (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * self.expansion_numerator();
+        let denominator = u128::from(self.overhead.denominator());
+
+        scaled / denominator + u128::from(!scaled.is_multiple_of(denominator))
+    }
+
+    fn tail_compression_factor(
+        self,
+        source_id: u64,
+        terminal_source_count: Option<u64>,
+    ) -> Option<(u128, u128)> {
+        let terminal_source_count = terminal_source_count?;
+        let tail_source_count = terminal_source_count.min(Self::COUPLING_WINDOW);
+        let tail_start = terminal_source_count - tail_source_count;
+        if source_id < tail_start {
+            return None;
+        }
+        if tail_source_count == 1 {
+            return Some((2, 1));
+        }
+        let factor_denominator = u128::from(tail_source_count - 1);
+        let factor_numerator = factor_denominator + u128::from(source_id - tail_start);
+        Some((factor_numerator, factor_denominator))
     }
 
     fn window_width_with_terminal_source_count(
@@ -103,20 +131,11 @@ impl MettleParams {
         terminal_source_count: Option<u64>,
     ) -> u128 {
         let uncompressed_width = self.window_end_exclusive(source_id) - self.tle_bin_id(source_id);
-        let Some(terminal_source_count) = terminal_source_count else {
+        let Some((factor_numerator, factor_denominator)) =
+            self.tail_compression_factor(source_id, terminal_source_count)
+        else {
             return uncompressed_width;
         };
-        if terminal_source_count <= Self::COUPLING_WINDOW {
-            return uncompressed_width;
-        }
-        let tail_start = terminal_source_count - Self::COUPLING_WINDOW;
-        if source_id < tail_start {
-            return uncompressed_width;
-        }
-        let tail_offset = u128::from(source_id - tail_start);
-        let factor_denominator = u128::from(Self::COUPLING_WINDOW - 1);
-        let factor_numerator = factor_denominator + tail_offset;
-
         div_ceil(uncompressed_width * factor_denominator, factor_numerator)
     }
 
@@ -127,6 +146,32 @@ impl MettleParams {
     ) -> u128 {
         self.tle_bin_id(source_id)
             + self.window_width_with_terminal_source_count(source_id, terminal_source_count)
+    }
+
+    pub(crate) fn possible_source_id_range_for_bin(
+        self,
+        bin_id: u128,
+        terminal_source_count: Option<u64>,
+    ) -> Option<(u64, u64)> {
+        let mut latest_source_id = self.latest_source_id_for_bin(bin_id)?;
+        if let Some(0) = terminal_source_count {
+            return None;
+        }
+        if let Some(terminal_source_count) = terminal_source_count {
+            latest_source_id = latest_source_id.min(terminal_source_count - 1);
+        }
+        let earliest_candidate = latest_source_id.saturating_sub(Self::COUPLING_WINDOW);
+        let mut earliest_source_id = None;
+        let mut latest_valid_source_id = None;
+
+        for source_id in earliest_candidate..=latest_source_id {
+            if self.source_window_contains_bin(source_id, bin_id, terminal_source_count) {
+                earliest_source_id.get_or_insert(source_id);
+                latest_valid_source_id = Some(source_id);
+            }
+        }
+
+        earliest_source_id.zip(latest_valid_source_id)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -199,12 +244,23 @@ impl MettleParams {
         self.non_tle_trials_with_terminal_source_count(source_id, None)
     }
 
+    fn nominal_non_tle_trials(self) -> u128 {
+        (u128::from(Self::COUPLING_WINDOW) * self.expansion_numerator())
+            / u128::from(self.overhead.denominator())
+    }
+
     fn non_tle_trials_with_terminal_source_count(
         self,
         source_id: u64,
         terminal_source_count: Option<u64>,
     ) -> u128 {
-        self.window_width_with_terminal_source_count(source_id, terminal_source_count) - 1
+        let uncompressed_trials = self.nominal_non_tle_trials();
+        let Some((factor_numerator, factor_denominator)) =
+            self.tail_compression_factor(source_id, terminal_source_count)
+        else {
+            return uncompressed_trials;
+        };
+        div_ceil(uncompressed_trials * factor_denominator, factor_numerator)
     }
 
     fn non_tle_edge_bin_id(
@@ -229,9 +285,26 @@ impl MettleParams {
         eta: u128,
         terminal_source_count: Option<u64>,
     ) -> u128 {
-        self.window_end_exclusive_with_terminal_source_count(source_id, terminal_source_count)
-            - 1
-            - eta
+        let rightmost_bin =
+            self.window_end_exclusive_with_terminal_source_count(source_id, terminal_source_count)
+                - 1;
+        let nominal_rightmost_bin =
+            self.tle_bin_id(source_id) + self.non_tle_trials_with_terminal_source_count(
+                source_id,
+                terminal_source_count,
+            );
+
+        nominal_rightmost_bin.saturating_sub(eta).min(rightmost_bin)
+    }
+
+    fn source_window_contains_bin(
+        self,
+        source_id: u64,
+        bin_id: u128,
+        terminal_source_count: Option<u64>,
+    ) -> bool {
+        self.tle_bin_id(source_id) <= bin_id
+            && bin_id < self.window_end_exclusive_with_terminal_source_count(source_id, terminal_source_count)
     }
 }
 
@@ -287,6 +360,25 @@ fn next_entropy(state: &mut u64) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{div_ceil, MettleParams, OverheadRatio, ParamsError};
+
+    fn brute_force_possible_source_id_range(
+        params: MettleParams,
+        bin_id: u128,
+        terminal_source_count: u64,
+    ) -> Option<(u64, u64)> {
+        let touching_sources = (0..terminal_source_count)
+            .filter(|&source_id| {
+                params.tle_bin_id(source_id) <= bin_id
+                    && bin_id
+                        < params.window_end_exclusive_with_terminal_source_count(
+                            source_id,
+                            Some(terminal_source_count),
+                        )
+            })
+            .collect::<Vec<_>>();
+
+        touching_sources.first().copied().zip(touching_sources.last().copied())
+    }
 
     #[test]
     fn overhead_rejects_zero_denominator() {
@@ -376,9 +468,18 @@ mod tests {
     #[test]
     fn second_edge_uses_full_half_open_support_at_the_left_boundary() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.non_tle_trials(0), 629);
-        assert_eq!(params.window_end_exclusive(0) - 1, 629);
-        assert_eq!(params.window_end_exclusive(0) - 1 - params.non_tle_trials(0), 0);
+        assert_eq!(params.non_tle_trials(0), 630);
+        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, 0, None), 629);
+        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, params.non_tle_trials(0), None), 0);
+    }
+
+    #[test]
+    fn non_tle_trials_follow_the_paper_constant_width() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+
+        assert_eq!(params.non_tle_trials(0), 630);
+        assert_eq!(params.non_tle_trials(1), 630);
+        assert_eq!(params.non_tle_trials(37), 630);
     }
 
     #[test]
@@ -427,7 +528,7 @@ mod tests {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         let trials = params.non_tle_trials(0);
 
-        assert_eq!(trials, 629);
+        assert_eq!(trials, 630);
         assert_eq!(params.non_tle_edge_bin_id_for_eta(0, 0, None), 629);
         assert_eq!(params.non_tle_edge_bin_id_for_eta(0, trials, None), 0);
     }
@@ -488,6 +589,65 @@ mod tests {
             params.window_end_exclusive(tail_start) - params.tle_bin_id(tail_start)
         );
         assert!(last_tail_width < first_tail_width);
+    }
+
+    #[test]
+    fn tail_compression_also_applies_when_the_block_is_smaller_than_the_window() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let terminal_source_count = 127;
+        let first_source_width = params.window_width_with_terminal_source_count(0, Some(terminal_source_count));
+        let last_source_id = terminal_source_count - 1;
+        let last_uncompressed_width =
+            params.window_end_exclusive(last_source_id) - params.tle_bin_id(last_source_id);
+        let last_source_width =
+            params.window_width_with_terminal_source_count(last_source_id, Some(terminal_source_count));
+
+        assert_eq!(first_source_width, params.window_end_exclusive(0) - params.tle_bin_id(0));
+        assert_eq!(last_source_width, div_ceil(last_uncompressed_width, 2));
+        assert!(last_source_width < first_source_width);
+    }
+
+    #[test]
+    fn tail_compressed_non_tle_trials_use_the_compressed_nominal_width() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let terminal_source_count = 127;
+
+        assert_eq!(
+            params.non_tle_trials_with_terminal_source_count(0, Some(terminal_source_count)),
+            630
+        );
+        assert_eq!(
+            params.non_tle_trials_with_terminal_source_count(
+                terminal_source_count - 1,
+                Some(terminal_source_count)
+            ),
+            315
+        );
+    }
+
+    #[test]
+    fn exact_possible_source_range_matches_bruteforce_at_tail_boundary() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let terminal_source_count = 10_000;
+        let tail_start = terminal_source_count - MettleParams::COUPLING_WINDOW;
+        let boundary_bin_id = params.tle_bin_id(tail_start) + 17;
+
+        assert_eq!(
+            params.possible_source_id_range_for_bin(boundary_bin_id, Some(terminal_source_count)),
+            brute_force_possible_source_id_range(params, boundary_bin_id, terminal_source_count)
+        );
+    }
+
+    #[test]
+    fn exact_possible_source_range_matches_bruteforce_inside_tail() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let terminal_source_count = 10_000;
+        let tail_bin_id = params.tle_bin_id(terminal_source_count - 1) + 7;
+
+        assert_eq!(
+            params.possible_source_id_range_for_bin(tail_bin_id, Some(terminal_source_count)),
+            brute_force_possible_source_id_range(params, tail_bin_id, terminal_source_count)
+        );
     }
 
 }

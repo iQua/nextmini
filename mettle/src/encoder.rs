@@ -163,22 +163,43 @@ mod tests {
     #[test]
     fn push_source_keeps_overlapping_future_bin_open() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        let shared_bin = 482;
+        let (first_source_id, second_source_id, shared_bin) = (0..64)
+            .find_map(|first_source_id| {
+                let first_edges = params.edge_bin_ids(first_source_id, 0);
+                ((first_source_id + 1)..64).find_map(|second_source_id| {
+                    let second_edges = params.edge_bin_ids(second_source_id, 0);
+                    first_edges
+                        .into_iter()
+                        .find(|&bin_id| {
+                            bin_id >= params.tle_bin_id(second_source_id + 1)
+                                && second_edges.contains(&bin_id)
+                        })
+                        .map(|bin_id| (first_source_id, second_source_id, bin_id))
+                })
+            })
+            .expect("expected a future overlapping bin");
         let mut encoder = MettleEncoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
 
-        let first_emitted = encoder.push_source(&[0b1010_0000]);
-        assert_eq!(first_emitted, vec![MettleBin { bin_id: 0, payload: vec![0b1010_0000] }]);
+        for _ in 0..first_source_id {
+            encoder.push_source(&[0]);
+        }
+
+        encoder.push_source(&[0b1010_0000]);
         assert!(encoder.open_bins.contains_key(&shared_bin));
+
+        for _ in (first_source_id + 1)..second_source_id {
+            encoder.push_source(&[0]);
+        }
 
         let second_emitted = encoder.push_source(&[0b1100_0000]);
 
         assert!(!second_emitted.iter().any(|bin| bin.bin_id == shared_bin));
         assert_eq!(encoder.open_bins.get(&shared_bin), Some(&vec![0b0110_0000]));
 
-        let release_source_id = (2..)
+        let release_source_id = ((second_source_id + 1)..)
             .find(|&next_source_id| params.tle_bin_id(next_source_id) > shared_bin)
             .expect("future TLE frontier");
-        let shared_bin_payload = (2..=release_source_id)
+        let shared_bin_payload = ((second_source_id + 1)..=release_source_id)
             .find_map(|_| {
                 let emitted = encoder.push_source(&[0]);
                 emitted
