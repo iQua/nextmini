@@ -77,24 +77,18 @@ impl MettleParams {
         seed: u64,
         terminal_source_count: Option<u64>,
     ) -> [u128; Self::EDGE_COUNT] {
-        [
-            self.tle_bin_id(source_id),
-            self.second_edge_bin_id_with_terminal_source_count(
+        let mut edge_bin_ids = [self.tle_bin_id(source_id); Self::EDGE_COUNT];
+
+        for (profile_index, _) in Self::NON_TLE_PROFILE.iter().enumerate() {
+            edge_bin_ids[profile_index + 1] = self.non_tle_edge_bin_id_for_profile_index(
                 source_id,
                 seed,
+                profile_index,
                 terminal_source_count,
-            ),
-            self.third_edge_bin_id_with_terminal_source_count(
-                source_id,
-                seed,
-                terminal_source_count,
-            ),
-            self.fourth_edge_bin_id_with_terminal_source_count(
-                source_id,
-                seed,
-                terminal_source_count,
-            ),
-        ]
+            );
+        }
+
+        edge_bin_ids
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -176,62 +170,17 @@ impl MettleParams {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn second_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
-        self.second_edge_bin_id_with_terminal_source_count(source_id, seed, None)
-    }
-
-    fn second_edge_bin_id_with_terminal_source_count(
-        self,
-        source_id: u64,
-        seed: u64,
-        terminal_source_count: Option<u64>,
-    ) -> u128 {
-        self.non_tle_edge_bin_id(
-            source_id,
-            seed,
-            2,
-            Self::NON_TLE_PROFILE[0].1,
-            terminal_source_count,
-        )
+        self.non_tle_edge_bin_id_for_profile_index(source_id, seed, 0, None)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn third_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
-        self.third_edge_bin_id_with_terminal_source_count(source_id, seed, None)
-    }
-
-    fn third_edge_bin_id_with_terminal_source_count(
-        self,
-        source_id: u64,
-        seed: u64,
-        terminal_source_count: Option<u64>,
-    ) -> u128 {
-        self.non_tle_edge_bin_id(
-            source_id,
-            seed,
-            3,
-            Self::NON_TLE_PROFILE[1].1,
-            terminal_source_count,
-        )
+        self.non_tle_edge_bin_id_for_profile_index(source_id, seed, 1, None)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn fourth_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
-        self.fourth_edge_bin_id_with_terminal_source_count(source_id, seed, None)
-    }
-
-    fn fourth_edge_bin_id_with_terminal_source_count(
-        self,
-        source_id: u64,
-        seed: u64,
-        terminal_source_count: Option<u64>,
-    ) -> u128 {
-        self.non_tle_edge_bin_id(
-            source_id,
-            seed,
-            4,
-            Self::NON_TLE_PROFILE[2].1,
-            terminal_source_count,
-        )
+        self.non_tle_edge_bin_id_for_profile_index(source_id, seed, 2, None)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -240,8 +189,8 @@ impl MettleParams {
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn non_tle_trials(self, source_id: u64) -> u128 {
-        self.non_tle_trials_with_terminal_source_count(source_id, None)
+    fn non_tle_trials(self) -> u128 {
+        self.nominal_non_tle_trials()
     }
 
     fn nominal_non_tle_trials(self) -> u128 {
@@ -277,6 +226,19 @@ impl MettleParams {
             mix_entropy(seed, source_id, edge_index),
         );
         self.non_tle_edge_bin_id_for_eta(source_id, eta, terminal_source_count)
+    }
+
+    fn non_tle_edge_bin_id_for_profile_index(
+        self,
+        source_id: u64,
+        seed: u64,
+        profile_index: usize,
+        terminal_source_count: Option<u64>,
+    ) -> u128 {
+        let edge_index = profile_index as u64 + 2;
+        let denominator = Self::NON_TLE_PROFILE[profile_index].1;
+
+        self.non_tle_edge_bin_id(source_id, seed, edge_index, denominator, terminal_source_count)
     }
 
     fn non_tle_edge_bin_id_for_eta(
@@ -468,18 +430,16 @@ mod tests {
     #[test]
     fn second_edge_uses_full_half_open_support_at_the_left_boundary() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.non_tle_trials(0), 630);
+        assert_eq!(params.non_tle_trials(), 630);
         assert_eq!(params.non_tle_edge_bin_id_for_eta(0, 0, None), 629);
-        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, params.non_tle_trials(0), None), 0);
+        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, params.non_tle_trials(), None), 0);
     }
 
     #[test]
     fn non_tle_trials_follow_the_paper_constant_width() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
 
-        assert_eq!(params.non_tle_trials(0), 630);
-        assert_eq!(params.non_tle_trials(1), 630);
-        assert_eq!(params.non_tle_trials(37), 630);
+        assert_eq!(params.non_tle_trials(), 630);
     }
 
     #[test]
@@ -526,7 +486,7 @@ mod tests {
     #[test]
     fn fourth_edge_handles_the_left_boundary_case() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        let trials = params.non_tle_trials(0);
+        let trials = params.non_tle_trials();
 
         assert_eq!(trials, 630);
         assert_eq!(params.non_tle_edge_bin_id_for_eta(0, 0, None), 629);
@@ -556,7 +516,7 @@ mod tests {
 
         assert_eq!(
             params.non_tle_trials_with_terminal_source_count(source_id, Some(terminal_source_count)),
-            params.non_tle_trials(source_id)
+            params.non_tle_trials()
         );
     }
 
