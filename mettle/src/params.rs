@@ -52,6 +52,25 @@ impl MettleParams {
         self.overhead
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
+        let expansion_numerator =
+            u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
+        (u128::from(source_id) * expansion_numerator) / u128::from(self.overhead.denominator())
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn window_end_bin(self, source_id: u64) -> u128 {
+        let expansion_numerator =
+            u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
+        (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * expansion_numerator
+            / u128::from(self.overhead.denominator())
+            + u128::from(
+                ((u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * expansion_numerator)
+                    % u128::from(self.overhead.denominator())
+                    != 0,
+            )
+    }
 }
 
 const fn gcd(mut lhs: u32, mut rhs: u32) -> u32 {
@@ -104,5 +123,32 @@ mod tests {
         assert_eq!(MettleParams::EDGE_COUNT, 4);
         assert_eq!(MettleParams::COUPLING_WINDOW, 600);
         assert_eq!(MettleParams::NON_TLE_PROFILE, [(1, 2), (1, 4), (1, 8)]);
+    }
+
+    #[test]
+    fn tle_bin_id_matches_floor_of_one_plus_c_times_source_id() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.tle_bin_id(0), 0);
+        assert_eq!(params.tle_bin_id(1), 1);
+        assert_eq!(params.tle_bin_id(19), 19);
+        assert_eq!(params.tle_bin_id(20), 21);
+        assert_eq!(params.tle_bin_id(21), 22);
+    }
+
+    #[test]
+    fn window_end_bin_matches_ceiling_of_scaled_right_boundary() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.window_end_bin(0), 630);
+        assert_eq!(params.window_end_bin(1), 632);
+        assert_eq!(params.window_end_bin(7), 638);
+    }
+
+    #[test]
+    fn half_open_window_width_follows_the_direct_boundary_formula() {
+        let params = MettleParams::new(OverheadRatio::new(1, 7).expect("valid overhead"));
+        assert_eq!(params.window_end_bin(0), 686);
+        assert_eq!(params.window_end_bin(1), 687);
+        assert_eq!(params.window_end_bin(0) - params.tle_bin_id(0), 686);
+        assert_eq!(params.window_end_bin(11) - params.tle_bin_id(11), 687);
     }
 }
