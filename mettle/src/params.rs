@@ -103,6 +103,10 @@ impl MettleParams {
             denominator,
             mix_entropy(seed, source_id, edge_index),
         );
+        self.non_tle_edge_bin_id_for_eta(source_id, eta)
+    }
+
+    fn non_tle_edge_bin_id_for_eta(self, source_id: u64, eta: u128) -> u128 {
         self.window_end_exclusive(source_id) - 1 - eta
     }
 }
@@ -288,9 +292,11 @@ mod tests {
     #[test]
     fn fourth_edge_handles_the_left_boundary_case() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        let edge = params.fourth_edge_bin_id(0, 0x1234_5678_9ABC_DEF0);
+        let trials = params.non_tle_trials(0);
 
-        assert!(edge < params.window_end_exclusive(0));
+        assert_eq!(trials, 629);
+        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, 0), 629);
+        assert_eq!(params.non_tle_edge_bin_id_for_eta(0, trials), 0);
     }
 
     #[test]
