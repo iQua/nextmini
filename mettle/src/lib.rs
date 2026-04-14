@@ -1,3 +1,4 @@
+mod decoder;
 mod encoder;
 mod params;
 
