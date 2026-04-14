@@ -24,6 +24,12 @@ enum MettleTrialOutcome {
 }
 
 #[derive(Clone, Copy)]
+struct SkipProfile {
+    total_skipped_sources: u64,
+    max_consecutive_skip_run: u64,
+}
+
+#[derive(Clone, Copy)]
 struct Rational {
     numerator: u32,
     denominator: u32,
@@ -382,6 +388,32 @@ fn replay_mettle_trial(
     (decoder, delivered_bin_ids)
 }
 
+fn skip_profile_after_replay(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> SkipProfile {
+    let terminal_source_count = source_count as u64;
+    let (mut decoder, _) = replay_mettle_trial(case, seed, source_count);
+    let mut total_skipped_sources = 0;
+    let mut current_skip_run = 0;
+    let mut max_consecutive_skip_run = 0;
+
+    while decoder.next_source_id() < terminal_source_count {
+        let before = decoder.next_source_id();
+        let _ = decoder.skip_next_source_without_edges();
+        let after = decoder.next_source_id();
+        total_skipped_sources += 1;
+        current_skip_run += 1;
+        if after > before + 1 {
+            max_consecutive_skip_run = max_consecutive_skip_run.max(current_skip_run);
+            current_skip_run = 0;
+        }
+    }
+    max_consecutive_skip_run = max_consecutive_skip_run.max(current_skip_run);
+
+    SkipProfile {
+        total_skipped_sources,
+        max_consecutive_skip_run,
+    }
+}
+
 fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
     let failures = (0..trials)
         .filter(|&trial| !raptorq_trial_succeeds(case, trial as u64 + 1))
@@ -412,6 +444,7 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                 if print_first_failure && failures == 1 {
                     let (decoder, delivered_bin_ids) =
                         replay_mettle_trial(case, trial as u64 + 1, source_count);
+                    let skip_profile = skip_profile_after_replay(case, trial as u64 + 1, source_count);
                     let edge_bin_ids = edge_bin_ids_with_terminal_source_count(
                         case_params(case),
                         next_source_id,
@@ -431,12 +464,14 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                         .collect::<Vec<_>>()
                         .join(", ");
                     eprintln!(
-                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} edges=[{}]",
+                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} skip_total={} skip_max_run={} edges=[{}]",
                         case.name,
                         trial + 1,
                         next_source_id,
                         stalled_run_length,
                         remaining_sources,
+                        skip_profile.total_skipped_sources,
+                        skip_profile.max_consecutive_skip_run,
                         edge_details,
                     );
                 }
