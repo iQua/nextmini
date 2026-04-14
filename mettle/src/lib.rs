@@ -6,7 +6,7 @@ mod decode_speed;
 mod encoder;
 mod params;
 #[cfg(test)]
-mod table_iv;
+mod paper_coding_efficiency;
 #[cfg(test)]
 mod validation;
 
