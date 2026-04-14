@@ -68,12 +68,47 @@ fn split_out_bin(
     (kept_bins, selected_bin.expect("selected bin"))
 }
 
-fn expected_small_stream_decoded(sources: &[Vec<u8>]) -> Vec<(u64, &[u8])> {
-    vec![
+fn expected_small_stream_decoded(sources: &[Vec<u8>]) -> [(u64, &[u8]); 3] {
+    [
         (0, sources[0].as_slice()),
         (1, sources[1].as_slice()),
         (2, sources[2].as_slice()),
     ]
+}
+
+fn expected_small_stream_bins() -> [(u128, [u8; 2]); 11] {
+    [
+        (0, [1, 2]),
+        (1, [3, 4]),
+        (2, [5, 6]),
+        (332, [3, 4]),
+        (334, [5, 6]),
+        (336, [1, 2]),
+        (482, [2, 6]),
+        (494, [5, 6]),
+        (547, [1, 2]),
+        (556, [3, 4]),
+        (570, [5, 6]),
+    ]
+}
+
+fn expected_kept_bins_after_erasing(bin_id: u128) -> Vec<(u128, [u8; 2])> {
+    expected_small_stream_bins()
+        .into_iter()
+        .filter(|(candidate_bin_id, _)| *candidate_bin_id != bin_id)
+        .collect()
+}
+
+fn two_byte_bin_parts(bins: impl IntoIterator<Item = MettleBin>) -> Vec<(u128, [u8; 2])> {
+    bins.into_iter()
+        .map(MettleBin::into_parts)
+        .map(|(bin_id, payload)| {
+            (
+                bin_id,
+                payload.try_into().expect("small stream uses two-byte symbols"),
+            )
+        })
+        .collect()
 }
 
 #[test]
@@ -110,20 +145,8 @@ fn validation_harness_matches_small_stream_bin_goldens() {
     let (_, _, _, bins) = small_source_stream();
 
     assert_eq!(
-        bins.into_iter().map(MettleBin::into_parts).collect::<Vec<_>>(),
-        vec![
-            (0, vec![1, 2]),
-            (1, vec![3, 4]),
-            (2, vec![5, 6]),
-            (332, vec![3, 4]),
-            (334, vec![5, 6]),
-            (336, vec![1, 2]),
-            (482, vec![2, 6]),
-            (494, vec![5, 6]),
-            (547, vec![1, 2]),
-            (556, vec![3, 4]),
-            (570, vec![5, 6]),
-        ]
+        two_byte_bin_parts(bins),
+        expected_small_stream_bins()
     );
 }
 
@@ -133,21 +156,7 @@ fn validation_harness_matches_kept_bin_goldens_after_prefix_erasure() {
     let (kept_bins, _) = split_out_bin(bins, params.tle_bin_id(0));
 
     assert_eq!(
-        kept_bins
-            .into_iter()
-            .map(MettleBin::into_parts)
-            .collect::<Vec<_>>(),
-        vec![
-            (1, vec![3, 4]),
-            (2, vec![5, 6]),
-            (332, vec![3, 4]),
-            (334, vec![5, 6]),
-            (336, vec![1, 2]),
-            (482, vec![2, 6]),
-            (494, vec![5, 6]),
-            (547, vec![1, 2]),
-            (556, vec![3, 4]),
-            (570, vec![5, 6]),
-        ]
+        two_byte_bin_parts(kept_bins),
+        expected_kept_bins_after_erasing(params.tle_bin_id(0))
     );
 }
