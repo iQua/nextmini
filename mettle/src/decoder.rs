@@ -14,7 +14,7 @@ pub(crate) struct DecodedSource {
 
 #[cfg(test)]
 impl DecodedSource {
-    pub(crate) fn as_parts(&self) -> (u64, &[u8]) {
+    pub(super) fn as_parts(&self) -> (u64, &[u8]) {
         (self.source_id, &self.payload)
     }
 }

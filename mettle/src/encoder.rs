@@ -16,6 +16,10 @@ impl MettleBin {
         Self { bin_id, payload }
     }
 
+    pub(crate) fn bin_id(&self) -> u128 {
+        self.bin_id
+    }
+
     pub(crate) fn into_parts(self) -> (u128, Vec<u8>) {
         (self.bin_id, self.payload)
     }
