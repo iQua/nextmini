@@ -6,7 +6,7 @@ mod decode_speed;
 mod encoder;
 mod params;
 #[cfg(test)]
-mod raptorq_table_iv;
+mod table_iv;
 #[cfg(test)]
 mod validation;
 
