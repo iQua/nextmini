@@ -46,6 +46,7 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -167,6 +168,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
         progress: None,
+        peer_report_timeout_ms: 500,
         fec_enabled: false,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
@@ -263,6 +265,7 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![1, 3])),
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -336,6 +339,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
         progress: None,
+        peer_report_timeout_ms: 500,
         fec_enabled: true,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);

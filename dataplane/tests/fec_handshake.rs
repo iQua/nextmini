@@ -39,6 +39,7 @@ async fn start_runtime_sender(
     runtime_cfg.ready_grace_ms = ready_grace_ms;
     runtime_cfg.fec_default_symbols_per_block = 4;
     runtime_cfg.fec_default_tree_ids = vec![1, 3];
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     runtime.set_topology_ready(true);
 
@@ -51,6 +52,7 @@ async fn start_runtime_sender(
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
             ready_grace_ms,
+            peer_report_timeout_ms,
         })
         .await
         .expect("sender should start");
@@ -70,6 +72,7 @@ async fn start_sender_with_runtime_config(
     session_id: u64,
 ) -> Result<u64, StartError> {
     let processors = ProcessorHandle::new(cfg.clone());
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
 
     runtime
@@ -91,6 +94,7 @@ async fn start_sender_with_runtime_config(
             total_bytes: 64,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
             ready_grace_ms: 1,
+            peer_report_timeout_ms,
         })
         .await
         .map(|session| session.id())

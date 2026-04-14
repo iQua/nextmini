@@ -41,6 +41,7 @@ async fn sender_completes_only_after_every_receiver_reports_complete() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -208,6 +209,7 @@ async fn sender_converges_after_staggered_multi_receiver_rounds() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -407,6 +409,7 @@ async fn sender_starts_plain_retransmit_after_first_useful_need() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -552,6 +555,7 @@ async fn sender_resumes_same_round_plain_retransmit_when_late_need_arrives() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -716,6 +720,7 @@ async fn sender_ignores_future_and_stale_plain_need_rounds() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 
@@ -887,6 +892,7 @@ async fn sender_aborts_on_changed_same_round_plain_need_from_one_peer() {
             mode: LosslessSessionMode::Plain,
         },
         ready_grace_ms: 500,
+        peer_report_timeout_ms: 500,
         topology_ready: None,
     };
 

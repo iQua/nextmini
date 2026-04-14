@@ -72,6 +72,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
         local_node_id: RECEIVER_NODE_ID,
         sink_buffer: Some(sink.clone()),
         progress: None,
+        peer_report_timeout_ms: 500,
         fec_enabled: true,
     };
 

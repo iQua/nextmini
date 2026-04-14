@@ -8,6 +8,7 @@ const QUORUM_SOLICITATION_INTERVAL: Duration = Duration::from_millis(250);
 #[cfg(test)]
 const PEER_REPORT_TIMEOUT: Duration = Duration::from_millis(30);
 #[cfg(not(test))]
+#[allow(dead_code)]
 const PEER_REPORT_TIMEOUT: Duration = Duration::from_millis(1500);
 
 #[cfg(test)]
@@ -24,6 +25,7 @@ pub(crate) fn quorum_solicitation_interval() -> Duration {
     QUORUM_SOLICITATION_INTERVAL
 }
 
+#[allow(dead_code)]
 pub(crate) fn peer_report_timeout() -> Duration {
     PEER_REPORT_TIMEOUT
 }
@@ -32,8 +34,13 @@ pub(crate) fn control_path_rtt_budget() -> Duration {
     CONTROL_PATH_RTT_BUDGET
 }
 
+pub(crate) fn session_finish_timeout_for(peer_report_timeout: Duration) -> Duration {
+    peer_report_timeout + control_path_rtt_budget() + PASSIVE_COMPLETE_MARGIN
+}
+
+#[allow(dead_code)]
 pub(crate) fn session_finish_timeout() -> Duration {
-    peer_report_timeout() + control_path_rtt_budget() + PASSIVE_COMPLETE_MARGIN
+    session_finish_timeout_for(peer_report_timeout())
 }
 
 #[cfg(test)]

@@ -170,7 +170,7 @@ impl SessionSender {
         let active_quorum = ActiveSessionQuorum::new(cfg.receiver_ids.iter().copied());
         let quorum_liveness = QuorumLiveness::new(
             timing::quorum_solicitation_interval(),
-            timing::peer_report_timeout(),
+            Duration::from_millis(cfg.peer_report_timeout_ms),
         );
         let mode = match &manifest.mode {
             LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),

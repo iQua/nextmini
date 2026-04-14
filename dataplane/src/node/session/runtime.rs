@@ -60,8 +60,10 @@ pub struct SenderRequest {
     pub total_bytes: u64,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
-    /// Maximum time to wait for READY frames before opening the data gate.
+    /// Maximum time to wait for READY frames during session start.
     pub ready_grace_ms: u64,
+    /// Maximum time to wait for frozen-quorum feedback after `SourceDone`.
+    pub peer_report_timeout_ms: u64,
 }
 
 /// User-facing request used to start a receiver session.
@@ -125,8 +127,10 @@ pub struct SenderConfig {
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
     pub manifest: LosslessSessionManifest,
-    /// Maximum time to wait for READY frames before opening the data gate.
+    /// Maximum time to wait for READY frames during session start.
     pub ready_grace_ms: u64,
+    /// Maximum time to wait for frozen-quorum feedback after `SourceDone`.
+    pub peer_report_timeout_ms: u64,
     /// Optional topology-ready gate shared by newly spawned senders.
     pub topology_ready: Option<watch::Receiver<bool>>,
 }
@@ -144,6 +148,8 @@ pub struct ReceiverConfig {
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
     /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
+    /// Maximum time to keep a passive-complete receiver alive while waiting for later rounds.
+    pub peer_report_timeout_ms: u64,
     /// Whether FEC manifests are accepted by this runtime.
     pub fec_enabled: bool,
 }
@@ -397,6 +403,7 @@ impl LosslessRuntime {
             source_buffer: req.source_buffer,
             manifest,
             ready_grace_ms: req.ready_grace_ms,
+            peer_report_timeout_ms: req.peer_report_timeout_ms,
             topology_ready: None,
         };
         if !self.topology_ready {
@@ -490,6 +497,7 @@ impl LosslessRuntime {
             local_node_id: req.local_node_id,
             sink_buffer: req.sink_buffer,
             progress: req.progress,
+            peer_report_timeout_ms: self.config.peer_report_timeout_ms,
             fec_enabled: self.config.fec_enabled,
         };
         let processors = self.processors.clone();
@@ -553,12 +561,12 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
-                if round_id != *replay_round_id {
+                if round_id < *replay_round_id {
                     debug!(
                         session_id = session,
                         round_id,
                         replay_round_id,
-                        "Lossless runtime dropped stale or future replay attempt for a completed plain receiver"
+                        "Lossless runtime dropped stale replay attempt for a completed plain receiver"
                     );
                     return false;
                 }
@@ -585,12 +593,12 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
-                if round_id != *replay_round_id {
+                if round_id < *replay_round_id {
                     debug!(
                         session_id = session,
                         round_id,
                         replay_round_id,
-                        "Lossless runtime dropped stale or future replay attempt for a completed FEC receiver"
+                        "Lossless runtime dropped stale replay attempt for a completed FEC receiver"
                     );
                     return false;
                 }
@@ -746,7 +754,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_does_not_replay_completed_receiver_for_stale_or_future_rounds() {
+    async fn deliver_frame_replays_completed_receiver_for_same_or_future_rounds_only() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E40A;
 
@@ -790,12 +798,7 @@ mod tests {
                 },
             )
             .await;
-        assert!(
-            timeout(Duration::from_millis(100), packet_rx.recv())
-                .await
-                .is_err(),
-            "future round replay must be dropped"
-        );
+        assert_plain_complete_for_round(&mut packet_rx, 2).await;
     }
 
     #[tokio::test]
@@ -1001,6 +1004,10 @@ mod tests {
     }
 
     async fn assert_plain_complete(packet_rx: &mut mpsc::Receiver<Packet>) {
+        assert_plain_complete_for_round(packet_rx, 0).await;
+    }
+
+    async fn assert_plain_complete_for_round(packet_rx: &mut mpsc::Receiver<Packet>, round_id: u32) {
         let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for replayed plain status")
@@ -1013,7 +1020,7 @@ mod tests {
         assert_eq!(
             control,
             LosslessSessionControl::Need {
-                round_id: 0,
+                round_id,
                 report: NeedReport::Complete,
             }
         );

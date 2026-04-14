@@ -170,6 +170,7 @@ async fn run_source(
         total_bytes: source_bytes.len() as u64,
         source_buffer: Bytes::from(source_bytes),
         ready_grace_ms: config.lossless_runtime_config.ready_grace_ms,
+        peer_report_timeout_ms: config.lossless_runtime_config.peer_report_timeout_ms,
     };
 
     let mut session = lossless_runtime

@@ -34,6 +34,7 @@ async fn sender_stripes_symbols_across_configured_trees() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),
         manifest,
         ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
         topology_ready: None,
     };
 

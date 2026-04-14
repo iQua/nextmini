@@ -115,9 +115,12 @@ impl SessionReceiver {
 
         loop {
             let frame = if self.is_passive_complete() {
+                let passive_timeout = timing::session_finish_timeout_for(
+                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
+                );
                 tokio::select! {
                     maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep(timing::session_finish_timeout()) => {
+                    _ = tokio::time::sleep(passive_timeout) => {
                         self.finish_session("session_finish_timeout");
                         break;
                     }
@@ -623,6 +626,7 @@ mod tests {
                 local_node_id: 1,
                 sink_buffer: None,
                 progress: None,
+                peer_report_timeout_ms: 200,
                 fec_enabled: true,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -687,6 +691,7 @@ mod tests {
                 local_node_id: 1,
                 sink_buffer: None,
                 progress: None,
+                peer_report_timeout_ms: 200,
                 fec_enabled: true,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -738,6 +743,7 @@ mod tests {
                     local_node_id: 1,
                     sink_buffer: None,
                     progress: None,
+                    peer_report_timeout_ms: 200,
                     fec_enabled: false,
                 },
                 processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -1040,6 +1046,7 @@ mod tests {
                 local_node_id: 1,
                 sink_buffer: None,
                 progress: Some(progress.clone()),
+                peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -1081,6 +1088,7 @@ mod tests {
                 local_node_id: 1,
                 sink_buffer: None,
                 progress: Some(progress.clone()),
+                peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
@@ -1148,6 +1156,7 @@ mod tests {
                     local_node_id: RECEIVER_NODE_ID,
                     sink_buffer: None,
                     progress: None,
+                    peer_report_timeout_ms: 200,
                     fec_enabled: true,
                 },
                 processors,
@@ -1261,6 +1270,7 @@ mod tests {
                 local_node_id: RECEIVER_NODE_ID,
                 sink_buffer: None,
                 progress: None,
+                peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
             rx,
@@ -1404,6 +1414,7 @@ mod tests {
                 local_node_id: RECEIVER_NODE_ID,
                 sink_buffer: None,
                 progress: None,
+                peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
             rx,
@@ -1550,6 +1561,7 @@ mod tests {
                         local_node_id: RECEIVER_NODE_ID,
                         sink_buffer: None,
                         progress: None,
+                        peer_report_timeout_ms: 200,
                         fec_enabled: false,
                     },
                     processors,
@@ -1627,6 +1639,7 @@ mod tests {
                         local_node_id: RECEIVER_NODE_ID,
                         sink_buffer: None,
                         progress: None,
+                        peer_report_timeout_ms: 200,
                         fec_enabled: true,
                     },
                     processors,
