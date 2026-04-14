@@ -20,6 +20,12 @@ const TABLE_V_RAPTORQ_ROWS: [(usize, u32); 7] = [
     (8194, 21451),
 ];
 
+#[derive(Clone, Copy)]
+enum RaptorqConfigMode {
+    ExplicitMinimal,
+    Defaults,
+}
+
 fn benchmark_sources(source_count: usize) -> Vec<Vec<u8>> {
     (0..source_count)
         .map(|source_id| {
@@ -30,8 +36,14 @@ fn benchmark_sources(source_count: usize) -> Vec<Vec<u8>> {
         .collect()
 }
 
-fn benchmark_flat_data(source_count: usize) -> Vec<u8> {
-    benchmark_sources(source_count).into_iter().flatten().collect()
+fn benchmark_flat_data(source_count: usize, symbol_size: usize) -> Vec<u8> {
+    (0..source_count)
+        .flat_map(|source_id| {
+            let mut payload = vec![0; symbol_size];
+            payload[0] = source_id as u8;
+            payload
+        })
+        .collect()
 }
 
 fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
@@ -68,15 +80,22 @@ fn mettle_streaming_fixture(
 
 fn raptorq_repair_only_fixture(
     source_count: usize,
+    config_mode: RaptorqConfigMode,
 ) -> (ObjectTransmissionInformation, u64, Vec<EncodingPacket>) {
-    let oti = ObjectTransmissionInformation::new(
-        (source_count * PAPER_SPEED_SYMBOL_SIZE) as u64,
-        PAPER_SPEED_SYMBOL_SIZE as u16,
-        1,
-        1,
-        1,
-    );
-    let flat_data = benchmark_flat_data(source_count);
+    let transfer_length = (source_count * PAPER_SPEED_SYMBOL_SIZE) as u64;
+    let oti = match config_mode {
+        RaptorqConfigMode::ExplicitMinimal => ObjectTransmissionInformation::new(
+            transfer_length,
+            PAPER_SPEED_SYMBOL_SIZE as u16,
+            1,
+            1,
+            1,
+        ),
+        RaptorqConfigMode::Defaults => {
+            ObjectTransmissionInformation::with_defaults(transfer_length, PAPER_SPEED_SYMBOL_SIZE as u16)
+        }
+    };
+    let flat_data = benchmark_flat_data(source_count, oti.symbol_size() as usize);
     let encoder = SourceBlockEncoder::new(0, &oti, &flat_data);
     let packets = encoder.repair_packets(0, source_count as u32);
 
@@ -109,12 +128,13 @@ fn raptorq_decode_once(
     oti: &ObjectTransmissionInformation,
     block_length: u64,
     packets: Vec<EncodingPacket>,
-) -> usize {
+) -> u64 {
     SourceBlockDecoder::new(0, oti, block_length)
         .decode(packets)
         .expect("paper-style RaptorQ fixture should decode")
         .len()
-        / PAPER_SPEED_SYMBOL_SIZE
+        .try_into()
+        .expect("decoded block length fits in u64")
 }
 
 fn benchmark_mettle_ns_per_packet(iterations: usize, source_count: usize) -> (usize, u128) {
@@ -136,16 +156,19 @@ fn benchmark_mettle_ns_per_packet(iterations: usize, source_count: usize) -> (us
 }
 
 fn benchmark_raptorq_ns_per_packet(iterations: usize, source_count: usize) -> u128 {
-    let (oti, block_length, packets) = raptorq_repair_only_fixture(source_count);
+    let (oti, block_length, packets) = raptorq_repair_only_fixture(
+        source_count,
+        raptorq_config_mode(),
+    );
     let runs = (0..iterations).map(|_| packets.clone()).collect::<Vec<_>>();
     let start = Instant::now();
-    let mut decoded = 0usize;
+    let mut decoded_bytes = 0u64;
     for run in runs {
-        decoded += raptorq_decode_once(&oti, block_length, run);
+        decoded_bytes += raptorq_decode_once(&oti, block_length, run);
     }
     let elapsed = start.elapsed();
 
-    assert_eq!(decoded, iterations * source_count);
+    assert_eq!(decoded_bytes, iterations as u64 * block_length);
     elapsed.as_nanos() / (iterations as u128 * source_count as u128)
 }
 
@@ -156,14 +179,22 @@ fn env_or_default_usize(name: &str, default: usize) -> usize {
         .unwrap_or(default)
 }
 
+fn raptorq_config_mode() -> RaptorqConfigMode {
+    match std::env::var("METTLE_PAPER_SPEED_RAPTORQ_CONFIG").as_deref() {
+        Ok("defaults") => RaptorqConfigMode::Defaults,
+        _ => RaptorqConfigMode::ExplicitMinimal,
+    }
+}
+
 #[test]
 fn paper_decode_speed_harness_builds() {
     let (params, symbol_bytes, bins) = mettle_streaming_fixture(2048);
     assert!(!bins.is_empty());
     assert!(mettle_decode_once(params, symbol_bytes, 2048, bins) >= 2048);
 
-    let (oti, block_length, packets) = raptorq_repair_only_fixture(127);
-    assert_eq!(raptorq_decode_once(&oti, block_length, packets), 127);
+    let (oti, block_length, packets) =
+        raptorq_repair_only_fixture(127, RaptorqConfigMode::ExplicitMinimal);
+    assert_eq!(raptorq_decode_once(&oti, block_length, packets), block_length);
 }
 
 #[test]
@@ -177,12 +208,17 @@ fn report_paper_decode_speed() {
     let (mettle_packet_count, mettle_ns_per_packet) =
         benchmark_mettle_ns_per_packet(iterations, mettle_source_count);
     let mettle_us_per_packet = mettle_ns_per_packet as f64 / 1_000.0;
+    let raptorq_config = match raptorq_config_mode() {
+        RaptorqConfigMode::ExplicitMinimal => "explicit",
+        RaptorqConfigMode::Defaults => "defaults",
+    };
     eprintln!(
-        "mettle source_count={} packet_count={} ns_per_packet={} us_per_packet={:.3}",
+        "mettle source_count={} packet_count={} ns_per_packet={} us_per_packet={:.3} raptorq_config={}",
         mettle_source_count,
         mettle_packet_count,
         mettle_ns_per_packet,
         mettle_us_per_packet,
+        raptorq_config,
     );
 
     for source_count in TABLE_IV_LATENCY_MATCHED_KS {
