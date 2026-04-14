@@ -49,6 +49,10 @@ impl MettleEncoder {
         self.take_finalized_bins(self.params.tle_bin_id(self.next_source_id))
     }
 
+    fn finish(mut self) -> Vec<MettleBin> {
+        self.take_finalized_bins(u128::MAX)
+    }
+
     fn take_finalized_bins(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
         let future_bins = self.open_bins.split_off(&end_exclusive);
         let finalized_bins = std::mem::replace(&mut self.open_bins, future_bins);
@@ -133,5 +137,30 @@ mod tests {
             .unwrap_or_else(|| panic!("shared bin never emitted"));
 
         assert_eq!(shared_bin_payload, vec![0b0110_0000]);
+    }
+
+    #[test]
+    fn finish_emits_remaining_open_bins_in_order() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let mut encoder = MettleEncoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
+        let mut expected_remaining_bin_ids = params.edge_bin_ids(0, 0);
+        expected_remaining_bin_ids.sort_unstable();
+
+        let emitted = encoder.push_source(&[0b1010_0000]);
+        let remaining = encoder.finish();
+
+        assert_eq!(
+            emitted,
+            vec![MettleBin {
+                bin_id: expected_remaining_bin_ids[0],
+                payload: vec![0b1010_0000],
+            }]
+        );
+        assert_eq!(remaining.len(), expected_remaining_bin_ids.len() - 1);
+        assert_eq!(
+            remaining.iter().map(|bin| bin.bin_id).collect::<Vec<_>>(),
+            expected_remaining_bin_ids[1..]
+        );
+        assert!(remaining.iter().all(|bin| bin.payload == vec![0b1010_0000]));
     }
 }
