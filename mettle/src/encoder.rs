@@ -59,7 +59,7 @@ impl MettleEncoder {
         self.take_finalized_bins(self.params.tle_bin_id(self.next_source_id))
     }
 
-    fn finish(mut self) -> Vec<MettleBin> {
+    pub(crate) fn finish(mut self) -> Vec<MettleBin> {
         self.take_finalized_bins(u128::MAX)
     }
 

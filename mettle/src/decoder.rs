@@ -18,6 +18,7 @@ pub(crate) struct MettleDecoder {
     source_symbol_bytes: NonZeroUsize,
     next_decoded_source_id: u64,
     seed: u64,
+    decoded_prefix_payloads: Vec<Vec<u8>>,
     seen_bin_ids: BTreeSet<u128>,
     received_bins: BTreeMap<u128, Vec<u8>>,
 }
@@ -29,19 +30,24 @@ impl MettleDecoder {
             source_symbol_bytes,
             next_decoded_source_id: 0,
             seed,
+            decoded_prefix_payloads: Vec::new(),
             seen_bin_ids: BTreeSet::new(),
             received_bins: BTreeMap::new(),
         }
     }
 
     pub(crate) fn push_bin(&mut self, bin: MettleBin) -> Vec<DecodedSource> {
-        let (bin_id, payload) = bin.into_parts();
+        let (bin_id, mut payload) = bin.into_parts();
         if payload.len() != self.source_symbol_bytes.get()
             || self.latest_source_id_for_bin(bin_id).is_none()
         {
             return Vec::new();
         }
         if !self.seen_bin_ids.insert(bin_id) {
+            return Vec::new();
+        }
+        self.peel_known_prefix_from_bin(bin_id, &mut payload);
+        if self.bin_has_no_undecoded_touchers(bin_id) {
             return Vec::new();
         }
         self.received_bins.insert(bin_id, payload);
@@ -57,11 +63,13 @@ impl MettleDecoder {
                 .remove(&bin_id)
                 .expect("just matched decodable bin");
             self.peel_source_from_open_bins(self.next_decoded_source_id, &payload);
+            self.decoded_prefix_payloads.push(payload.clone());
             decoded.push(DecodedSource {
                 source_id: self.next_decoded_source_id,
                 payload,
             });
             self.next_decoded_source_id += 1;
+            self.drop_bins_closed_by_prefix();
         }
 
         decoded
@@ -105,6 +113,37 @@ impl MettleDecoder {
         }
     }
 
+    fn peel_known_prefix_from_bin(&self, bin_id: u128, payload: &mut [u8]) {
+        let Some(latest_source_id) = self.latest_source_id_for_bin(bin_id) else {
+            return;
+        };
+        let earliest_source_id =
+            latest_source_id.saturating_sub(MettleParams::COUPLING_WINDOW - 1);
+
+        for source_id in earliest_source_id..self.next_decoded_source_id.min(latest_source_id + 1) {
+            if self.params.edge_bin_ids(source_id, self.seed).contains(&bin_id) {
+                xor_payload(payload, &self.decoded_prefix_payloads[source_id as usize]);
+            }
+        }
+    }
+
+    fn bin_has_no_undecoded_touchers(&self, bin_id: u128) -> bool {
+        self.latest_source_id_for_bin(bin_id)
+            .is_some_and(|latest_source_id| latest_source_id < self.next_decoded_source_id)
+    }
+
+    fn drop_bins_closed_by_prefix(&mut self) {
+        let closed_bin_ids = self
+            .received_bins
+            .keys()
+            .copied()
+            .filter(|&bin_id| self.bin_has_no_undecoded_touchers(bin_id))
+            .collect::<Vec<_>>();
+        for bin_id in closed_bin_ids {
+            self.received_bins.remove(&bin_id);
+        }
+    }
+
     fn latest_source_id_for_bin(&self, bin_id: u128) -> Option<u64> {
         let denominator = u128::from(self.params.overhead().denominator());
         let expansion_numerator = u128::from(self.params.overhead().numerator()) + denominator;
@@ -126,6 +165,7 @@ fn xor_payload(dst: &mut [u8], src: &[u8]) {
 mod tests {
     use std::num::NonZeroUsize;
 
+    use crate::encoder::MettleEncoder;
     use crate::{MettleParams, OverheadRatio};
 
     use crate::encoder::MettleBin;
@@ -208,6 +248,7 @@ mod tests {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         let mut decoder = MettleDecoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
         decoder.next_decoded_source_id = 537;
+        decoder.decoded_prefix_payloads = vec![vec![0]; 537];
 
         assert!(decoder.push_bin(MettleBin::new(1116, vec![0b0110_0000])).is_empty());
 
@@ -239,6 +280,7 @@ mod tests {
         );
 
         assert!(decoder.push_bin(MettleBin::new(0, vec![1, 2, 3, 4])).is_empty());
+        assert_eq!(decoder.decoded_prefix_payloads, vec![vec![1, 2, 3, 4]]);
         assert!(decoder.received_bins.is_empty());
     }
 
@@ -266,5 +308,49 @@ mod tests {
             .is_empty());
         assert!(decoder.seen_bin_ids.is_empty());
         assert!(decoder.received_bins.is_empty());
+    }
+
+    #[test]
+    fn encoder_round_trip_decodes_no_loss_stream() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_symbol_bytes = NonZeroUsize::new(2).expect("non-zero");
+        let mut encoder = MettleEncoder::new(params, source_symbol_bytes, 0);
+        let mut bins = Vec::new();
+        let sources = [vec![1, 2], vec![3, 4], vec![5, 6]];
+
+        for source in &sources {
+            bins.extend(encoder.push_source(source));
+        }
+        bins.extend(encoder.finish());
+
+        let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+        let mut decoded = Vec::new();
+        for bin in bins {
+            decoded.extend(decoder.push_bin(bin));
+        }
+
+        assert_eq!(
+            decoded,
+            vec![
+                DecodedSource {
+                    source_id: 0,
+                    payload: vec![1, 2],
+                },
+                DecodedSource {
+                    source_id: 1,
+                    payload: vec![3, 4],
+                },
+                DecodedSource {
+                    source_id: 2,
+                    payload: vec![5, 6],
+                },
+            ]
+        );
+        assert_eq!(decoder.next_decoded_source_id, 3);
+        assert_eq!(decoder.decoded_prefix_payloads, sources);
+        assert!(decoder
+            .received_bins
+            .values()
+            .all(|payload| payload.iter().all(|&byte| byte == 0)));
     }
 }
