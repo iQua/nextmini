@@ -353,4 +353,47 @@ mod tests {
             .values()
             .all(|payload| payload.iter().all(|&byte| byte == 0)));
     }
+
+    #[test]
+    fn missing_prefix_bin_stalls_until_it_is_replayed() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_symbol_bytes = NonZeroUsize::new(2).expect("non-zero");
+        let mut encoder = MettleEncoder::new(params, source_symbol_bytes, 0);
+        let mut bins = Vec::new();
+        let sources = [vec![1, 2], vec![3, 4], vec![5, 6]];
+
+        for source in &sources {
+            bins.extend(encoder.push_source(source));
+        }
+        bins.extend(encoder.finish());
+
+        let missing_prefix_bin = bins.remove(0);
+        let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+        let mut decoded = Vec::new();
+        for bin in bins {
+            decoded.extend(decoder.push_bin(bin));
+        }
+
+        assert!(decoded.is_empty());
+        assert_eq!(decoder.next_decoded_source_id, 0);
+
+        decoded.extend(decoder.push_bin(missing_prefix_bin));
+        assert_eq!(
+            decoded,
+            vec![
+                DecodedSource {
+                    source_id: 0,
+                    payload: vec![1, 2],
+                },
+                DecodedSource {
+                    source_id: 1,
+                    payload: vec![3, 4],
+                },
+                DecodedSource {
+                    source_id: 2,
+                    payload: vec![5, 6],
+                },
+            ]
+        );
+    }
 }
