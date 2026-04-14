@@ -64,7 +64,7 @@ fn raptorq_decode_fixture(
     );
     let flat_data = benchmark_flat_data();
     let encoder = SourceBlockEncoder::new(0, &oti, &flat_data);
-    let source_packet_count = BENCH_SOURCE_COUNT.min(target_packet_count);
+    let source_packet_count = target_packet_count / 2;
     let repair_packet_count = target_packet_count.saturating_sub(source_packet_count);
     let mut packets = encoder
         .source_packets()
@@ -103,13 +103,13 @@ fn mettle_decode_once(
     bins: Vec<MettleBin>,
 ) -> usize {
     let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
-    let mut decoded = Vec::new();
+    let mut decoded = 0;
 
     for bin in bins {
-        decoded.extend(decoder.push_bin(bin));
+        decoded += decoder.push_bin(bin).len();
     }
 
-    decoded.len()
+    decoded
 }
 
 fn raptorq_decode_once(
