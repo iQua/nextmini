@@ -166,6 +166,14 @@ impl MettleDecoder {
             .collect::<Vec<_>>();
         for bin_id in closed_bin_ids {
             self.received_bins.remove(&bin_id);
+        }
+        let stale_cache_bin_ids = self
+            .decoded_prefix_bin_xors
+            .keys()
+            .copied()
+            .filter(|&bin_id| self.bin_has_no_undecoded_touchers(bin_id))
+            .collect::<Vec<_>>();
+        for bin_id in stale_cache_bin_ids {
             self.decoded_prefix_bin_xors.remove(&bin_id);
         }
     }
@@ -239,6 +247,12 @@ mod tests {
         assert_eq!(decoder.next_decoded_source_id, 1);
         assert!(decoder.seen_bin_ids.contains(&0));
         assert!(decoder.received_bins.is_empty());
+        assert!(
+            decoder
+                .decoded_prefix_bin_xors
+                .keys()
+                .all(|&bin_id| !decoder.bin_has_no_undecoded_touchers(bin_id))
+        );
     }
 
     #[test]
