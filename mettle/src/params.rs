@@ -34,6 +34,26 @@ impl OverheadRatio {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MettleParams {
+    overhead: OverheadRatio,
+}
+
+impl MettleParams {
+    pub const EDGE_COUNT: usize = 4;
+    pub const COUPLING_WINDOW: u64 = 600;
+    pub const NON_TLE_PROFILE: [(u32, u32); 3] = [(1, 2), (1, 4), (1, 8)];
+
+    pub const fn new(overhead: OverheadRatio) -> Self {
+        Self { overhead }
+    }
+
+    pub const fn overhead(self) -> OverheadRatio {
+        self.overhead
+    }
+
+}
+
 const fn gcd(mut lhs: u32, mut rhs: u32) -> u32 {
     while rhs != 0 {
         let remainder = lhs % rhs;
@@ -45,7 +65,7 @@ const fn gcd(mut lhs: u32, mut rhs: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{OverheadRatio, ParamsError};
+    use super::{MettleParams, OverheadRatio, ParamsError};
 
     #[test]
     fn overhead_rejects_zero_denominator() {
@@ -70,5 +90,19 @@ mod tests {
             OverheadRatio::new(1, 20).expect("valid overhead"),
             OverheadRatio::new(2, 40).expect("valid overhead")
         );
+    }
+
+    #[test]
+    fn mettle_params_keep_constructor_fields() {
+        let overhead = OverheadRatio::new(1, 20).expect("valid overhead");
+        let params = MettleParams::new(overhead);
+        assert_eq!(params.overhead(), overhead);
+    }
+
+    #[test]
+    fn mettle_defaults_match_paper_profile() {
+        assert_eq!(MettleParams::EDGE_COUNT, 4);
+        assert_eq!(MettleParams::COUPLING_WINDOW, 600);
+        assert_eq!(MettleParams::NON_TLE_PROFILE, [(1, 2), (1, 4), (1, 8)]);
     }
 }

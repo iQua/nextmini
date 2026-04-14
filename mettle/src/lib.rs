@@ -1,3 +1,3 @@
 mod params;
 
-pub use params::{OverheadRatio, ParamsError};
+pub use params::{MettleParams, OverheadRatio, ParamsError};
