@@ -1,4 +1,6 @@
 mod decoder;
+#[cfg(test)]
+mod decode_speed;
 mod encoder;
 mod params;
 #[cfg(test)]
