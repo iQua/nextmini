@@ -74,20 +74,30 @@ impl MettleParams {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn second_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
-        let eta = sample_half_binomial(
-            self.second_edge_trials(source_id),
-            mix_entropy(seed, source_id, 2),
-        );
-        self.second_edge_bin_id_for_eta(source_id, eta)
+        self.non_tle_edge_bin_id(source_id, seed, 2, Self::NON_TLE_PROFILE[0].1)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
-    fn second_edge_trials(self, source_id: u64) -> u128 {
+    fn third_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
+        self.non_tle_edge_bin_id(source_id, seed, 3, Self::NON_TLE_PROFILE[1].1)
+    }
+
+    fn non_tle_trials(self, source_id: u64) -> u128 {
         self.window_end_exclusive(source_id) - self.tle_bin_id(source_id) - 1
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn second_edge_bin_id_for_eta(self, source_id: u64, eta: u128) -> u128 {
+    fn non_tle_edge_bin_id(
+        self,
+        source_id: u64,
+        seed: u64,
+        edge_index: u64,
+        denominator: u32,
+    ) -> u128 {
+        let eta = sample_power_of_two_binomial(
+            self.non_tle_trials(source_id),
+            denominator,
+            mix_entropy(seed, source_id, edge_index),
+        );
         self.window_end_exclusive(source_id) - 1 - eta
     }
 }
@@ -107,12 +117,14 @@ fn mix_entropy(seed: u64, source_id: u64, edge_index: u64) -> u64 {
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
-fn sample_half_binomial(trials: u128, mut state: u64) -> u128 {
+fn sample_power_of_two_binomial(trials: u128, denominator: u32, mut state: u64) -> u128 {
+    debug_assert!(denominator.is_power_of_two());
+    let mask = u64::from(denominator - 1);
     let mut successes = 0;
     let mut remaining = trials;
 
     while remaining != 0 {
-        if next_entropy(&mut state) & 1 == 0 {
+        if next_entropy(&mut state) & mask == 0 {
             successes += 1;
         }
         remaining -= 1;
@@ -222,14 +234,39 @@ mod tests {
     #[test]
     fn second_edge_uses_full_half_open_support_at_the_left_boundary() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.second_edge_trials(0), 629);
-        assert_eq!(params.second_edge_bin_id_for_eta(0, 0), 629);
-        assert_eq!(params.second_edge_bin_id_for_eta(0, 629), 0);
+        assert_eq!(params.non_tle_trials(0), 629);
+        assert_eq!(params.window_end_exclusive(0) - 1, 629);
+        assert_eq!(params.window_end_exclusive(0) - 1 - params.non_tle_trials(0), 0);
     }
 
     #[test]
     fn second_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 363);
+    }
+
+    #[test]
+    fn third_edge_stays_inside_half_open_window() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_id = 37;
+        let edge = params.third_edge_bin_id(source_id, 0x1234_5678_9ABC_DEF0);
+
+        assert!(params.tle_bin_id(source_id) <= edge);
+        assert!(edge < params.window_end_exclusive(source_id));
+    }
+
+    #[test]
+    fn third_edge_is_deterministic_for_same_seed() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let first = params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+        let second = params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn third_edge_matches_fixed_golden() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 509);
     }
 }
