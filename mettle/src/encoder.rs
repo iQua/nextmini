@@ -16,7 +16,8 @@ impl MettleBin {
         Self { bin_id, payload }
     }
 
-    pub(crate) fn bin_id(&self) -> u128 {
+    #[cfg(test)]
+    pub(super) fn bin_id(&self) -> u128 {
         self.bin_id
     }
 
