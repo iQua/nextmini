@@ -321,4 +321,5 @@ mod tests {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 590);
     }
+
 }
