@@ -32,27 +32,55 @@ pub(crate) struct MettleEncoder {
     source_symbol_bytes: NonZeroUsize,
     next_source_id: u64,
     seed: u64,
+    terminal_source_count: Option<u64>,
     open_bins: BTreeMap<u128, Vec<u8>>,
 }
 
 impl MettleEncoder {
     pub(crate) fn new(params: MettleParams, source_symbol_bytes: NonZeroUsize, seed: u64) -> Self {
+        Self::new_with_terminal_source_count(params, source_symbol_bytes, seed, None)
+    }
+
+    pub(crate) fn new_terminated(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Self {
+        Self::new_with_terminal_source_count(
+            params,
+            source_symbol_bytes,
+            seed,
+            Some(terminal_source_count),
+        )
+    }
+
+    fn new_with_terminal_source_count(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+    ) -> Self {
         Self {
             params,
             source_symbol_bytes,
             next_source_id: 0,
             seed,
+            terminal_source_count,
             open_bins: BTreeMap::new(),
         }
     }
 
     pub(crate) fn push_source(&mut self, payload: &[u8]) -> Vec<MettleBin> {
         assert!(payload.len() <= self.source_symbol_bytes.get());
+        if let Some(terminal_source_count) = self.terminal_source_count {
+            assert!(self.next_source_id < terminal_source_count);
+        }
 
         let mut padded = vec![0; self.source_symbol_bytes.get()];
         padded[..payload.len()].copy_from_slice(payload);
 
-        for bin_id in self.params.edge_bin_ids(self.next_source_id, self.seed) {
+        for bin_id in self.edge_bin_ids(self.next_source_id) {
             let entry = self
                 .open_bins
                 .entry(bin_id)
@@ -66,6 +94,14 @@ impl MettleEncoder {
 
     pub(crate) fn finish(mut self) -> Vec<MettleBin> {
         self.take_finalized_bins(u128::MAX)
+    }
+
+    fn edge_bin_ids(&self, source_id: u64) -> [u128; MettleParams::EDGE_COUNT] {
+        self.params.edge_bin_ids_with_terminal_source_count(
+            source_id,
+            self.seed,
+            self.terminal_source_count,
+        )
     }
 
     fn take_finalized_bins(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
@@ -102,6 +138,7 @@ mod tests {
         assert_eq!(encoder.source_symbol_bytes.get(), 1500);
         assert_eq!(encoder.next_source_id, 0);
         assert_eq!(encoder.seed, 7);
+        assert_eq!(encoder.terminal_source_count, None);
         assert!(encoder.open_bins.is_empty());
     }
 

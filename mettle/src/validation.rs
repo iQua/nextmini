@@ -21,8 +21,9 @@ const EXPECTED_SMALL_STREAM_BINS: [(u128, [u8; 2]); 11] = [
 fn small_source_stream() -> (MettleParams, NonZeroUsize, Vec<Vec<u8>>, Vec<MettleBin>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(2).expect("non-zero");
-    let mut encoder = MettleEncoder::new(params, source_symbol_bytes, 0);
     let sources = vec![vec![1, 2], vec![3, 4], vec![5, 6]];
+    let mut encoder =
+        MettleEncoder::new_terminated(params, source_symbol_bytes, 0, sources.len() as u64);
     let mut bins = Vec::new();
 
     for source in &sources {
@@ -36,9 +37,11 @@ fn small_source_stream() -> (MettleParams, NonZeroUsize, Vec<Vec<u8>>, Vec<Mettl
 fn decode_all_bins(
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
+    source_count: usize,
     bins: impl IntoIterator<Item = MettleBin>,
 ) -> Vec<DecodedSource> {
-    let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+    let mut decoder =
+        MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded = Vec::new();
 
     for bin in bins {
@@ -107,7 +110,7 @@ fn validation_harness_round_trips_a_small_stream() {
     let (params, source_symbol_bytes, sources, bins) = small_source_stream();
 
     assert_eq!(
-        decode_all_bins(params, source_symbol_bytes, bins)
+        decode_all_bins(params, source_symbol_bytes, sources.len(), bins)
             .iter()
             .map(DecodedSource::as_parts)
             .collect::<Vec<_>>(),

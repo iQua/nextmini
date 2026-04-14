@@ -31,6 +31,7 @@ pub(crate) struct MettleDecoder {
     source_symbol_bytes: NonZeroUsize,
     next_decoded_source_id: u64,
     seed: u64,
+    terminal_source_count: Option<u64>,
     decoded_prefix_payloads: Vec<Vec<u8>>,
     decoded_tle_prefix_xors: HashMap<u128, Vec<u8>>,
     seen_bin_ids: HashSet<u128>,
@@ -39,11 +40,35 @@ pub(crate) struct MettleDecoder {
 
 impl MettleDecoder {
     pub(crate) fn new(params: MettleParams, source_symbol_bytes: NonZeroUsize, seed: u64) -> Self {
+        Self::new_with_terminal_source_count(params, source_symbol_bytes, seed, None)
+    }
+
+    pub(crate) fn new_terminated(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Self {
+        Self::new_with_terminal_source_count(
+            params,
+            source_symbol_bytes,
+            seed,
+            Some(terminal_source_count),
+        )
+    }
+
+    fn new_with_terminal_source_count(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+    ) -> Self {
         Self {
             params,
             source_symbol_bytes,
             next_decoded_source_id: 0,
             seed,
+            terminal_source_count,
             decoded_prefix_payloads: Vec::new(),
             decoded_tle_prefix_xors: HashMap::new(),
             seen_bin_ids: HashSet::new(),
@@ -116,18 +141,18 @@ impl MettleDecoder {
         let source_id = self.next_decoded_source_id;
         self.decoded_prefix_payloads.push(payload.clone());
         self.next_decoded_source_id += 1;
+        self.drop_bins_closed_by_prefix();
         DecodedSource { source_id, payload }
     }
 
     fn find_unique_bin_for_next_source(&self) -> Option<u128> {
-        self.params
-            .edge_bin_ids(self.next_decoded_source_id, self.seed)
+        self.edge_bin_ids(self.next_decoded_source_id)
             .into_iter()
             .find(|&bin_id| self.received_bins.get(&bin_id).is_some_and(|bin| bin.remaining_touchers == 1))
     }
 
     fn apply_decoded_source_edges(&mut self, source_id: u64, payload: &[u8]) {
-        for bin_id in self.params.edge_bin_ids(source_id, self.seed) {
+        for bin_id in self.edge_bin_ids(source_id) {
             if let Some(bin) = self.received_bins.get_mut(&bin_id) {
                 xor_payload(&mut bin.payload, payload);
                 bin.remaining_touchers = bin.remaining_touchers.saturating_sub(1);
@@ -149,24 +174,38 @@ impl MettleDecoder {
             }
             return;
         }
-        let Some(latest_source_id) = self.latest_source_id_for_bin(bin_id) else {
+        let Some(latest_source_id) = self.latest_possible_source_id_for_bin(bin_id) else {
             return;
         };
         let earliest_source_id =
             latest_source_id.saturating_sub(MettleParams::COUPLING_WINDOW - 1);
 
         for source_id in earliest_source_id..self.next_decoded_source_id.min(latest_source_id + 1) {
-            if self.params.edge_bin_ids(source_id, self.seed).contains(&bin_id) {
+            if self.edge_bin_ids(source_id).contains(&bin_id) {
                 xor_payload(payload, &self.decoded_prefix_payloads[source_id as usize]);
             }
         }
     }
 
     fn bin_has_no_undecoded_touchers(&self, bin_id: u128) -> bool {
+        if self
+            .terminal_source_count
+            .is_some_and(|terminal_source_count| self.next_decoded_source_id >= terminal_source_count)
+        {
+            return true;
+        }
         bin_id < self.params.tle_bin_id(self.next_decoded_source_id)
     }
 
     fn drop_bins_closed_by_prefix(&mut self) {
+        if self
+            .terminal_source_count
+            .is_some_and(|terminal_source_count| self.next_decoded_source_id >= terminal_source_count)
+        {
+            self.received_bins.clear();
+            self.decoded_tle_prefix_xors.clear();
+            return;
+        }
         let frontier = self.params.tle_bin_id(self.next_decoded_source_id);
         self.received_bins = self.received_bins.split_off(&frontier);
         self.decoded_tle_prefix_xors
@@ -174,7 +213,7 @@ impl MettleDecoder {
     }
 
     fn count_remaining_touchers(&self, bin_id: u128) -> u16 {
-        let Some(latest_source_id) = self.latest_source_id_for_bin(bin_id) else {
+        let Some(latest_source_id) = self.latest_possible_source_id_for_bin(bin_id) else {
             return 0;
         };
         let earliest_source_id = latest_source_id
@@ -183,7 +222,7 @@ impl MettleDecoder {
         let mut count = 0u16;
 
         for source_id in earliest_source_id..=latest_source_id {
-            if self.params.edge_bin_ids(source_id, self.seed).contains(&bin_id) {
+            if self.edge_bin_ids(source_id).contains(&bin_id) {
                 count += 1;
             }
         }
@@ -192,8 +231,25 @@ impl MettleDecoder {
     }
 
     fn is_tle_bin_id(&self, bin_id: u128) -> bool {
-        self.latest_source_id_for_bin(bin_id)
+        self.latest_possible_source_id_for_bin(bin_id)
             .is_some_and(|source_id| self.params.tle_bin_id(source_id) == bin_id)
+    }
+
+    fn edge_bin_ids(&self, source_id: u64) -> [u128; MettleParams::EDGE_COUNT] {
+        self.params.edge_bin_ids_with_terminal_source_count(
+            source_id,
+            self.seed,
+            self.terminal_source_count,
+        )
+    }
+
+    fn latest_possible_source_id_for_bin(&self, bin_id: u128) -> Option<u64> {
+        let latest_source_id = self.latest_source_id_for_bin(bin_id)?;
+        match self.terminal_source_count {
+            Some(0) => None,
+            Some(terminal_source_count) => Some(latest_source_id.min(terminal_source_count - 1)),
+            None => Some(latest_source_id),
+        }
     }
 
     fn latest_source_id_for_bin(&self, bin_id: u128) -> Option<u64> {
