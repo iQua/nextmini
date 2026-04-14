@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
 
 use crate::decoder::{DecodedSource, MettleDecoder};
@@ -39,15 +38,11 @@ fn decode_kept_bins(
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
     bins: impl IntoIterator<Item = MettleBin>,
-    erased_bin_ids: &BTreeSet<u128>,
 ) -> (MettleDecoder, Vec<DecodedSource>) {
     let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
     let mut decoded = Vec::new();
 
     for bin in bins {
-        if erased_bin_ids.contains(&bin.bin_id()) {
-            continue;
-        }
         decoded.extend(decoder.push_bin(bin));
     }
 
@@ -63,6 +58,7 @@ fn split_out_bin(
 
     for bin in bins {
         if bin.bin_id() == selected_bin_id {
+            assert!(selected_bin.is_none(), "selected bin id must be unique");
             selected_bin = Some(bin);
         } else {
             kept_bins.push(bin);
@@ -70,6 +66,14 @@ fn split_out_bin(
     }
 
     (kept_bins, selected_bin.expect("selected bin"))
+}
+
+fn expected_small_stream_decoded(sources: &[Vec<u8>]) -> Vec<(u64, &[u8])> {
+    vec![
+        (0, sources[0].as_slice()),
+        (1, sources[1].as_slice()),
+        (2, sources[2].as_slice()),
+    ]
 }
 
 #[test]
@@ -81,11 +85,7 @@ fn validation_harness_round_trips_a_small_stream() {
             .iter()
             .map(DecodedSource::as_parts)
             .collect::<Vec<_>>(),
-        vec![
-            (0, sources[0].as_slice()),
-            (1, sources[1].as_slice()),
-            (2, sources[2].as_slice()),
-        ]
+        expected_small_stream_decoded(&sources)
     );
 }
 
@@ -93,21 +93,15 @@ fn validation_harness_round_trips_a_small_stream() {
 fn validation_harness_stalls_until_a_missing_prefix_bin_is_replayed() {
     let (params, source_symbol_bytes, sources, bins) = small_source_stream();
     let missing_prefix_bin_id = params.tle_bin_id(0);
-    let erased_bin_ids = BTreeSet::from([missing_prefix_bin_id]);
     let (kept_bins, missing_prefix_bin) = split_out_bin(bins, missing_prefix_bin_id);
-    let (mut decoder, mut decoded) =
-        decode_kept_bins(params, source_symbol_bytes, kept_bins, &erased_bin_ids);
+    let (mut decoder, mut decoded) = decode_kept_bins(params, source_symbol_bytes, kept_bins);
 
     assert!(decoded.is_empty());
 
     decoded.extend(decoder.push_bin(missing_prefix_bin));
     assert_eq!(
         decoded.iter().map(DecodedSource::as_parts).collect::<Vec<_>>(),
-        vec![
-            (0, sources[0].as_slice()),
-            (1, sources[1].as_slice()),
-            (2, sources[2].as_slice()),
-        ]
+        expected_small_stream_decoded(&sources)
     );
 }
 
@@ -119,6 +113,31 @@ fn validation_harness_matches_small_stream_bin_goldens() {
         bins.into_iter().map(MettleBin::into_parts).collect::<Vec<_>>(),
         vec![
             (0, vec![1, 2]),
+            (1, vec![3, 4]),
+            (2, vec![5, 6]),
+            (332, vec![3, 4]),
+            (334, vec![5, 6]),
+            (336, vec![1, 2]),
+            (482, vec![2, 6]),
+            (494, vec![5, 6]),
+            (547, vec![1, 2]),
+            (556, vec![3, 4]),
+            (570, vec![5, 6]),
+        ]
+    );
+}
+
+#[test]
+fn validation_harness_matches_kept_bin_goldens_after_prefix_erasure() {
+    let (params, _, _, bins) = small_source_stream();
+    let (kept_bins, _) = split_out_bin(bins, params.tle_bin_id(0));
+
+    assert_eq!(
+        kept_bins
+            .into_iter()
+            .map(MettleBin::into_parts)
+            .collect::<Vec<_>>(),
+        vec![
             (1, vec![3, 4]),
             (2, vec![5, 6]),
             (332, vec![3, 4]),
