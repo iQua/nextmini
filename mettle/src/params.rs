@@ -82,6 +82,11 @@ impl MettleParams {
         self.non_tle_edge_bin_id(source_id, seed, 3, Self::NON_TLE_PROFILE[1].1)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
+    fn fourth_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
+        self.non_tle_edge_bin_id(source_id, seed, 4, Self::NON_TLE_PROFILE[2].1)
+    }
+
     fn non_tle_trials(self, source_id: u64) -> u128 {
         self.window_end_exclusive(source_id) - self.tle_bin_id(source_id) - 1
     }
@@ -268,5 +273,38 @@ mod tests {
     fn third_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 509);
+    }
+
+    #[test]
+    fn fourth_edge_stays_inside_half_open_window() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_id = 37;
+        let edge = params.fourth_edge_bin_id(source_id, 0x1234_5678_9ABC_DEF0);
+
+        assert!(params.tle_bin_id(source_id) <= edge);
+        assert!(edge < params.window_end_exclusive(source_id));
+    }
+
+    #[test]
+    fn fourth_edge_handles_the_left_boundary_case() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let edge = params.fourth_edge_bin_id(0, 0x1234_5678_9ABC_DEF0);
+
+        assert!(edge < params.window_end_exclusive(0));
+    }
+
+    #[test]
+    fn fourth_edge_is_deterministic_for_same_seed() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let first = params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+        let second = params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0);
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn fourth_edge_matches_fixed_golden() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 590);
     }
 }
