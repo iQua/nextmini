@@ -11,6 +11,16 @@ pub(crate) struct MettleBin {
     payload: Vec<u8>,
 }
 
+impl MettleBin {
+    pub(crate) fn new(bin_id: u128, payload: Vec<u8>) -> Self {
+        Self { bin_id, payload }
+    }
+
+    pub(crate) fn into_parts(self) -> (u128, Vec<u8>) {
+        (self.bin_id, self.payload)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MettleEncoder {
     params: MettleParams,
