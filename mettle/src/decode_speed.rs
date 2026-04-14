@@ -7,8 +7,10 @@ use crate::decoder::MettleDecoder;
 use crate::encoder::{MettleBin, MettleEncoder};
 use crate::{MettleParams, OverheadRatio};
 
-const BENCH_SOURCE_COUNT: usize = 32;
-const BENCH_SYMBOL_SIZE: usize = 64;
+// Table V in the paper reports RaptorQ decode cost at representative
+// latency-matched block sizes including k = 127.
+const BENCH_SOURCE_COUNT: usize = 127;
+const BENCH_SYMBOL_SIZE: usize = 1500;
 
 fn benchmark_sources() -> Vec<Vec<u8>> {
     (0..BENCH_SOURCE_COUNT)
@@ -28,17 +30,31 @@ fn mettle_decode_fixture() -> (MettleParams, NonZeroUsize, Vec<MettleBin>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(BENCH_SYMBOL_SIZE).expect("non-zero");
     let mut encoder = MettleEncoder::new(params, source_symbol_bytes, 0);
-    let mut bins = Vec::new();
+    let mut emitted_bins = Vec::new();
 
     for source in benchmark_sources() {
-        bins.extend(encoder.push_source(&source));
+        emitted_bins.extend(encoder.push_source(&source));
     }
-    bins.extend(encoder.finish());
+    emitted_bins.extend(encoder.finish());
 
-    (params, source_symbol_bytes, bins)
+    let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
+    let mut decoded_sources = 0usize;
+    let mut completion_prefix = Vec::new();
+
+    for bin in emitted_bins {
+        decoded_sources += decoder.push_bin(bin.clone()).len();
+        completion_prefix.push(bin);
+        if decoded_sources == BENCH_SOURCE_COUNT {
+            return (params, source_symbol_bytes, completion_prefix);
+        }
+    }
+
+    panic!("METTLE fixture did not complete decode");
 }
 
-fn raptorq_decode_fixture() -> (ObjectTransmissionInformation, u64, Vec<EncodingPacket>, Vec<u8>) {
+fn raptorq_decode_fixture(
+    target_packet_count: usize,
+) -> (ObjectTransmissionInformation, u64, Vec<EncodingPacket>, Vec<u8>) {
     let oti = ObjectTransmissionInformation::new(
         (BENCH_SOURCE_COUNT * BENCH_SYMBOL_SIZE) as u64,
         BENCH_SYMBOL_SIZE as u16,
@@ -48,13 +64,18 @@ fn raptorq_decode_fixture() -> (ObjectTransmissionInformation, u64, Vec<Encoding
     );
     let flat_data = benchmark_flat_data();
     let encoder = SourceBlockEncoder::new(0, &oti, &flat_data);
-    let half_source_count = BENCH_SOURCE_COUNT / 2;
-    let mut packets = encoder.source_packets().into_iter().take(half_source_count).collect::<Vec<_>>();
+    let source_packet_count = BENCH_SOURCE_COUNT.min(target_packet_count);
+    let repair_packet_count = target_packet_count.saturating_sub(source_packet_count);
+    let mut packets = encoder
+        .source_packets()
+        .into_iter()
+        .take(source_packet_count)
+        .collect::<Vec<_>>();
     packets.extend(encoder.repair_packets(
         0,
-        (BENCH_SOURCE_COUNT - half_source_count)
+        repair_packet_count
             .try_into()
-            .expect("benchmark source count fits in u32"),
+            .expect("benchmark packet count fits in u32"),
     ));
 
     (oti, flat_data.len() as u64, packets, flat_data)
@@ -63,12 +84,15 @@ fn raptorq_decode_fixture() -> (ObjectTransmissionInformation, u64, Vec<Encoding
 #[test]
 fn decode_speed_fixtures_build() {
     let (_, _, mettle_bins) = mettle_decode_fixture();
-    let (oti, block_length, packets, flat_data) = raptorq_decode_fixture();
+    let (oti, block_length, packets, flat_data) = raptorq_decode_fixture(mettle_bins.len());
+    let packet_count = packets.len();
     let decoded = SourceBlockDecoder::new(0, &oti, block_length)
         .decode(packets)
         .expect("raptorq fixture should decode");
 
     assert!(!mettle_bins.is_empty());
+    assert!(mettle_bins.len() >= BENCH_SOURCE_COUNT);
+    assert_eq!(packet_count, mettle_bins.len());
     assert_eq!(decoded, flat_data);
     assert_eq!(decoded.len(), BENCH_SOURCE_COUNT * BENCH_SYMBOL_SIZE);
 }
@@ -76,12 +100,12 @@ fn decode_speed_fixtures_build() {
 fn mettle_decode_once(
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
-    bins: &[MettleBin],
+    bins: Vec<MettleBin>,
 ) -> usize {
     let mut decoder = MettleDecoder::new(params, source_symbol_bytes, 0);
     let mut decoded = Vec::new();
 
-    for bin in bins.iter().cloned() {
+    for bin in bins {
         decoded.extend(decoder.push_bin(bin));
     }
 
@@ -91,10 +115,10 @@ fn mettle_decode_once(
 fn raptorq_decode_once(
     oti: &ObjectTransmissionInformation,
     block_length: u64,
-    packets: &[EncodingPacket],
+    packets: Vec<EncodingPacket>,
 ) -> usize {
     SourceBlockDecoder::new(0, oti, block_length)
-        .decode(packets.to_vec())
+        .decode(packets)
         .expect("raptorq fixture should decode")
         .len()
         / BENCH_SYMBOL_SIZE
@@ -105,31 +129,39 @@ fn raptorq_decode_once(
 fn report_decode_speed_ratio() {
     const ITERATIONS: usize = 5;
     let (mettle_params, mettle_symbol_bytes, mettle_bins) = mettle_decode_fixture();
-    let (raptorq_oti, raptorq_block_length, raptorq_packets, _) = raptorq_decode_fixture();
+    let mettle_packet_count = mettle_bins.len();
+    let (raptorq_oti, raptorq_block_length, raptorq_packets, _) =
+        raptorq_decode_fixture(mettle_packet_count);
+    let mettle_runs = (0..ITERATIONS)
+        .map(|_| mettle_bins.clone())
+        .collect::<Vec<_>>();
+    let raptorq_runs = (0..ITERATIONS)
+        .map(|_| raptorq_packets.clone())
+        .collect::<Vec<_>>();
 
     let mettle_start = Instant::now();
     let mut mettle_decoded = 0;
-    for _ in 0..ITERATIONS {
-        mettle_decoded += mettle_decode_once(mettle_params, mettle_symbol_bytes, &mettle_bins);
+    for bins in mettle_runs {
+        mettle_decoded += mettle_decode_once(mettle_params, mettle_symbol_bytes, bins);
     }
     let mettle_elapsed = mettle_start.elapsed();
 
     let raptorq_start = Instant::now();
     let mut raptorq_decoded = 0;
-    for _ in 0..ITERATIONS {
-        raptorq_decoded += raptorq_decode_once(&raptorq_oti, raptorq_block_length, &raptorq_packets);
+    for packets in raptorq_runs {
+        raptorq_decoded += raptorq_decode_once(&raptorq_oti, raptorq_block_length, packets);
     }
     let raptorq_elapsed = raptorq_start.elapsed();
 
     assert_eq!(mettle_decoded, ITERATIONS * BENCH_SOURCE_COUNT);
     assert_eq!(raptorq_decoded, ITERATIONS * BENCH_SOURCE_COUNT);
 
-    let mettle_ns_per_source = mettle_elapsed.as_nanos() / (ITERATIONS as u128 * BENCH_SOURCE_COUNT as u128);
-    let raptorq_ns_per_source =
-        raptorq_elapsed.as_nanos() / (ITERATIONS as u128 * BENCH_SOURCE_COUNT as u128);
-    let ratio = raptorq_ns_per_source as f64 / mettle_ns_per_source as f64;
+    let total_packets = ITERATIONS as u128 * mettle_packet_count as u128;
+    let mettle_ns_per_packet = mettle_elapsed.as_nanos() / total_packets;
+    let raptorq_ns_per_packet = raptorq_elapsed.as_nanos() / total_packets;
+    let ratio = raptorq_ns_per_packet as f64 / mettle_ns_per_packet as f64;
 
     eprintln!(
-        "mettle_ns_per_source={mettle_ns_per_source} raptorq_ns_per_source={raptorq_ns_per_source} ratio={ratio:.2}"
+        "packet_count={mettle_packet_count} mettle_ns_per_packet={mettle_ns_per_packet} raptorq_ns_per_packet={raptorq_ns_per_packet} ratio={ratio:.2}"
     );
 }
