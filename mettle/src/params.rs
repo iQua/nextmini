@@ -52,8 +52,7 @@ impl MettleParams {
         self.overhead
     }
 
-    #[cfg_attr(not(test), allow(dead_code))]
-    fn tle_bin_id(self, source_id: u64) -> u128 {
+    pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
         let expansion_numerator =
             u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator());
         (u128::from(source_id) * expansion_numerator) / u128::from(self.overhead.denominator())
@@ -85,6 +84,15 @@ impl MettleParams {
     #[cfg_attr(not(test), allow(dead_code))]
     fn fourth_edge_bin_id(self, source_id: u64, seed: u64) -> u128 {
         self.non_tle_edge_bin_id(source_id, seed, 4, Self::NON_TLE_PROFILE[2].1)
+    }
+
+    pub(crate) fn edge_bin_ids(self, source_id: u64, seed: u64) -> [u128; Self::EDGE_COUNT] {
+        [
+            self.tle_bin_id(source_id),
+            self.second_edge_bin_id(source_id, seed),
+            self.third_edge_bin_id(source_id, seed),
+            self.fourth_edge_bin_id(source_id, seed),
+        ]
     }
 
     fn non_tle_trials(self, source_id: u64) -> u128 {
