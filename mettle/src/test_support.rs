@@ -70,6 +70,10 @@ impl Decoder {
         self.0.next_source_id()
     }
 
+    pub fn buffered_bin_remaining_touchers(&self, bin_id: u128) -> Option<u16> {
+        self.0.buffered_bin_remaining_touchers(bin_id)
+    }
+
     pub fn skip_next_source_without_edges(&mut self) -> usize {
         self.0.skip_next_source_without_edges().len()
     }

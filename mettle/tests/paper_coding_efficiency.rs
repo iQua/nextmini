@@ -288,7 +288,52 @@ fn mettle_trial_outcome(
     seed: u64,
     source_count: usize,
 ) -> MettleTrialOutcome {
-    let params = mettle_params(case.mettle_overhead_ratio);
+    let params = case_params(case);
+    let terminal_source_count = source_count as u64;
+    let (mut decoder, delivered_bin_ids) = replay_mettle_trial(case, seed, source_count);
+
+    loop {
+        let next_source_id = decoder.next_source_id();
+        if next_source_id == terminal_source_count {
+            return MettleTrialOutcome::Success;
+        }
+        let stalled_run_length = isolated_error_floor_run_length(
+            params,
+            next_source_id,
+            terminal_source_count,
+            &delivered_bin_ids,
+        );
+        if stalled_run_length == 0 {
+            return MettleTrialOutcome::Stalled {
+                next_source_id,
+                stalled_run_length,
+                remaining_sources: terminal_source_count - next_source_id,
+            };
+        }
+        if stalled_run_length != 1 {
+            return MettleTrialOutcome::Stalled {
+                next_source_id,
+                stalled_run_length,
+                remaining_sources: terminal_source_count - next_source_id,
+            };
+        }
+        let _ = decoder.skip_next_source_without_edges();
+    }
+}
+
+fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> bool {
+    matches!(
+        mettle_trial_outcome(case, seed, source_count),
+        MettleTrialOutcome::Success
+    )
+}
+
+fn replay_mettle_trial(
+    case: CodingEfficiencyCase,
+    seed: u64,
+    source_count: usize,
+) -> (TestDecoder, HashSet<u128>) {
+    let params = case_params(case);
     let source_symbol_bytes =
         NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
     let terminal_source_count = source_count as u64;
@@ -328,40 +373,7 @@ fn mettle_trial_outcome(
         );
     }
 
-    loop {
-        let next_source_id = decoder.next_source_id();
-        if next_source_id == terminal_source_count {
-            return MettleTrialOutcome::Success;
-        }
-        let stalled_run_length = isolated_error_floor_run_length(
-            params,
-            next_source_id,
-            terminal_source_count,
-            &delivered_bin_ids,
-        );
-        if stalled_run_length == 0 {
-            return MettleTrialOutcome::Stalled {
-                next_source_id,
-                stalled_run_length,
-                remaining_sources: terminal_source_count - next_source_id,
-            };
-        }
-        if stalled_run_length != 1 {
-            return MettleTrialOutcome::Stalled {
-                next_source_id,
-                stalled_run_length,
-                remaining_sources: terminal_source_count - next_source_id,
-            };
-        }
-        let _ = decoder.skip_next_source_without_edges();
-    }
-}
-
-fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> bool {
-    matches!(
-        mettle_trial_outcome(case, seed, source_count),
-        MettleTrialOutcome::Success
-    )
+    (decoder, delivered_bin_ids)
 }
 
 fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
@@ -392,13 +404,34 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
             } => {
                 failures += 1;
                 if print_first_failure && failures == 1 {
+                    let (decoder, delivered_bin_ids) =
+                        replay_mettle_trial(case, trial as u64 + 1, source_count);
+                    let edge_bin_ids = edge_bin_ids_with_terminal_source_count(
+                        case_params(case),
+                        next_source_id,
+                        PAPER_CODING_EFFICIENCY_METTLE_SEED,
+                        Some(source_count as u64),
+                    );
+                    let edge_details = edge_bin_ids
+                        .into_iter()
+                        .map(|bin_id| {
+                            format!(
+                                "{}:delivered={}:remaining={:?}",
+                                bin_id,
+                                delivered_bin_ids.contains(&bin_id),
+                                decoder.buffered_bin_remaining_touchers(bin_id)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", ");
                     eprintln!(
-                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={}",
+                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} edges=[{}]",
                         case.name,
                         trial + 1,
                         next_source_id,
                         stalled_run_length,
                         remaining_sources,
+                        edge_details,
                     );
                 }
             }
@@ -492,6 +525,10 @@ impl SplitMix64 {
 
 const fn div_ceil(lhs: usize, rhs: usize) -> usize {
     lhs / rhs + ((lhs % rhs) != 0) as usize
+}
+
+fn case_params(case: CodingEfficiencyCase) -> MettleParams {
+    mettle_params(case.mettle_overhead_ratio)
 }
 
 #[test]
