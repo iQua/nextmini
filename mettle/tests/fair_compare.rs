@@ -1,10 +1,8 @@
 use std::num::NonZeroUsize;
 
+use mettle::test_support::{Decoder as TestDecoder, Encoder as TestEncoder};
+use mettle::{MettleParams, OverheadRatio};
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
-
-use crate::decoder::{DecodedSource, MettleDecoder};
-use crate::encoder::MettleEncoder;
-use crate::{MettleParams, OverheadRatio};
 
 const COMPARE_SYMBOL_SIZE: usize = 1500;
 const COMPARE_SOURCE_COUNT: usize = 127;
@@ -77,7 +75,8 @@ fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
 fn mettle_compare_outcome(source_count: usize, scenario: CompareScenario) -> CompareOutcome {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(COMPARE_SYMBOL_SIZE).expect("non-zero");
-    let mut encoder = MettleEncoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
+    let mut encoder =
+        TestEncoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut emitted_bins = Vec::new();
 
     for source in compare_sources(source_count) {
@@ -85,24 +84,20 @@ fn mettle_compare_outcome(source_count: usize, scenario: CompareScenario) -> Com
     }
     emitted_bins.extend(encoder.finish());
 
-    let mut decoder = MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
+    let mut decoder =
+        TestDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded_sources = Vec::new();
     let mut sent_packets = 0usize;
     let mut delivered_packets = 0usize;
     let expected = expected_mettle_decode(source_count);
 
-    for (packet_ordinal, bin) in emitted_bins.into_iter().enumerate() {
+    for (packet_ordinal, (bin_id, payload)) in emitted_bins.into_iter().enumerate() {
         sent_packets += 1;
         if !scenario.keeps_packet(packet_ordinal as u64) {
             continue;
         }
         delivered_packets += 1;
-        decoded_sources.extend(
-            decoder
-                .push_bin(bin)
-                .into_iter()
-                .map(DecodedSource::into_parts),
-        );
+        decoded_sources.extend(decoder.push_bin(bin_id, payload));
         if decoded_sources.len() == source_count {
             assert_eq!(decoded_sources, expected);
             return CompareOutcome {
@@ -154,7 +149,10 @@ fn raptorq_compare_outcome(source_count: usize, scenario: CompareScenario) -> Co
             }
         }
 
-        assert!(sent_packets < max_sent_packets, "RaptorQ compare fixture exceeded the packet budget");
+        assert!(
+            sent_packets < max_sent_packets,
+            "RaptorQ compare fixture exceeded the packet budget"
+        );
         let packet = encoder
             .repair_packets(next_repair_id, 1)
             .into_iter()

@@ -230,7 +230,7 @@ fn deliver_mettle_bin(
 ) {
     if channel_state.delivers_next_packet() {
         delivered_bin_ids.insert(bin_id);
-        let _ = decoder.push_bin(bin_id, payload);
+        let _ = decoder.push_bin(bin_id, payload).len();
     }
 }
 

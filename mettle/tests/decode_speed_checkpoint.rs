@@ -1,11 +1,9 @@
 use std::num::NonZeroUsize;
 use std::time::Instant;
 
+use mettle::test_support::{Decoder as TestDecoder, Encoder as TestEncoder};
+use mettle::{MettleParams, OverheadRatio};
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
-
-use crate::decoder::{DecodedSource, MettleDecoder};
-use crate::encoder::{MettleBin, MettleEncoder};
-use crate::{MettleParams, OverheadRatio};
 
 const BENCH_SYMBOL_SIZE: usize = 1500;
 const TABLE_V_SOURCE_COUNTS: [usize; 7] = [127, 257, 511, 1002, 2040, 4069, 8194];
@@ -32,10 +30,11 @@ fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Vec<MettleBin>) {
+fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Vec<(u128, Vec<u8>)>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(BENCH_SYMBOL_SIZE).expect("non-zero");
-    let mut encoder = MettleEncoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
+    let mut encoder =
+        TestEncoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut emitted_bins = Vec::new();
 
     for source in benchmark_sources(source_count) {
@@ -43,19 +42,15 @@ fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Ve
     }
     emitted_bins.extend(encoder.finish());
 
-    let mut decoder = MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
+    let mut decoder =
+        TestDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded_sources = Vec::new();
     let mut completion_prefix = Vec::new();
     let expected = expected_mettle_decode(source_count);
 
-    for bin in emitted_bins {
-        decoded_sources.extend(
-            decoder
-                .push_bin(bin.clone())
-                .into_iter()
-                .map(DecodedSource::into_parts),
-        );
-        completion_prefix.push(bin);
+    for (bin_id, payload) in emitted_bins {
+        decoded_sources.extend(decoder.push_bin(bin_id, payload.clone()));
+        completion_prefix.push((bin_id, payload));
         if decoded_sources.len() == source_count {
             assert_eq!(decoded_sources, expected);
             return (params, source_symbol_bytes, completion_prefix);
@@ -117,14 +112,14 @@ fn mettle_decode_once(
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
     source_count: usize,
-    bins: Vec<MettleBin>,
+    bins: Vec<(u128, Vec<u8>)>,
 ) -> usize {
     let mut decoder =
-        MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
+        TestDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded = 0;
 
-    for bin in bins {
-        decoded += decoder.push_bin(bin).len();
+    for (bin_id, payload) in bins {
+        decoded += decoder.push_bin(bin_id, payload).len();
     }
 
     decoded

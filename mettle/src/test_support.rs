@@ -1,6 +1,7 @@
 use std::num::NonZeroUsize;
 
 use crate::decoder::MettleDecoder;
+use crate::decoder::DecodedSource;
 use crate::encoder::{MettleBin, MettleEncoder};
 use crate::MettleParams;
 
@@ -57,8 +58,12 @@ impl Decoder {
         ))
     }
 
-    pub fn push_bin(&mut self, bin_id: u128, payload: Vec<u8>) -> usize {
-        self.0.push_bin(MettleBin::new(bin_id, payload)).len()
+    pub fn push_bin(&mut self, bin_id: u128, payload: Vec<u8>) -> Vec<(u64, Vec<u8>)> {
+        self.0
+            .push_bin(MettleBin::new(bin_id, payload))
+            .into_iter()
+            .map(DecodedSource::into_parts)
+            .collect()
     }
 
     pub fn next_source_id(&self) -> u64 {

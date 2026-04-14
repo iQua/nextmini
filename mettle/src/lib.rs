@@ -1,10 +1,7 @@
 mod decoder;
-#[cfg(test)]
-mod compare;
-#[cfg(test)]
-mod decode_speed;
 mod encoder;
 mod params;
+#[doc(hidden)]
 pub mod test_support;
 #[cfg(test)]
 mod validation;

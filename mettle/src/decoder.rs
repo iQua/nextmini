@@ -12,14 +12,14 @@ pub(crate) struct DecodedSource {
     payload: Vec<u8>,
 }
 
-#[cfg(test)]
 impl DecodedSource {
-    pub(super) fn as_parts(&self) -> (u64, &[u8]) {
-        (self.source_id, &self.payload)
-    }
-
     pub(crate) fn into_parts(self) -> (u64, Vec<u8>) {
         (self.source_id, self.payload)
+    }
+
+    #[cfg(test)]
+    pub(super) fn as_parts(&self) -> (u64, &[u8]) {
+        (self.source_id, &self.payload)
     }
 }
 
