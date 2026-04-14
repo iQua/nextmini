@@ -12,6 +12,13 @@ pub(crate) struct DecodedSource {
     payload: Vec<u8>,
 }
 
+#[cfg(test)]
+impl DecodedSource {
+    pub(crate) fn as_parts(&self) -> (u64, &[u8]) {
+        (self.source_id, &self.payload)
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MettleDecoder {
     params: MettleParams,
