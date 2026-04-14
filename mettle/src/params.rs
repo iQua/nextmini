@@ -61,6 +61,10 @@ impl MettleParams {
             / u128::from(self.overhead.denominator())
     }
 
+    pub(crate) fn departure_frontier_after_source_count(self, source_count: u64) -> u128 {
+        self.tle_bin_id(source_count)
+    }
+
     pub(crate) fn latest_source_id_for_bin(self, bin_id: u128) -> Option<u64> {
         let denominator = u128::from(self.overhead.denominator());
         let expansion_numerator = u128::from(self.overhead.numerator()) + denominator;
@@ -140,6 +144,30 @@ impl MettleParams {
     ) -> u128 {
         self.tle_bin_id(source_id)
             + self.window_width_with_terminal_source_count(source_id, terminal_source_count)
+    }
+
+    pub(crate) fn terminal_departure_end_exclusive(self, terminal_source_count: u64) -> u128 {
+        if terminal_source_count == 0 {
+            return 0;
+        }
+        let tail_source_count = terminal_source_count.min(Self::COUPLING_WINDOW);
+        let tail_start = terminal_source_count - tail_source_count;
+        let mut max_end_exclusive = if tail_start == 0 {
+            0
+        } else {
+            self.window_end_exclusive(tail_start - 1)
+        };
+
+        for source_id in tail_start..terminal_source_count {
+            max_end_exclusive = max_end_exclusive.max(
+                self.window_end_exclusive_with_terminal_source_count(
+                    source_id,
+                    Some(terminal_source_count),
+                ),
+            );
+        }
+
+        max_end_exclusive
     }
 
     pub(crate) fn possible_source_id_range_for_bin(

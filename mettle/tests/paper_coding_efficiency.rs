@@ -14,6 +14,16 @@ const PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE: usize = 1500;
 const TARGET_FAILURE_RATE: f64 = 1e-3;
 
 #[derive(Clone, Copy)]
+enum MettleTrialOutcome {
+    Success,
+    Stalled {
+        next_source_id: u64,
+        stalled_run_length: u64,
+        remaining_sources: u64,
+    },
+}
+
+#[derive(Clone, Copy)]
 struct Rational {
     numerator: u32,
     denominator: u32,
@@ -250,7 +260,34 @@ fn mettle_source_is_fully_erased(
         .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
 }
 
-fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> bool {
+fn isolated_error_floor_run_length(
+    params: MettleParams,
+    first_source_id: u64,
+    terminal_source_count: u64,
+    delivered_bin_ids: &HashSet<u128>,
+) -> u64 {
+    let mut run_length = 0;
+
+    for source_id in first_source_id..terminal_source_count {
+        if !mettle_source_is_fully_erased(
+            params,
+            source_id,
+            terminal_source_count,
+            delivered_bin_ids,
+        ) {
+            break;
+        }
+        run_length += 1;
+    }
+
+    run_length
+}
+
+fn mettle_trial_outcome(
+    case: CodingEfficiencyCase,
+    seed: u64,
+    source_count: usize,
+) -> MettleTrialOutcome {
     let params = mettle_params(case.mettle_overhead_ratio);
     let source_symbol_bytes =
         NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
@@ -294,18 +331,37 @@ fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: us
     loop {
         let next_source_id = decoder.next_source_id();
         if next_source_id == terminal_source_count {
-            return true;
+            return MettleTrialOutcome::Success;
         }
-        if !mettle_source_is_fully_erased(
+        let stalled_run_length = isolated_error_floor_run_length(
             params,
             next_source_id,
             terminal_source_count,
             &delivered_bin_ids,
-        ) {
-            return false;
+        );
+        if stalled_run_length == 0 {
+            return MettleTrialOutcome::Stalled {
+                next_source_id,
+                stalled_run_length,
+                remaining_sources: terminal_source_count - next_source_id,
+            };
+        }
+        if stalled_run_length != 1 {
+            return MettleTrialOutcome::Stalled {
+                next_source_id,
+                stalled_run_length,
+                remaining_sources: terminal_source_count - next_source_id,
+            };
         }
         let _ = decoder.skip_next_source_without_edges();
     }
+}
+
+fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> bool {
+    matches!(
+        mettle_trial_outcome(case, seed, source_count),
+        MettleTrialOutcome::Success
+    )
 }
 
 fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
@@ -317,15 +373,37 @@ fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> 
 }
 
 fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
-    let failures = (0..trials)
-        .filter(|&trial| {
-            !mettle_trial_succeeds(
-                case,
-                trial as u64 + 1,
-                PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT,
-            )
-        })
-        .count();
+    let print_first_failure = std::env::var("METTLE_TABLE_IV_PRINT_FIRST_FAILURE")
+        .ok()
+        .is_some_and(|value| value != "0");
+    let source_count = std::env::var("METTLE_TABLE_IV_SOURCE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT);
+    let mut failures = 0usize;
+
+    for trial in 0..trials {
+        match mettle_trial_outcome(case, trial as u64 + 1, source_count) {
+            MettleTrialOutcome::Success => {}
+            MettleTrialOutcome::Stalled {
+                next_source_id,
+                stalled_run_length,
+                remaining_sources,
+            } => {
+                failures += 1;
+                if print_first_failure && failures == 1 {
+                    eprintln!(
+                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={}",
+                        case.name,
+                        trial + 1,
+                        next_source_id,
+                        stalled_run_length,
+                        remaining_sources,
+                    );
+                }
+            }
+        }
+    }
 
     failures as f64 / trials as f64
 }

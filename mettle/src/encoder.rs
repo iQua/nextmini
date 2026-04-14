@@ -16,11 +16,6 @@ impl MettleBin {
         Self { bin_id, payload }
     }
 
-    #[cfg(test)]
-    pub(super) fn bin_id(&self) -> u128 {
-        self.bin_id
-    }
-
     pub(crate) fn into_parts(self) -> (u128, Vec<u8>) {
         (self.bin_id, self.payload)
     }
@@ -31,6 +26,7 @@ pub(crate) struct MettleEncoder {
     params: MettleParams,
     source_symbol_bytes: NonZeroUsize,
     next_source_id: u64,
+    next_departure_bin_id: u128,
     seed: u64,
     terminal_source_count: Option<u64>,
     open_bins: BTreeMap<u128, Vec<u8>>,
@@ -65,6 +61,7 @@ impl MettleEncoder {
             params,
             source_symbol_bytes,
             next_source_id: 0,
+            next_departure_bin_id: 0,
             seed,
             terminal_source_count,
             open_bins: BTreeMap::new(),
@@ -89,11 +86,21 @@ impl MettleEncoder {
         }
 
         self.next_source_id += 1;
-        self.take_finalized_bins(self.params.tle_bin_id(self.next_source_id))
+        self.take_finalized_bins_until(
+            self.params
+                .departure_frontier_after_source_count(self.next_source_id),
+        )
     }
 
     pub(crate) fn finish(mut self) -> Vec<MettleBin> {
-        self.take_finalized_bins(u128::MAX)
+        if let Some(terminal_source_count) = self.terminal_source_count {
+            return self.take_finalized_bins_until(
+                self.params
+                    .terminal_departure_end_exclusive(terminal_source_count),
+            );
+        }
+
+        self.flush_open_bins()
     }
 
     fn edge_bin_ids(&self, source_id: u64) -> [u128; MettleParams::EDGE_COUNT] {
@@ -104,11 +111,34 @@ impl MettleEncoder {
         )
     }
 
-    fn take_finalized_bins(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
+    fn take_finalized_bins_until(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
         let future_bins = self.open_bins.split_off(&end_exclusive);
-        let finalized_bins = std::mem::replace(&mut self.open_bins, future_bins);
+        let mut finalized_bins = std::mem::replace(&mut self.open_bins, future_bins).into_iter();
+        let mut next_finalized = finalized_bins.next();
+        let mut emitted = Vec::new();
 
-        finalized_bins
+        for bin_id in self.next_departure_bin_id..end_exclusive {
+            let payload = if next_finalized
+                .as_ref()
+                .is_some_and(|(finalized_bin_id, _)| *finalized_bin_id == bin_id)
+            {
+                let (_, payload) = next_finalized.take().expect("just matched finalized bin");
+                next_finalized = finalized_bins.next();
+                payload
+            } else {
+                vec![0; self.source_symbol_bytes.get()]
+            };
+            emitted.push(MettleBin { bin_id, payload });
+        }
+
+        self.next_departure_bin_id = end_exclusive;
+        emitted
+    }
+
+    fn flush_open_bins(&mut self) -> Vec<MettleBin> {
+        let remaining_bins = std::mem::take(&mut self.open_bins);
+
+        remaining_bins
             .into_iter()
             .map(|(bin_id, payload)| MettleBin { bin_id, payload })
             .collect()
@@ -137,6 +167,7 @@ mod tests {
         assert_eq!(encoder.params, params);
         assert_eq!(encoder.source_symbol_bytes.get(), 1500);
         assert_eq!(encoder.next_source_id, 0);
+        assert_eq!(encoder.next_departure_bin_id, 0);
         assert_eq!(encoder.seed, 7);
         assert_eq!(encoder.terminal_source_count, None);
         assert!(encoder.open_bins.is_empty());
@@ -210,6 +241,28 @@ mod tests {
             .unwrap_or_else(|| panic!("shared bin never emitted"));
 
         assert_eq!(shared_bin_payload, vec![0b0110_0000]);
+    }
+
+    #[test]
+    fn terminated_encoder_releases_dense_departure_prefix() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_symbol_bytes = NonZeroUsize::new(1).expect("non-zero");
+        let mut encoder = MettleEncoder::new_terminated(params, source_symbol_bytes, 0, 20);
+        let mut emitted_bin_ids = Vec::new();
+
+        for _ in 0..20 {
+            emitted_bin_ids.extend(
+                encoder
+                    .push_source(&[1])
+                    .into_iter()
+                    .map(|bin| bin.bin_id),
+            );
+        }
+
+        assert_eq!(
+            emitted_bin_ids,
+            (0..params.departure_frontier_after_source_count(20)).collect::<Vec<_>>()
+        );
     }
 
     #[test]
