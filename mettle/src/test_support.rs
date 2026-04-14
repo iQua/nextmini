@@ -9,6 +9,18 @@ use crate::MettleParams;
 pub struct Encoder(MettleEncoder);
 
 impl Encoder {
+    pub fn new(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+    ) -> Self {
+        Self(MettleEncoder::new(
+            params,
+            source_symbol_bytes,
+            seed,
+        ))
+    }
+
     pub fn new_terminated(
         params: MettleParams,
         source_symbol_bytes: NonZeroUsize,
@@ -44,6 +56,18 @@ impl Encoder {
 pub struct Decoder(MettleDecoder);
 
 impl Decoder {
+    pub fn new(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+    ) -> Self {
+        Self(MettleDecoder::new(
+            params,
+            source_symbol_bytes,
+            seed,
+        ))
+    }
+
     pub fn new_terminated(
         params: MettleParams,
         source_symbol_bytes: NonZeroUsize,
