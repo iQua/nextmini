@@ -1,5 +1,15 @@
+use std::collections::HashSet;
+use std::num::NonZeroUsize;
+
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
 
+use crate::decoder::MettleDecoder;
+use crate::encoder::{MettleBin, MettleEncoder};
+use crate::{MettleParams, OverheadRatio};
+
+const TABLE_IV_METTLE_SOURCE_COUNT: usize = 100_000;
+const TABLE_IV_METTLE_SEED: u64 = 0;
+const TABLE_IV_METTLE_SYMBOL_SIZE: usize = 1;
 const TABLE_IV_SYMBOL_SIZE: usize = 1500;
 const TARGET_FAILURE_RATE: f64 = 1e-3;
 
@@ -39,8 +49,9 @@ enum Channel {
 struct TableIvRow {
     name: &'static str,
     channel: Channel,
+    mettle_overhead_ratio: Rational,
     k: usize,
-    overhead_ratio: Rational,
+    raptorq_overhead_ratio: Rational,
 }
 
 const TABLE_IV_ROWS: [TableIvRow; 10] = [
@@ -49,40 +60,45 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(1, 100),
         },
+        mettle_overhead_ratio: Rational::new(550, 10_000),
         k: 114,
-        overhead_ratio: Rational::new(614, 10_000),
+        raptorq_overhead_ratio: Rational::new(614, 10_000),
     },
     TableIvRow {
         name: "BEC(0.02)",
         channel: Channel::Bec {
             erasure_probability: Rational::new(2, 100),
         },
+        mettle_overhead_ratio: Rational::new(800, 10_000),
         k: 168,
-        overhead_ratio: Rational::new(714, 10_000),
+        raptorq_overhead_ratio: Rational::new(714, 10_000),
     },
     TableIvRow {
         name: "BEC(0.03)",
         channel: Channel::Bec {
             erasure_probability: Rational::new(3, 100),
         },
+        mettle_overhead_ratio: Rational::new(900, 10_000),
         k: 236,
-        overhead_ratio: Rational::new(763, 10_000),
+        raptorq_overhead_ratio: Rational::new(763, 10_000),
     },
     TableIvRow {
         name: "BEC(0.08)",
         channel: Channel::Bec {
             erasure_probability: Rational::new(8, 100),
         },
+        mettle_overhead_ratio: Rational::new(2000, 10_000),
         k: 269,
-        overhead_ratio: Rational::new(1560, 10_000),
+        raptorq_overhead_ratio: Rational::new(1560, 10_000),
     },
     TableIvRow {
         name: "BEC(0.10)",
         channel: Channel::Bec {
             erasure_probability: Rational::new(10, 100),
         },
+        mettle_overhead_ratio: Rational::new(2500, 10_000),
         k: 405,
-        overhead_ratio: Rational::new(1500, 10_000),
+        raptorq_overhead_ratio: Rational::new(1500, 10_000),
     },
     TableIvRow {
         name: "VoIP",
@@ -92,8 +108,9 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 1),
         },
+        mettle_overhead_ratio: Rational::new(900, 10_000),
         k: 84,
-        overhead_ratio: Rational::new(2380, 10_000),
+        raptorq_overhead_ratio: Rational::new(2380, 10_000),
     },
     TableIvRow {
         name: "WiMAX",
@@ -103,8 +120,9 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(2, 100),
         },
+        mettle_overhead_ratio: Rational::new(600, 10_000),
         k: 149,
-        overhead_ratio: Rational::new(604, 10_000),
+        raptorq_overhead_ratio: Rational::new(604, 10_000),
     },
     TableIvRow {
         name: "Video-conf-light",
@@ -114,8 +132,9 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 10),
         },
+        mettle_overhead_ratio: Rational::new(800, 10_000),
         k: 114,
-        overhead_ratio: Rational::new(702, 10_000),
+        raptorq_overhead_ratio: Rational::new(702, 10_000),
     },
     TableIvRow {
         name: "Video-conf-heavy",
@@ -125,8 +144,9 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
             epsilon_good: Rational::new(5, 100),
             epsilon_bad: Rational::new(1, 2),
         },
+        mettle_overhead_ratio: Rational::new(2000, 10_000),
         k: 257,
-        overhead_ratio: Rational::new(1556, 10_000),
+        raptorq_overhead_ratio: Rational::new(1556, 10_000),
     },
     TableIvRow {
         name: "Long-fade",
@@ -136,8 +156,9 @@ const TABLE_IV_ROWS: [TableIvRow; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 10),
         },
+        mettle_overhead_ratio: Rational::new(1200, 10_000),
         k: 101,
-        overhead_ratio: Rational::new(1584, 10_000),
+        raptorq_overhead_ratio: Rational::new(1584, 10_000),
     },
 ];
 
@@ -159,7 +180,7 @@ fn total_packet_count(source_count: usize, overhead_ratio: Rational) -> usize {
 }
 
 fn raptorq_trial_succeeds(row: TableIvRow, seed: u64) -> bool {
-    let total_packets = total_packet_count(row.k, row.overhead_ratio);
+    let total_packets = total_packet_count(row.k, row.raptorq_overhead_ratio);
     let repair_packets = total_packets.saturating_sub(row.k);
     let flat_data = table_iv_flat_data(row.k);
     let oti = ObjectTransmissionInformation::new(
@@ -189,9 +210,114 @@ fn raptorq_trial_succeeds(row: TableIvRow, seed: u64) -> bool {
         .is_some_and(|decoded| decoded == flat_data)
 }
 
-fn estimated_failure_rate(row: TableIvRow, trials: usize) -> f64 {
+fn mettle_params(overhead_ratio: Rational) -> MettleParams {
+    MettleParams::new(
+        OverheadRatio::new(overhead_ratio.numerator, overhead_ratio.denominator)
+            .expect("paper Table IV overhead is valid"),
+    )
+}
+
+fn mettle_source_payload(_source_id: u64) -> [u8; TABLE_IV_METTLE_SYMBOL_SIZE] {
+    [0]
+}
+
+fn deliver_mettle_bin(
+    decoder: &mut MettleDecoder,
+    delivered_bin_ids: &mut HashSet<u128>,
+    channel_state: &mut ChannelState,
+    bin: MettleBin,
+) {
+    let (bin_id, payload) = bin.into_parts();
+    if channel_state.delivers_next_packet() {
+        delivered_bin_ids.insert(bin_id);
+        let _ = decoder.push_bin(MettleBin::new(bin_id, payload));
+    }
+}
+
+fn mettle_source_is_fully_erased(
+    params: MettleParams,
+    source_id: u64,
+    terminal_source_count: u64,
+    delivered_bin_ids: &HashSet<u128>,
+) -> bool {
+    params
+        .edge_bin_ids_with_terminal_source_count(
+            source_id,
+            TABLE_IV_METTLE_SEED,
+            Some(terminal_source_count),
+        )
+        .into_iter()
+        .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
+}
+
+fn mettle_trial_succeeds(row: TableIvRow, seed: u64, source_count: usize) -> bool {
+    // Table IV measures packet-level coding efficiency, so compact payloads are enough here.
+    let params = mettle_params(row.mettle_overhead_ratio);
+    let source_symbol_bytes =
+        NonZeroUsize::new(TABLE_IV_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
+    let terminal_source_count = source_count as u64;
+    let mut encoder = MettleEncoder::new_terminated(
+        params,
+        source_symbol_bytes,
+        TABLE_IV_METTLE_SEED,
+        terminal_source_count,
+    );
+    let mut decoder = MettleDecoder::new_terminated(
+        params,
+        source_symbol_bytes,
+        TABLE_IV_METTLE_SEED,
+        terminal_source_count,
+    );
+    let mut delivered_bin_ids = HashSet::new();
+    let mut channel_state = ChannelState::new(row.channel, seed ^ 0xC0DE_CAFE_F00D_BAAD);
+
+    for source_id in 0..terminal_source_count {
+        for bin in encoder.push_source(&mettle_source_payload(source_id)) {
+            deliver_mettle_bin(
+                &mut decoder,
+                &mut delivered_bin_ids,
+                &mut channel_state,
+                bin,
+            );
+        }
+    }
+    for bin in encoder.finish() {
+        deliver_mettle_bin(
+            &mut decoder,
+            &mut delivered_bin_ids,
+            &mut channel_state,
+            bin,
+        );
+    }
+
+    loop {
+        let next_source_id = decoder.next_source_id();
+        if next_source_id == terminal_source_count {
+            return true;
+        }
+        if !mettle_source_is_fully_erased(
+            params,
+            next_source_id,
+            terminal_source_count,
+            &delivered_bin_ids,
+        ) {
+            return false;
+        }
+        let _ = decoder.skip_next_source_without_edges();
+    }
+}
+
+fn raptorq_estimated_failure_rate(row: TableIvRow, trials: usize) -> f64 {
     let failures = (0..trials)
         .filter(|&trial| !raptorq_trial_succeeds(row, trial as u64 + 1))
+        .count();
+
+    failures as f64 / trials as f64
+}
+
+fn mettle_estimated_failure_rate(row: TableIvRow, trials: usize) -> f64 {
+    let failures = (0..trials)
+        .filter(|&trial| !mettle_trial_succeeds(row, trial as u64 + 1, TABLE_IV_METTLE_SOURCE_COUNT))
         .count();
 
     failures as f64 / trials as f64
@@ -291,8 +417,23 @@ fn table_iv_raptorq_harness_decodes_a_small_bec_case() {
 }
 
 #[test]
-#[ignore = "manual Table IV RaptorQ reproduction"]
-fn report_table_iv_raptorq_failure_rates() {
+fn table_iv_mettle_harness_decodes_a_small_bec_case() {
+    let row = TableIvRow {
+        name: "smoke-no-loss",
+        channel: Channel::Bec {
+            erasure_probability: Rational::new(0, 1),
+        },
+        mettle_overhead_ratio: Rational::new(550, 10_000),
+        k: 114,
+        raptorq_overhead_ratio: Rational::new(614, 10_000),
+    };
+
+    assert!(mettle_trial_succeeds(row, 1, 512));
+}
+
+#[test]
+#[ignore = "manual Table IV METTLE and RaptorQ reproduction"]
+fn report_table_iv_failure_rates() {
     let trials = std::env::var("METTLE_TABLE_IV_TRIALS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
@@ -305,13 +446,16 @@ fn report_table_iv_raptorq_failure_rates() {
                 continue;
             }
         }
-        let failure_rate = estimated_failure_rate(row, trials);
+        let mettle_failure_rate = mettle_estimated_failure_rate(row, trials);
+        let raptorq_failure_rate = raptorq_estimated_failure_rate(row, trials);
         eprintln!(
-            "channel={} k={} overhead={:.4}% estimated_failure_rate={:.6} target={:.6}",
+            "channel={} mettle_overhead={:.4}% mettle_failure_rate={:.6} raptorq_k={} raptorq_overhead={:.4}% raptorq_failure_rate={:.6} target={:.6}",
             row.name,
+            row.mettle_overhead_ratio.to_f64() * 100.0,
+            mettle_failure_rate,
             row.k,
-            row.overhead_ratio.to_f64() * 100.0,
-            failure_rate,
+            row.raptorq_overhead_ratio.to_f64() * 100.0,
+            raptorq_failure_rate,
             TARGET_FAILURE_RATE,
         );
     }

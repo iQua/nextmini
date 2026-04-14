@@ -288,6 +288,19 @@ impl MettleDecoder {
                 && self.params.tle_bin_id(source_id) == bin_id
         })
     }
+
+    #[cfg(test)]
+    pub(crate) fn next_source_id(&self) -> u64 {
+        self.next_decoded_source_id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn skip_next_source_without_edges(&mut self) -> Vec<DecodedSource> {
+        self.push_decoded_prefix_payload(vec![0; self.source_symbol_bytes.get()]);
+        self.next_decoded_source_id += 1;
+        self.drop_bins_closed_by_prefix();
+        self.drain_decodable_prefix()
+    }
 }
 
 fn xor_payload(dst: &mut [u8], src: &[u8]) {
