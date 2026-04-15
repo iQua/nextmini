@@ -66,7 +66,7 @@ struct CodingEfficiencyCase {
     name: &'static str,
     channel: Channel,
     mettle_overhead_ratio: Rational,
-    k: usize,
+    raptorq_k: usize,
     raptorq_overhead_ratio: Rational,
 }
 
@@ -77,7 +77,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             erasure_probability: Rational::new(1, 100),
         },
         mettle_overhead_ratio: Rational::new(550, 10_000),
-        k: 114,
+        raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(614, 10_000),
     },
     CodingEfficiencyCase {
@@ -86,7 +86,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             erasure_probability: Rational::new(2, 100),
         },
         mettle_overhead_ratio: Rational::new(800, 10_000),
-        k: 168,
+        raptorq_k: 168,
         raptorq_overhead_ratio: Rational::new(714, 10_000),
     },
     CodingEfficiencyCase {
@@ -95,7 +95,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             erasure_probability: Rational::new(3, 100),
         },
         mettle_overhead_ratio: Rational::new(900, 10_000),
-        k: 236,
+        raptorq_k: 236,
         raptorq_overhead_ratio: Rational::new(763, 10_000),
     },
     CodingEfficiencyCase {
@@ -104,7 +104,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             erasure_probability: Rational::new(8, 100),
         },
         mettle_overhead_ratio: Rational::new(2000, 10_000),
-        k: 269,
+        raptorq_k: 269,
         raptorq_overhead_ratio: Rational::new(1560, 10_000),
     },
     CodingEfficiencyCase {
@@ -113,7 +113,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             erasure_probability: Rational::new(10, 100),
         },
         mettle_overhead_ratio: Rational::new(2500, 10_000),
-        k: 405,
+        raptorq_k: 405,
         raptorq_overhead_ratio: Rational::new(1500, 10_000),
     },
     CodingEfficiencyCase {
@@ -125,7 +125,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_bad: Rational::new(1, 1),
         },
         mettle_overhead_ratio: Rational::new(900, 10_000),
-        k: 84,
+        raptorq_k: 84,
         raptorq_overhead_ratio: Rational::new(2380, 10_000),
     },
     CodingEfficiencyCase {
@@ -137,7 +137,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_bad: Rational::new(2, 100),
         },
         mettle_overhead_ratio: Rational::new(600, 10_000),
-        k: 149,
+        raptorq_k: 149,
         raptorq_overhead_ratio: Rational::new(604, 10_000),
     },
     CodingEfficiencyCase {
@@ -149,7 +149,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_bad: Rational::new(1, 10),
         },
         mettle_overhead_ratio: Rational::new(800, 10_000),
-        k: 114,
+        raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(702, 10_000),
     },
     CodingEfficiencyCase {
@@ -161,7 +161,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_bad: Rational::new(1, 2),
         },
         mettle_overhead_ratio: Rational::new(2000, 10_000),
-        k: 257,
+        raptorq_k: 257,
         raptorq_overhead_ratio: Rational::new(1556, 10_000),
     },
     CodingEfficiencyCase {
@@ -173,7 +173,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_bad: Rational::new(1, 10),
         },
         mettle_overhead_ratio: Rational::new(1200, 10_000),
-        k: 101,
+        raptorq_k: 101,
         raptorq_overhead_ratio: Rational::new(1584, 10_000),
     },
 ];
@@ -196,9 +196,9 @@ fn total_packet_count(source_count: usize, overhead_ratio: Rational) -> usize {
 }
 
 fn raptorq_trial_succeeds(case: CodingEfficiencyCase, seed: u64) -> bool {
-    let total_packets = total_packet_count(case.k, case.raptorq_overhead_ratio);
-    let repair_packets = total_packets.saturating_sub(case.k);
-    let flat_data = raptorq_fixture_data(case.k);
+    let total_packets = total_packet_count(case.raptorq_k, case.raptorq_overhead_ratio);
+    let repair_packets = total_packets.saturating_sub(case.raptorq_k);
+    let flat_data = raptorq_fixture_data(case.raptorq_k);
     let oti = ObjectTransmissionInformation::new(
         flat_data.len() as u64,
         PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE as u16,
@@ -564,8 +564,8 @@ impl SplitMix64 {
     }
 }
 
-const fn div_ceil(lhs: usize, rhs: usize) -> usize {
-    lhs / rhs + ((lhs % rhs) != 0) as usize
+fn div_ceil(lhs: usize, rhs: usize) -> usize {
+    lhs / rhs + (!lhs.is_multiple_of(rhs)) as usize
 }
 
 fn case_params(case: CodingEfficiencyCase) -> MettleParams {
@@ -594,7 +594,7 @@ fn paper_coding_efficiency_mettle_harness_decodes_a_small_bec_case() {
             erasure_probability: Rational::new(0, 1),
         },
         mettle_overhead_ratio: Rational::new(550, 10_000),
-        k: 114,
+        raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(614, 10_000),
     };
 
@@ -611,10 +611,10 @@ fn report_paper_coding_efficiency_failure_rates() {
     let name_filter = std::env::var("METTLE_TABLE_IV_FILTER").ok();
 
     for case in CODING_EFFICIENCY_CASES {
-        if let Some(filter) = &name_filter {
-            if !case.name.contains(filter) {
-                continue;
-            }
+        if let Some(filter) = &name_filter
+            && !case.name.contains(filter)
+        {
+            continue;
         }
         let mettle_failure_rate = mettle_estimated_failure_rate(case, trials);
         let raptorq_failure_rate = raptorq_estimated_failure_rate(case, trials);
@@ -623,7 +623,7 @@ fn report_paper_coding_efficiency_failure_rates() {
             case.name,
             case.mettle_overhead_ratio.to_f64() * 100.0,
             mettle_failure_rate,
-            case.k,
+            case.raptorq_k,
             case.raptorq_overhead_ratio.to_f64() * 100.0,
             raptorq_failure_rate,
             TARGET_FAILURE_RATE,
