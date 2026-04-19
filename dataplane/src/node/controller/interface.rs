@@ -34,14 +34,14 @@ use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::LosslessRuntimeHandle;
 
-pub type ProbeSchedulerRegistration = (usize, SchedulerHandle);
+pub(crate) type ProbeSchedulerRegistration = (usize, SchedulerHandle);
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
-    pub probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
+    pub(crate) probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
     #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }

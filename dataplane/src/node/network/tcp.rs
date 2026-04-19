@@ -111,13 +111,9 @@ impl TcpServer {
                 );
                 continue;
             }
-            if self
+            let _ = self
                 .probe_scheduler_sender
-                .send((remote_node_id, probe_scheduler))
-                .is_err()
-            {
-                warn!("Probe scheduler registration channel is closed.");
-            }
+                .send((remote_node_id, probe_scheduler));
 
             info!("Connected to node {}.", remote_node_id);
         }
