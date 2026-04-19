@@ -34,11 +34,14 @@ use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::LosslessRuntimeHandle;
 
+pub type ProbeSchedulerRegistration = (usize, SchedulerHandle);
+
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
     pub config: LocalConfig,
     pub processors: ProcessorHandle,
     northbridge_sender: mpsc::UnboundedSender<DataplaneToController>,
+    pub probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
     #[cfg(feature = "python-extension")]
     python_interface: Arc<Mutex<Option<PythonInterfaceHandle>>>,
 }
@@ -55,6 +58,7 @@ impl ControllerInterfaceHandle {
     ) {
         // creates an unbounded channel, the 'northbridge', for sending messages to the controller
         let (northbridge_sender, northbridge_receiver) = mpsc::unbounded_channel();
+        let (probe_scheduler_sender, probe_scheduler_receiver) = mpsc::unbounded_channel();
 
         // connects to the controller over WebSockets
         let (config, processors, ws_stream) = ControllerInterfaceHandle::connect(config).await;
@@ -74,6 +78,7 @@ impl ControllerInterfaceHandle {
             config: config.clone(),
             processors: processors.clone(),
             northbridge_sender,
+            probe_scheduler_sender: probe_scheduler_sender.clone(),
             #[cfg(feature = "python-extension")]
             python_interface: python_interface.clone(),
         };
@@ -142,6 +147,7 @@ impl ControllerInterfaceHandle {
             group_directory_installed: false,
             local_topology_ready_sent: false,
             schedulers: HashMap::new(),
+            probe_scheduler_receiver,
         };
 
         tokio::spawn(async move {
@@ -315,18 +321,28 @@ pub struct ControllerToDataplaneReceiver {
     local_topology_ready_sent: bool,
     /// Scheduler handles cloned for direct probe sending (bypasses processor).
     schedulers: HashMap<usize, SchedulerHandle>,
+    probe_scheduler_receiver: mpsc::UnboundedReceiver<ProbeSchedulerRegistration>,
 }
 
 impl ControllerToDataplaneReceiver {
     pub async fn run(&mut self) {
         loop {
-            let msg = match self.receiver_stream.next().await.unwrap() {
-                Ok(msg) => msg,
-                Err(e) => {
-                    error!("Disconnected from the controller. Restarting the node...");
-                    error!("{:?}", e);
+            let msg = tokio::select! {
+                Some((remote_node_id, scheduler)) = self.probe_scheduler_receiver.recv() => {
+                    self.schedulers.insert(remote_node_id, scheduler);
+                    continue;
+                }
+                msg = self.receiver_stream.next() => {
+                    match msg {
+                        Some(Ok(msg)) => msg,
+                        Some(Err(e)) => {
+                            error!("Disconnected from the controller. Restarting the node...");
+                            error!("{:?}", e);
 
-                    break;
+                            break;
+                        }
+                        None => break,
+                    }
                 }
             };
 

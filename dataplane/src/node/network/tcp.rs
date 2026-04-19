@@ -10,6 +10,7 @@ use tokio::time::timeout;
 use tracing::{error, info, warn};
 
 use crate::node::config::LocalConfig;
+use crate::node::controller::interface::ProbeSchedulerRegistration;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::framing;
@@ -17,11 +18,13 @@ use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
+use tokio::sync::mpsc;
 
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
     reporter: ControllerReporterHandle,
+    probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
 }
 
 impl TcpServer {
@@ -29,11 +32,13 @@ impl TcpServer {
         config: LocalConfig,
         processors: ProcessorHandle,
         reporter: ControllerReporterHandle,
+        probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
     ) -> Self {
         Self {
             config,
             processors,
             reporter,
+            probe_scheduler_sender,
         }
     }
 
@@ -94,6 +99,7 @@ impl TcpServer {
 
             // creates the scheduler handle
             let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+            let probe_scheduler = scheduler.clone();
 
             // adds the scheduler to send packets to the new node
             if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
@@ -104,6 +110,13 @@ impl TcpServer {
                     e
                 );
                 continue;
+            }
+            if self
+                .probe_scheduler_sender
+                .send((remote_node_id, probe_scheduler))
+                .is_err()
+            {
+                warn!("Probe scheduler registration channel is closed.");
             }
 
             info!("Connected to node {}.", remote_node_id);

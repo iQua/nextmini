@@ -5,9 +5,10 @@
 use tracing::info;
 
 use nextmini_messages::Protocol;
+use tokio::sync::mpsc;
 
 use crate::node::config::LocalConfig;
-use crate::node::controller::interface::ControllerInterfaceHandle;
+use crate::node::controller::interface::{ControllerInterfaceHandle, ProbeSchedulerRegistration};
 use crate::node::controller::reporter::ControllerReporterHandle;
 #[cfg(feature = "python-extension")]
 use crate::node::integration_test;
@@ -34,6 +35,8 @@ pub struct Conductor {
     /// the reporter that allows the dataplane node to communicate with the controller
     reporter: ControllerReporterHandle,
 
+    probe_scheduler_sender: mpsc::UnboundedSender<ProbeSchedulerRegistration>,
+
     /// the controller interface for sending messages upstream to the controller
     #[cfg(feature = "python-extension")]
     controller: ControllerInterfaceHandle,
@@ -53,6 +56,7 @@ impl Conductor {
         let _ = lossless_runtime;
         let config = controller_interface.config.clone();
         let processors = controller_interface.processors.clone();
+        let probe_scheduler_sender = controller_interface.probe_scheduler_sender.clone();
 
         let local_interface: LocalInterfaceHandle =
             LocalInterfaceHandle::new(config.clone(), processors.clone(), flowstats_reporter);
@@ -79,6 +83,7 @@ impl Conductor {
             local_interface,
             processors,
             reporter,
+            probe_scheduler_sender,
             #[cfg(feature = "python-extension")]
             controller: controller_interface,
             #[cfg(feature = "python-extension")]
@@ -119,6 +124,7 @@ impl Conductor {
                         self.config.clone(),
                         self.processors.clone(),
                         self.reporter.clone(),
+                        self.probe_scheduler_sender.clone(),
                     );
 
                     let tcp_max_server_addr = format!("{}:{}", "0.0.0.0", max_server_port);
@@ -133,11 +139,13 @@ impl Conductor {
                         self.config.clone(),
                         self.processors.clone(),
                         self.reporter.clone(),
+                        self.probe_scheduler_sender.clone(),
                     );
                     let mut tcp_server_private = TcpServer::new(
                         self.config.clone(),
                         self.processors.clone(),
                         self.reporter.clone(),
+                        self.probe_scheduler_sender.clone(),
                     );
 
                     let tcp_server_public_addr = format!("{}:{}", "0.0.0.0", public_port);
