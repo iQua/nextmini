@@ -3,6 +3,7 @@ use std::num::NonZeroUsize;
 
 use mettle::test_support::{
     Decoder as TestDecoder, Encoder as TestEncoder, edge_bin_ids_with_terminal_source_count,
+    terminal_departure_end_exclusive,
 };
 use mettle::{MettleParams, OverheadRatio};
 use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
@@ -65,6 +66,10 @@ impl OfflinePeelingOutcome {
 
     fn is_local_residual_event(&self, source_limit: usize) -> bool {
         self.undecoded_sources != 0 && self.undecoded_sources <= source_limit
+    }
+
+    fn residual_sources(&self) -> usize {
+        self.undecoded_sources + self.isolated_sources
     }
 }
 
@@ -307,6 +312,23 @@ fn deliver_mettle_bin(
             }
         }
     }
+}
+
+fn mettle_delivered_bin_ids(
+    case: CodingEfficiencyCase,
+    seed: u64,
+    packet_count: usize,
+) -> HashSet<u128> {
+    let mut channel_state = ChannelState::new(case.channel, seed ^ 0xC0DE_CAFE_F00D_BAAD);
+    let mut delivered_bin_ids = HashSet::new();
+
+    for bin_id in 0..packet_count as u128 {
+        if channel_state.delivers_next_packet() {
+            delivered_bin_ids.insert(bin_id);
+        }
+    }
+
+    delivered_bin_ids
 }
 
 fn mettle_source_is_fully_erased(
@@ -617,6 +639,99 @@ fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> 
     }
 }
 
+fn mettle_graph_estimated_failure_rate(
+    case: CodingEfficiencyCase,
+    trials: usize,
+    source_count: usize,
+    print_first_failure: bool,
+    local_residual_source_limit: usize,
+) -> FailureRateEstimate {
+    let params = case_params(case);
+    let packet_count = terminal_departure_end_exclusive(params, source_count as u64) as usize;
+    let mut failures = 0usize;
+    let mut local_residual_events = 0usize;
+    let mut isolated_error_floor_events = 0usize;
+
+    for trial in 0..trials {
+        let seed = trial as u64 + 1;
+        let graph_seed = mettle_graph_seed(seed);
+        let delivered_bin_ids = mettle_delivered_bin_ids(case, seed, packet_count);
+        let offline_outcome =
+            offline_peeling_outcome(params, graph_seed, source_count, &delivered_bin_ids);
+
+        if offline_outcome.residual_sources() == 0 {
+            continue;
+        }
+        if offline_outcome.is_isolated_error_floor_event() {
+            isolated_error_floor_events += 1;
+            if print_first_failure && isolated_error_floor_events == 1 {
+                let offline_sample_edges = format_source_edges(
+                    params,
+                    graph_seed,
+                    source_count as u64,
+                    &delivered_bin_ids,
+                    &offline_outcome.sample_undecoded_source_ids,
+                );
+                eprintln!(
+                    "first_mettle_isolated_error_floor channel={} trial={} offline_peeling={} offline_sample_edges=[{}]",
+                    case.name,
+                    trial + 1,
+                    offline_outcome.summary(),
+                    offline_sample_edges,
+                );
+            }
+            continue;
+        }
+        if offline_outcome.is_local_residual_event(local_residual_source_limit) {
+            local_residual_events += 1;
+            if print_first_failure && local_residual_events == 1 {
+                let offline_sample_edges = format_source_edges(
+                    params,
+                    graph_seed,
+                    source_count as u64,
+                    &delivered_bin_ids,
+                    &offline_outcome.sample_undecoded_source_ids,
+                );
+                eprintln!(
+                    "first_mettle_local_residual channel={} trial={} local_residual_source_limit={} offline_peeling={} offline_sample_edges=[{}]",
+                    case.name,
+                    trial + 1,
+                    local_residual_source_limit,
+                    offline_outcome.summary(),
+                    offline_sample_edges,
+                );
+            }
+            continue;
+        }
+
+        failures += 1;
+        if print_first_failure && failures == 1 {
+            let offline_sample_edges = format_source_edges(
+                params,
+                graph_seed,
+                source_count as u64,
+                &delivered_bin_ids,
+                &offline_outcome.sample_undecoded_source_ids,
+            );
+            eprintln!(
+                "first_mettle_failure channel={} trial={} local_residual_source_limit={} offline_peeling={} offline_sample_edges=[{}]",
+                case.name,
+                trial + 1,
+                local_residual_source_limit,
+                offline_outcome.summary(),
+                offline_sample_edges,
+            );
+        }
+    }
+
+    FailureRateEstimate {
+        failures,
+        trials,
+        local_residual_events,
+        isolated_error_floor_events,
+    }
+}
+
 fn mettle_estimated_failure_rate(
     case: CodingEfficiencyCase,
     trials: usize,
@@ -626,6 +741,15 @@ fn mettle_estimated_failure_rate(
         .is_some_and(|value| value != "0");
     let source_count = mettle_table_iv_source_count();
     let local_residual_source_limit = mettle_table_iv_local_residual_source_limit();
+    if mettle_table_iv_graph_only() {
+        return mettle_graph_estimated_failure_rate(
+            case,
+            trials,
+            source_count,
+            print_first_failure,
+            local_residual_source_limit,
+        );
+    }
     let params = case_params(case);
     let mut failures = 0usize;
     let mut local_residual_events = 0usize;
@@ -866,6 +990,12 @@ fn mettle_table_iv_local_residual_source_limit() -> usize {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .unwrap_or(0)
+}
+
+fn mettle_table_iv_graph_only() -> bool {
+    std::env::var("METTLE_TABLE_IV_GRAPH_ONLY")
+        .ok()
+        .is_some_and(|value| value != "0")
 }
 
 fn mettle_graph_seed(trial_seed: u64) -> u64 {

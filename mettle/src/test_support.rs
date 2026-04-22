@@ -111,3 +111,10 @@ pub fn edge_bin_ids_with_terminal_source_count(
 ) -> [u128; MettleParams::EDGE_COUNT] {
     params.edge_bin_ids_with_terminal_source_count(source_id, seed, terminal_source_count)
 }
+
+pub fn terminal_departure_end_exclusive(
+    params: MettleParams,
+    terminal_source_count: u64,
+) -> u128 {
+    params.terminal_departure_end_exclusive(terminal_source_count)
+}
