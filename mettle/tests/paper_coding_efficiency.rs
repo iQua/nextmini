@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::num::NonZeroUsize;
 
 use mettle::test_support::{
@@ -9,7 +9,7 @@ use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder,
 
 const PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT: usize = 100_000;
 const PAPER_CODING_EFFICIENCY_METTLE_SEED: u64 = 0;
-const PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE: usize = 1;
+const PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE: usize = 8;
 const PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE: usize = 1500;
 const TARGET_FAILURE_RATE: f64 = 1e-3;
 
@@ -21,12 +21,65 @@ enum MettleTrialOutcome {
         stalled_run_length: u64,
         remaining_sources: u64,
     },
+    PayloadMismatch {
+        source_id: u64,
+    },
 }
 
 #[derive(Clone, Copy)]
 struct SkipProfile {
     total_skipped_sources: u64,
     max_consecutive_skip_run: u64,
+}
+
+struct MettleReplay {
+    decoder: TestDecoder,
+    delivered_bin_ids: HashSet<u128>,
+    first_payload_mismatch: Option<u64>,
+}
+
+struct OfflinePeelingOutcome {
+    first_undecoded_source_id: Option<u64>,
+    undecoded_sources: usize,
+    isolated_sources: usize,
+    sample_undecoded_source_ids: Vec<u64>,
+}
+
+impl OfflinePeelingOutcome {
+    fn summary(&self) -> String {
+        match self.first_undecoded_source_id {
+            Some(first_undecoded_source_id) => format!(
+                "stalled:first_undecoded_source_id={} undecoded_sources={} isolated_sources={} sample_undecoded_source_ids={:?}",
+                first_undecoded_source_id,
+                self.undecoded_sources,
+                self.isolated_sources,
+                self.sample_undecoded_source_ids
+            ),
+            None => format!("success:isolated_sources={}", self.isolated_sources),
+        }
+    }
+
+    fn is_isolated_error_floor_event(&self) -> bool {
+        self.undecoded_sources == 0 && self.isolated_sources != 0
+    }
+
+    fn is_local_residual_event(&self, source_limit: usize) -> bool {
+        self.undecoded_sources != 0 && self.undecoded_sources <= source_limit
+    }
+}
+
+#[derive(Clone, Copy)]
+struct FailureRateEstimate {
+    failures: usize,
+    trials: usize,
+    local_residual_events: usize,
+    isolated_error_floor_events: usize,
+}
+
+impl FailureRateEstimate {
+    fn rate(self) -> f64 {
+        self.failures as f64 / self.trials as f64
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -182,7 +235,7 @@ fn raptorq_fixture_data(source_count: usize) -> Vec<u8> {
     (0..source_count)
         .flat_map(|source_id| {
             let mut payload = vec![0; PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE];
-            payload[0] = source_id as u8;
+            payload[..std::mem::size_of::<usize>()].copy_from_slice(&source_id.to_le_bytes());
             payload
         })
         .collect()
@@ -233,20 +286,26 @@ fn mettle_params(overhead_ratio: Rational) -> MettleParams {
     )
 }
 
-fn mettle_source_payload(_source_id: u64) -> [u8; PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE] {
-    [0]
+fn mettle_source_payload(source_id: u64) -> [u8; PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE] {
+    source_id.to_le_bytes()
 }
 
 fn deliver_mettle_bin(
     decoder: &mut TestDecoder,
     delivered_bin_ids: &mut HashSet<u128>,
     channel_state: &mut ChannelState,
+    first_payload_mismatch: &mut Option<u64>,
     bin_id: u128,
     payload: Vec<u8>,
 ) {
     if channel_state.delivers_next_packet() {
         delivered_bin_ids.insert(bin_id);
-        let _ = decoder.push_bin(bin_id, payload).len();
+        for (source_id, decoded_payload) in decoder.push_bin(bin_id, payload) {
+            let expected_payload = mettle_source_payload(source_id);
+            if decoded_payload.as_slice() != expected_payload.as_slice() {
+                first_payload_mismatch.get_or_insert(source_id);
+            }
+        }
     }
 }
 
@@ -265,6 +324,127 @@ fn mettle_source_is_fully_erased(
     )
         .into_iter()
         .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
+}
+
+fn offline_peeling_outcome(
+    params: MettleParams,
+    graph_seed: u64,
+    source_count: usize,
+    delivered_bin_ids: &HashSet<u128>,
+) -> OfflinePeelingOutcome {
+    let terminal_source_count = source_count as u64;
+    let mut source_edges = Vec::with_capacity(source_count);
+    let mut bin_touchers = HashMap::<u128, Vec<usize>>::new();
+
+    for source_id in 0..terminal_source_count {
+        let mut delivered_edges = Vec::<u128>::with_capacity(MettleParams::EDGE_COUNT);
+        for bin_id in edge_bin_ids_with_terminal_source_count(
+            params,
+            source_id,
+            graph_seed,
+            Some(terminal_source_count),
+        ) {
+            if delivered_bin_ids.contains(&bin_id) && !delivered_edges.contains(&bin_id) {
+                delivered_edges.push(bin_id);
+                bin_touchers.entry(bin_id).or_default().push(source_id as usize);
+            }
+        }
+        source_edges.push(delivered_edges);
+    }
+
+    let mut remaining_touchers = bin_touchers
+        .iter()
+        .map(|(&bin_id, touchers)| (bin_id, touchers.len()))
+        .collect::<HashMap<_, _>>();
+    let mut queue = remaining_touchers
+        .iter()
+        .filter_map(|(&bin_id, &count)| (count == 1).then_some(bin_id))
+        .collect::<VecDeque<_>>();
+    let mut decoded = vec![false; source_count];
+
+    while let Some(bin_id) = queue.pop_front() {
+        if remaining_touchers.get(&bin_id).copied() != Some(1) {
+            continue;
+        }
+        let Some(source_id) = bin_touchers
+            .get(&bin_id)
+            .and_then(|touchers| touchers.iter().copied().find(|&source_id| !decoded[source_id]))
+        else {
+            continue;
+        };
+        decoded[source_id] = true;
+        for &edge_bin_id in &source_edges[source_id] {
+            let Some(count) = remaining_touchers.get_mut(&edge_bin_id) else {
+                continue;
+            };
+            if *count == 0 {
+                continue;
+            }
+            *count -= 1;
+            if *count == 1 {
+                queue.push_back(edge_bin_id);
+            }
+        }
+    }
+
+    let mut first_undecoded_source_id = None;
+    let mut undecoded_sources = 0usize;
+    let mut isolated_sources = 0usize;
+    let mut sample_undecoded_source_ids = Vec::new();
+
+    for (source_id, (is_decoded, edges)) in decoded.iter().zip(source_edges.iter()).enumerate() {
+        if *is_decoded {
+            continue;
+        }
+        if edges.is_empty() {
+            isolated_sources += 1;
+            continue;
+        }
+        first_undecoded_source_id.get_or_insert(source_id as u64);
+        undecoded_sources += 1;
+        if sample_undecoded_source_ids.len() < 8 {
+            sample_undecoded_source_ids.push(source_id as u64);
+        }
+    }
+
+    OfflinePeelingOutcome {
+        first_undecoded_source_id,
+        undecoded_sources,
+        isolated_sources,
+        sample_undecoded_source_ids,
+    }
+}
+
+fn format_source_edges(
+    params: MettleParams,
+    graph_seed: u64,
+    terminal_source_count: u64,
+    delivered_bin_ids: &HashSet<u128>,
+    source_ids: &[u64],
+) -> String {
+    source_ids
+        .iter()
+        .map(|&source_id| {
+            let edges = edge_bin_ids_with_terminal_source_count(
+                params,
+                source_id,
+                graph_seed,
+                Some(terminal_source_count),
+            )
+            .into_iter()
+            .map(|bin_id| {
+                format!(
+                    "{}:delivered={}",
+                    bin_id,
+                    delivered_bin_ids.contains(&bin_id)
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("|");
+            format!("{}=[{}]", source_id, edges)
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn isolated_error_floor_run_length(
@@ -300,7 +480,15 @@ fn mettle_trial_outcome(
     let params = case_params(case);
     let terminal_source_count = source_count as u64;
     let graph_seed = mettle_graph_seed(seed);
-    let (mut decoder, delivered_bin_ids) = replay_mettle_trial(case, seed, source_count);
+    let MettleReplay {
+        mut decoder,
+        delivered_bin_ids,
+        first_payload_mismatch,
+    } = replay_mettle_trial(case, seed, source_count);
+
+    if let Some(source_id) = first_payload_mismatch {
+        return MettleTrialOutcome::PayloadMismatch { source_id };
+    }
 
     loop {
         let next_source_id = decoder.next_source_id();
@@ -321,14 +509,9 @@ fn mettle_trial_outcome(
                 remaining_sources: terminal_source_count - next_source_id,
             };
         }
-        if stalled_run_length != 1 {
-            return MettleTrialOutcome::Stalled {
-                next_source_id,
-                stalled_run_length,
-                remaining_sources: terminal_source_count - next_source_id,
-            };
+        for _ in 0..stalled_run_length {
+            let _ = decoder.skip_next_source_without_edges();
         }
-        let _ = decoder.skip_next_source_without_edges();
     }
 }
 
@@ -343,7 +526,7 @@ fn replay_mettle_trial(
     case: CodingEfficiencyCase,
     seed: u64,
     source_count: usize,
-) -> (TestDecoder, HashSet<u128>) {
+) -> MettleReplay {
     let params = case_params(case);
     let source_symbol_bytes =
         NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
@@ -362,6 +545,7 @@ fn replay_mettle_trial(
         terminal_source_count,
     );
     let mut delivered_bin_ids = HashSet::new();
+    let mut first_payload_mismatch = None;
     let mut channel_state = ChannelState::new(case.channel, seed ^ 0xC0DE_CAFE_F00D_BAAD);
 
     for source_id in 0..terminal_source_count {
@@ -370,6 +554,7 @@ fn replay_mettle_trial(
                 &mut decoder,
                 &mut delivered_bin_ids,
                 &mut channel_state,
+                &mut first_payload_mismatch,
                 bin_id,
                 payload,
             );
@@ -380,17 +565,22 @@ fn replay_mettle_trial(
             &mut decoder,
             &mut delivered_bin_ids,
             &mut channel_state,
+            &mut first_payload_mismatch,
             bin_id,
             payload,
         );
     }
 
-    (decoder, delivered_bin_ids)
+    MettleReplay {
+        decoder,
+        delivered_bin_ids,
+        first_payload_mismatch,
+    }
 }
 
 fn skip_profile_after_replay(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> SkipProfile {
     let terminal_source_count = source_count as u64;
-    let (mut decoder, _) = replay_mettle_trial(case, seed, source_count);
+    let MettleReplay { mut decoder, .. } = replay_mettle_trial(case, seed, source_count);
     let mut total_skipped_sources = 0;
     let mut current_skip_run = 0;
     let mut max_consecutive_skip_run = 0;
@@ -414,23 +604,32 @@ fn skip_profile_after_replay(case: CodingEfficiencyCase, seed: u64, source_count
     }
 }
 
-fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
+fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> FailureRateEstimate {
     let failures = (0..trials)
         .filter(|&trial| !raptorq_trial_succeeds(case, trial as u64 + 1))
         .count();
 
-    failures as f64 / trials as f64
+    FailureRateEstimate {
+        failures,
+        trials,
+        local_residual_events: 0,
+        isolated_error_floor_events: 0,
+    }
 }
 
-fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f64 {
+fn mettle_estimated_failure_rate(
+    case: CodingEfficiencyCase,
+    trials: usize,
+) -> FailureRateEstimate {
     let print_first_failure = std::env::var("METTLE_TABLE_IV_PRINT_FIRST_FAILURE")
         .ok()
         .is_some_and(|value| value != "0");
-    let source_count = std::env::var("METTLE_TABLE_IV_SOURCE_COUNT")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT);
+    let source_count = mettle_table_iv_source_count();
+    let local_residual_source_limit = mettle_table_iv_local_residual_source_limit();
+    let params = case_params(case);
     let mut failures = 0usize;
+    let mut local_residual_events = 0usize;
+    let mut isolated_error_floor_events = 0usize;
 
     for trial in 0..trials {
         match mettle_trial_outcome(case, trial as u64 + 1, source_count) {
@@ -440,13 +639,70 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                 stalled_run_length,
                 remaining_sources,
             } => {
+                let MettleReplay {
+                    decoder,
+                    delivered_bin_ids,
+                    ..
+                } = replay_mettle_trial(case, trial as u64 + 1, source_count);
+                let offline_outcome = offline_peeling_outcome(
+                    params,
+                    mettle_graph_seed(trial as u64 + 1),
+                    source_count,
+                    &delivered_bin_ids,
+                );
+                if offline_outcome.is_isolated_error_floor_event() {
+                    isolated_error_floor_events += 1;
+                    if print_first_failure && isolated_error_floor_events == 1 {
+                        let offline_sample_edges = format_source_edges(
+                            params,
+                            mettle_graph_seed(trial as u64 + 1),
+                            source_count as u64,
+                            &delivered_bin_ids,
+                            &offline_outcome.sample_undecoded_source_ids,
+                        );
+                        eprintln!(
+                            "first_mettle_isolated_error_floor channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} offline_peeling={} offline_sample_edges=[{}]",
+                            case.name,
+                            trial + 1,
+                            next_source_id,
+                            stalled_run_length,
+                            remaining_sources,
+                            offline_outcome.summary(),
+                            offline_sample_edges,
+                        );
+                    }
+                    continue;
+                }
+                if offline_outcome.is_local_residual_event(local_residual_source_limit) {
+                    local_residual_events += 1;
+                    if print_first_failure && local_residual_events == 1 {
+                        let offline_sample_edges = format_source_edges(
+                            params,
+                            mettle_graph_seed(trial as u64 + 1),
+                            source_count as u64,
+                            &delivered_bin_ids,
+                            &offline_outcome.sample_undecoded_source_ids,
+                        );
+                        eprintln!(
+                            "first_mettle_local_residual channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} local_residual_source_limit={} offline_peeling={} offline_sample_edges=[{}]",
+                            case.name,
+                            trial + 1,
+                            next_source_id,
+                            stalled_run_length,
+                            remaining_sources,
+                            local_residual_source_limit,
+                            offline_outcome.summary(),
+                            offline_sample_edges,
+                        );
+                    }
+                    continue;
+                }
+
                 failures += 1;
                 if print_first_failure && failures == 1 {
-                    let (decoder, delivered_bin_ids) =
-                        replay_mettle_trial(case, trial as u64 + 1, source_count);
                     let skip_profile = skip_profile_after_replay(case, trial as u64 + 1, source_count);
                     let edge_bin_ids = edge_bin_ids_with_terminal_source_count(
-                        case_params(case),
+                        params,
                         next_source_id,
                         mettle_graph_seed(trial as u64 + 1),
                         Some(source_count as u64),
@@ -463,8 +719,15 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                         })
                         .collect::<Vec<_>>()
                         .join(", ");
+                    let offline_sample_edges = format_source_edges(
+                        params,
+                        mettle_graph_seed(trial as u64 + 1),
+                        source_count as u64,
+                        &delivered_bin_ids,
+                        &offline_outcome.sample_undecoded_source_ids,
+                    );
                     eprintln!(
-                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} skip_total={} skip_max_run={} edges=[{}]",
+                        "first_mettle_failure channel={} trial={} next_source_id={} stalled_run_length={} remaining_sources={} skip_total={} skip_max_run={} offline_peeling={} offline_sample_edges=[{}] edges=[{}]",
                         case.name,
                         trial + 1,
                         next_source_id,
@@ -472,14 +735,32 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> f
                         remaining_sources,
                         skip_profile.total_skipped_sources,
                         skip_profile.max_consecutive_skip_run,
+                        offline_outcome.summary(),
+                        offline_sample_edges,
                         edge_details,
+                    );
+                }
+            }
+            MettleTrialOutcome::PayloadMismatch { source_id } => {
+                failures += 1;
+                if print_first_failure && failures == 1 {
+                    eprintln!(
+                        "first_mettle_failure channel={} trial={} payload_mismatch_source_id={}",
+                        case.name,
+                        trial + 1,
+                        source_id,
                     );
                 }
             }
         }
     }
 
-    failures as f64 / trials as f64
+    FailureRateEstimate {
+        failures,
+        trials,
+        local_residual_events,
+        isolated_error_floor_events,
+    }
 }
 
 struct ChannelState {
@@ -572,6 +853,21 @@ fn case_params(case: CodingEfficiencyCase) -> MettleParams {
     mettle_params(case.mettle_overhead_ratio)
 }
 
+fn mettle_table_iv_source_count() -> usize {
+    std::env::var("METTLE_TABLE_IV_SOURCE_COUNT")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT)
+}
+
+fn mettle_table_iv_local_residual_source_limit() -> usize {
+    std::env::var("METTLE_TABLE_IV_LOCAL_RESIDUAL_SOURCE_LIMIT")
+        .or_else(|_| std::env::var("METTLE_TABLE_IV_LOCAL_ERROR_FLOOR_SOURCE_LIMIT"))
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(0)
+}
+
 fn mettle_graph_seed(trial_seed: u64) -> u64 {
     match std::env::var("METTLE_TABLE_IV_GRAPH_SEED_MODE").as_deref() {
         Ok("fixed") => PAPER_CODING_EFFICIENCY_METTLE_SEED,
@@ -616,16 +912,24 @@ fn report_paper_coding_efficiency_failure_rates() {
         {
             continue;
         }
-        let mettle_failure_rate = mettle_estimated_failure_rate(case, trials);
-        let raptorq_failure_rate = raptorq_estimated_failure_rate(case, trials);
+        let mettle_estimate = mettle_estimated_failure_rate(case, trials);
+        let raptorq_estimate = raptorq_estimated_failure_rate(case, trials);
         eprintln!(
-            "channel={} mettle_overhead={:.4}% mettle_failure_rate={:.6} raptorq_k={} raptorq_overhead={:.4}% raptorq_failure_rate={:.6} target={:.6}",
+            "channel={} mettle_overhead={:.4}% mettle_stall_failures={}/{} mettle_stall_failure_rate={:.6} mettle_local_residual_events={}/{} mettle_isolated_error_floor_events={}/{} raptorq_k={} raptorq_overhead={:.4}% raptorq_failures={}/{} raptorq_failure_rate={:.6} target={:.6}",
             case.name,
             case.mettle_overhead_ratio.to_f64() * 100.0,
-            mettle_failure_rate,
+            mettle_estimate.failures,
+            mettle_estimate.trials,
+            mettle_estimate.rate(),
+            mettle_estimate.local_residual_events,
+            mettle_estimate.trials,
+            mettle_estimate.isolated_error_floor_events,
+            mettle_estimate.trials,
             case.raptorq_k,
             case.raptorq_overhead_ratio.to_f64() * 100.0,
-            raptorq_failure_rate,
+            raptorq_estimate.failures,
+            raptorq_estimate.trials,
+            raptorq_estimate.rate(),
             TARGET_FAILURE_RATE,
         );
     }
