@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::num::NonZeroUsize;
 
 use crate::encoder::MettleBin;
@@ -40,7 +40,7 @@ pub(crate) struct MettleDecoder {
     decoded_prefix_payloads: VecDeque<Vec<u8>>,
     decoded_future_payloads: BTreeMap<u64, Vec<u8>>,
     decoded_tle_prefix_xors: HashMap<u64, Vec<u8>>,
-    seen_bin_ids: HashSet<u128>,
+    seen_bin_ids: BTreeSet<u128>,
     received_bins: BTreeMap<u128, BufferedBin>,
 }
 
@@ -81,7 +81,7 @@ impl MettleDecoder {
             decoded_prefix_payloads: VecDeque::new(),
             decoded_future_payloads: BTreeMap::new(),
             decoded_tle_prefix_xors: HashMap::new(),
-            seen_bin_ids: HashSet::new(),
+            seen_bin_ids: BTreeSet::new(),
             received_bins: BTreeMap::new(),
         }
     }
@@ -278,10 +278,12 @@ impl MettleDecoder {
         {
             self.received_bins.clear();
             self.decoded_tle_prefix_xors.clear();
+            self.seen_bin_ids.clear();
             return;
         }
         let frontier = self.params.tle_bin_id(self.next_decoded_source_id);
         self.received_bins = self.received_bins.split_off(&frontier);
+        self.seen_bin_ids = self.seen_bin_ids.split_off(&frontier);
         self.decoded_tle_prefix_xors
             .retain(|&source_id, _| source_id >= self.next_decoded_source_id);
     }
@@ -432,7 +434,7 @@ mod tests {
             }]
         );
         assert_eq!(decoder.next_decoded_source_id, 1);
-        assert!(decoder.seen_bin_ids.contains(&0));
+        assert!(!decoder.seen_bin_ids.contains(&0));
         assert!(decoder.received_bins.is_empty());
     }
 
@@ -459,8 +461,7 @@ mod tests {
             ]
         );
         assert_eq!(decoder.next_decoded_source_id, 2);
-        assert!(decoder.seen_bin_ids.contains(&0));
-        assert!(decoder.seen_bin_ids.contains(&1));
+        assert!(decoder.seen_bin_ids.is_empty());
         assert!(decoder.received_bins.is_empty());
     }
 
@@ -483,7 +484,8 @@ mod tests {
             }]
         );
         assert_eq!(decoder.next_decoded_source_id, 538);
-        assert!(decoder.seen_bin_ids.contains(&563));
+        assert!(!decoder.seen_bin_ids.contains(&563));
+        assert!(decoder.seen_bin_ids.contains(&1116));
         let buffered = decoder.received_bins.get(&1116).expect("buffered bin");
         assert_eq!(buffered.payload, vec![0b1100_0000]);
     }
