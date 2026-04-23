@@ -1,9 +1,35 @@
+//! Testing-only accessors for METTLE paper-kernel internals.
+//!
+//! This module is `doc(hidden)` and not a stable production API. Lossless session
+//! integration should use the future block/session adapters instead.
+
 use std::num::NonZeroUsize;
 
 use crate::decoder::MettleDecoder;
 use crate::decoder::DecodedSource;
 use crate::encoder::{MettleBin, MettleEncoder};
 use crate::MettleParams;
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceWindow {
+    start: u128,
+    end_exclusive: u128,
+}
+
+impl SourceWindow {
+    pub const fn start(self) -> u128 {
+        self.start
+    }
+
+    pub const fn end_exclusive(self) -> u128 {
+        self.end_exclusive
+    }
+
+    pub const fn contains(self, bin_id: u128) -> bool {
+        self.start <= bin_id && bin_id < self.end_exclusive
+    }
+}
 
 #[doc(hidden)]
 pub struct Encoder(MettleEncoder);
@@ -110,6 +136,22 @@ pub fn edge_bin_ids_with_terminal_source_count(
     terminal_source_count: Option<u64>,
 ) -> [u128; MettleParams::EDGE_COUNT] {
     params.edge_bin_ids_with_terminal_source_count(source_id, seed, terminal_source_count)
+}
+
+pub fn source_window_with_terminal_source_count(
+    params: MettleParams,
+    source_id: u64,
+    terminal_source_count: Option<u64>,
+) -> SourceWindow {
+    SourceWindow {
+        start: params.tle_bin_id(source_id),
+        end_exclusive: params
+            .window_end_exclusive_with_terminal_source_count(source_id, terminal_source_count),
+    }
+}
+
+pub fn tle_bin_id(params: MettleParams, source_id: u64) -> u128 {
+    params.tle_bin_id(source_id)
 }
 
 pub fn terminal_departure_end_exclusive(

@@ -40,8 +40,11 @@ pub struct MettleParams {
 }
 
 impl MettleParams {
+    // Paper: one TLE edge plus three non-TLE edges per source.
     pub const EDGE_COUNT: usize = 4;
+    // Paper: non-TLE edges sample inside a 600-source coupling window.
     pub const COUPLING_WINDOW: u64 = 600;
+    // Paper: reciprocal probabilities for the second, third, and fourth edges.
     pub const NON_TLE_PROFILE: [(u32, u32); 3] = [(1, 2), (1, 4), (1, 8)];
 
     pub const fn new(overhead: OverheadRatio) -> Self {
@@ -56,6 +59,7 @@ impl MettleParams {
         u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator())
     }
 
+    // Paper: TLE bin is floor((1 + overhead) * source_id).
     pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
         (u128::from(source_id) * self.expansion_numerator())
             / u128::from(self.overhead.denominator())
@@ -97,6 +101,7 @@ impl MettleParams {
 
     #[cfg_attr(not(test), allow(dead_code))]
     fn window_end_exclusive(self, source_id: u64) -> u128 {
+        // Paper: uncompressed non-TLE support is [TLE(source), right boundary).
         let scaled =
             (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW)) * self.expansion_numerator();
         let denominator = u128::from(self.overhead.denominator());
@@ -137,7 +142,7 @@ impl MettleParams {
         div_ceil(uncompressed_width * factor_denominator, factor_numerator)
     }
 
-    fn window_end_exclusive_with_terminal_source_count(
+    pub(crate) fn window_end_exclusive_with_terminal_source_count(
         self,
         source_id: u64,
         terminal_source_count: Option<u64>,
