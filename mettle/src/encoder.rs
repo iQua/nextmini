@@ -74,15 +74,17 @@ impl MettleEncoder {
             assert!(self.next_source_id < terminal_source_count);
         }
 
-        let mut padded = vec![0; self.source_symbol_bytes.get()];
-        padded[..payload.len()].copy_from_slice(payload);
+        let mut padded_source_payload = vec![0; self.source_symbol_bytes.get()];
+        padded_source_payload[..payload.len()].copy_from_slice(payload);
+        let fake_source_payload =
+            self.fake_source_payload(self.next_source_id, padded_source_payload);
 
-        for bin_id in self.edge_bin_ids(self.next_source_id) {
+        for bin_id in self.unique_edge_bin_ids(self.next_source_id) {
             let entry = self
                 .open_bins
                 .entry(bin_id)
                 .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
-            xor_payload(entry, &padded);
+            xor_payload(entry, &fake_source_payload);
         }
 
         self.next_source_id += 1;
@@ -103,8 +105,18 @@ impl MettleEncoder {
         self.flush_open_bins()
     }
 
-    fn edge_bin_ids(&self, source_id: u64) -> [u128; MettleParams::EDGE_COUNT] {
-        self.params.edge_bin_ids_with_terminal_source_count(
+    fn fake_source_payload(&self, source_id: u64, mut source_payload: Vec<u8>) -> Vec<u8> {
+        let tle_bin_id = self.params.tle_bin_id(source_id);
+        if let Some(previous_fake_tle_payloads) = self.open_bins.get(&tle_bin_id) {
+            // Paper: choose q_x so the TLE/source bin carries raw p_x:
+            // q_x = p_x xor all prior q_i that also touch TLE(x).
+            xor_payload(&mut source_payload, previous_fake_tle_payloads);
+        }
+        source_payload
+    }
+
+    fn unique_edge_bin_ids(&self, source_id: u64) -> Vec<u128> {
+        self.params.unique_edge_bin_ids_with_terminal_source_count(
             source_id,
             self.seed,
             self.terminal_source_count,
@@ -157,7 +169,7 @@ mod tests {
 
     use crate::{MettleParams, OverheadRatio};
 
-    use super::{MettleBin, MettleEncoder};
+    use super::{MettleBin, MettleEncoder, xor_payload};
 
     #[test]
     fn encoder_keeps_constructor_fields() {
@@ -222,25 +234,21 @@ mod tests {
             encoder.push_source(&[0]);
         }
 
+        let mut expected_shared_payload = encoder
+            .open_bins
+            .get(&shared_bin)
+            .cloned()
+            .expect("first source opened shared bin");
+        let second_fake_payload = encoder.fake_source_payload(second_source_id, vec![0b1100_0000]);
+        xor_payload(&mut expected_shared_payload, &second_fake_payload);
+
         let second_emitted = encoder.push_source(&[0b1100_0000]);
 
         assert!(!second_emitted.iter().any(|bin| bin.bin_id == shared_bin));
-        assert_eq!(encoder.open_bins.get(&shared_bin), Some(&vec![0b0110_0000]));
-
-        let release_source_id = ((second_source_id + 1)..)
-            .find(|&next_source_id| params.tle_bin_id(next_source_id) > shared_bin)
-            .expect("future TLE frontier");
-        let shared_bin_payload = ((second_source_id + 1)..=release_source_id)
-            .find_map(|_| {
-                let emitted = encoder.push_source(&[0]);
-                emitted
-                    .into_iter()
-                    .find(|bin| bin.bin_id == shared_bin)
-                    .map(|bin| bin.payload)
-            })
-            .unwrap_or_else(|| panic!("shared bin never emitted"));
-
-        assert_eq!(shared_bin_payload, vec![0b0110_0000]);
+        assert_eq!(
+            encoder.open_bins.get(&shared_bin),
+            Some(&expected_shared_payload)
+        );
     }
 
     #[test]
@@ -251,12 +259,7 @@ mod tests {
         let mut emitted_bin_ids = Vec::new();
 
         for _ in 0..20 {
-            emitted_bin_ids.extend(
-                encoder
-                    .push_source(&[1])
-                    .into_iter()
-                    .map(|bin| bin.bin_id),
-            );
+            emitted_bin_ids.extend(encoder.push_source(&[1]).into_iter().map(|bin| bin.bin_id));
         }
 
         assert_eq!(

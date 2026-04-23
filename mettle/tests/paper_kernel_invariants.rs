@@ -140,12 +140,8 @@ fn terminal_departure_end_matches_max_source_window_end() {
 
     let expected = (0..terminal_source_count)
         .map(|source_id| {
-            source_window_with_terminal_source_count(
-                params,
-                source_id,
-                Some(terminal_source_count),
-            )
-            .end_exclusive()
+            source_window_with_terminal_source_count(params, source_id, Some(terminal_source_count))
+                .end_exclusive()
         })
         .max()
         .expect("non-empty terminal source range");

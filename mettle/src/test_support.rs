@@ -5,10 +5,10 @@
 
 use std::num::NonZeroUsize;
 
-use crate::decoder::MettleDecoder;
-use crate::decoder::DecodedSource;
-use crate::encoder::{MettleBin, MettleEncoder};
 use crate::MettleParams;
+use crate::decoder::DecodedSource;
+use crate::decoder::MettleDecoder;
+use crate::encoder::{MettleBin, MettleEncoder};
 
 #[doc(hidden)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,16 +35,8 @@ impl SourceWindow {
 pub struct Encoder(MettleEncoder);
 
 impl Encoder {
-    pub fn new(
-        params: MettleParams,
-        source_symbol_bytes: NonZeroUsize,
-        seed: u64,
-    ) -> Self {
-        Self(MettleEncoder::new(
-            params,
-            source_symbol_bytes,
-            seed,
-        ))
+    pub fn new(params: MettleParams, source_symbol_bytes: NonZeroUsize, seed: u64) -> Self {
+        Self(MettleEncoder::new(params, source_symbol_bytes, seed))
     }
 
     pub fn new_terminated(
@@ -82,16 +74,8 @@ impl Encoder {
 pub struct Decoder(MettleDecoder);
 
 impl Decoder {
-    pub fn new(
-        params: MettleParams,
-        source_symbol_bytes: NonZeroUsize,
-        seed: u64,
-    ) -> Self {
-        Self(MettleDecoder::new(
-            params,
-            source_symbol_bytes,
-            seed,
-        ))
+    pub fn new(params: MettleParams, source_symbol_bytes: NonZeroUsize, seed: u64) -> Self {
+        Self(MettleDecoder::new(params, source_symbol_bytes, seed))
     }
 
     pub fn new_terminated(
@@ -154,9 +138,6 @@ pub fn tle_bin_id(params: MettleParams, source_id: u64) -> u128 {
     params.tle_bin_id(source_id)
 }
 
-pub fn terminal_departure_end_exclusive(
-    params: MettleParams,
-    terminal_source_count: u64,
-) -> u128 {
+pub fn terminal_departure_end_exclusive(params: MettleParams, terminal_source_count: u64) -> u128 {
     params.terminal_departure_end_exclusive(terminal_source_count)
 }
