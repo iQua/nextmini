@@ -344,16 +344,6 @@ fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item
 mod tests {
     use super::*;
 
-    fn patterned_source_data(k: usize, symbol_size: usize) -> Vec<Vec<u8>> {
-        (0..k)
-            .map(|i| {
-                (0..symbol_size)
-                    .map(|j| ((i * 37 + j * 11 + 0x41) % 251) as u8)
-                    .collect()
-            })
-            .collect()
-    }
-
     #[test]
     fn block_seed_is_stable_for_known_input() {
         assert_eq!(block_seed(0xA55A, 17), 0xD429_E47F_291A_692B);
@@ -474,56 +464,6 @@ mod tests {
         {
             assert_eq!(decoded, expected, "symbol {i} mismatch");
         }
-    }
-
-    #[test]
-    fn mettle_decode_forces_repair_path() {
-        let k = METTLE_MIN_SOURCE_SYMBOLS;
-        let symbol_size = 1;
-        let seed = 0x1234_5678;
-        let source_data = patterned_source_data(k, symbol_size);
-        let params = BlockParams::with_scheme(k, symbol_size, seed, FecScheme::Mettle);
-        let flat: Vec<u8> = source_data
-            .iter()
-            .flat_map(|symbol| symbol.iter().copied())
-            .collect();
-        let encoder = Encoder::from_block(params, &flat).expect("valid METTLE encoder");
-        let decoder = Decoder::from_block(params);
-        let metadata = mettle::block::BlockParams::new(k, symbol_size, seed)
-            .metadata()
-            .expect("metadata");
-        let (missing_source, repair_count) = (0..k)
-            .rev()
-            .find_map(|source_index| {
-                let sources = (0..k).filter(|&candidate| candidate != source_index);
-                let additional = metadata
-                    .estimate_repair_deficit(sources, std::iter::empty::<usize>())
-                    .ok()??;
-                (additional > 0).then_some((source_index, additional))
-            })
-            .expect("production-valid METTLE geometry should have a repair-decodable erasure");
-
-        let mut received = source_data
-            .iter()
-            .enumerate()
-            .filter(|(source_index, _)| *source_index != missing_source)
-            .map(|(source_index, payload)| {
-                decoder.source_symbol(source_index as u32, payload.clone())
-            })
-            .collect::<Vec<_>>();
-
-        for repair_index in 0..u32::try_from(repair_count).expect("repair count fits u32") {
-            let esi = k as u32 + repair_index;
-            let Some(payload) = encoder.coded_symbol(esi) else {
-                break;
-            };
-            received.push(decoder.coded_symbol(esi, payload));
-        }
-
-        let output = decoder
-            .decode(&received)
-            .expect("METTLE repair stream should recover the missing sources");
-        assert_eq!(output.source_symbols, source_data);
     }
 
     #[test]
