@@ -8,9 +8,11 @@ controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 cargo_bin="${CARGO_BIN:-}"
 database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
+mettle_min_symbols_per_block="2400"
 case_name=""
 no_build="false"
 mode=""
+fec_scheme=""
 receivers=""
 trees=""
 block_size=""
@@ -33,8 +35,9 @@ usage() {
 Usage: run.sh [options]
 
 Options:
-  --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols.
+  --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols | mettle-1r.
   --mode MODE                Custom run/sweep mode: plain | fec (default for custom runs: fec).
+  --fec-scheme SCHEME        FEC backend for custom/sweep runs: raptorq | mettle (default: raptorq).
   --receivers N              Custom run receiver count.
   --trees N                  Custom run tree count.
   --block-size N             Custom run block size (default: 8192).
@@ -54,11 +57,6 @@ Options:
 EOF
 }
 
-if [[ "$(uname -s)" != "Linux" ]]; then
-  echo "run.sh requires Linux network namespaces." >&2
-  exit 1
-fi
-
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --case)
@@ -67,6 +65,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --mode)
       mode="${2:-}"
+      shift 2
+      ;;
+    --fec-scheme)
+      fec_scheme="${2:-}"
       shift 2
       ;;
     --receivers)
@@ -141,6 +143,11 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+if [[ "$(uname -s)" != "Linux" ]]; then
+  echo "run.sh requires Linux network namespaces." >&2
+  exit 1
+fi
+
 if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
   exec sudo -E "$0" "${original_args[@]}"
 fi
@@ -186,19 +193,33 @@ validate_mode() {
   esac
 }
 
+validate_fec_scheme() {
+  local selected_fec_scheme="$1"
+
+  case "$selected_fec_scheme" in
+    raptorq|mettle) ;;
+    *)
+      echo "--fec-scheme must be either raptorq or mettle." >&2
+      exit 1
+      ;;
+  esac
+}
+
 validate_run_request() {
   local selected_mode="$1"
-  local selected_receivers="$2"
-  local selected_trees="$3"
-  local selected_block_size="$4"
-  local selected_symbols_per_block="$5"
-  local selected_payload_size="$6"
-  local selected_receive_timeout_ms="$7"
-  local selected_packet_processors="$8"
-  local selected_channel_capacity="$9"
-  local selected_queue_capacity="${10}"
+  local selected_fec_scheme="$2"
+  local selected_receivers="$3"
+  local selected_trees="$4"
+  local selected_block_size="$5"
+  local selected_symbols_per_block="$6"
+  local selected_payload_size="$7"
+  local selected_receive_timeout_ms="$8"
+  local selected_packet_processors="$9"
+  local selected_channel_capacity="${10}"
+  local selected_queue_capacity="${11}"
 
   validate_mode "$selected_mode"
+  validate_fec_scheme "$selected_fec_scheme"
   require_positive_int "--receivers" "$selected_receivers"
   require_positive_int "--trees" "$selected_trees"
   require_positive_int "--block-size" "$selected_block_size"
@@ -213,22 +234,32 @@ validate_run_request() {
     echo "plain mode only supports exactly one tree." >&2
     exit 1
   fi
+  if [[ "$selected_mode" == "fec" && "$selected_fec_scheme" == "mettle" ]] && (( selected_symbols_per_block < mettle_min_symbols_per_block )); then
+    echo "METTLE requires --symbols-per-block >= ${mettle_min_symbols_per_block}." >&2
+    exit 1
+  fi
 }
 
 make_case_name() {
   local prefix="$1"
   local selected_mode="$2"
-  local selected_receivers="$3"
-  local selected_trees="$4"
-  local selected_block_size="$5"
-  local selected_symbols_per_block="$6"
-  local selected_packet_processors="$7"
-  local selected_channel_capacity="$8"
-  local selected_queue_capacity="$9"
+  local selected_fec_scheme="$3"
+  local selected_receivers="$4"
+  local selected_trees="$5"
+  local selected_block_size="$6"
+  local selected_symbols_per_block="$7"
+  local selected_packet_processors="$8"
+  local selected_channel_capacity="$9"
+  local selected_queue_capacity="${10}"
+  local mode_label="$selected_mode"
+
+  if [[ "$selected_mode" == "fec" ]]; then
+    mode_label="${selected_mode}-${selected_fec_scheme}"
+  fi
 
   printf '%s-%s-%st-%sr-b%s-s%s-p%s-c%s-q%s' \
     "$prefix" \
-    "$selected_mode" \
+    "$mode_label" \
     "$selected_trees" \
     "$selected_receivers" \
     "$selected_block_size" \
@@ -490,15 +521,16 @@ assert_status_ok() {
 run_case() {
   local name="$1"
   local mode="$2"
-  local receivers="$3"
-  local trees="$4"
-  local block_size="$5"
-  local symbols_per_block="$6"
-  local payload_size="$7"
-  local receive_timeout_ms="$8"
-  local selected_packet_processors="$9"
-  local selected_channel_capacity="${10}"
-  local selected_queue_capacity="${11}"
+  local selected_fec_scheme="$3"
+  local receivers="$4"
+  local trees="$5"
+  local block_size="$6"
+  local symbols_per_block="$7"
+  local payload_size="$8"
+  local receive_timeout_ms="$9"
+  local selected_packet_processors="${10}"
+  local selected_channel_capacity="${11}"
+  local selected_queue_capacity="${12}"
   local case_dir="${artifacts_root}/${name}"
 
   current_case_dir="$case_dir"
@@ -510,6 +542,7 @@ run_case() {
     "$case_dir" \
     --case-name "$name" \
     --mode "$mode" \
+    --fec-scheme "$selected_fec_scheme" \
     --receivers "$receivers" \
     --trees "$trees" \
     --block-size "$block_size" \
@@ -541,13 +574,14 @@ run_tree_sweep() {
   local max_trees="$1"
   local selected_receivers="$2"
   local selected_mode="$3"
-  local selected_block_size="$4"
-  local selected_symbols_per_block="$5"
-  local selected_payload_size="$6"
-  local selected_receive_timeout_ms="$7"
-  local selected_packet_processors="$8"
-  local selected_channel_capacity="$9"
-  local selected_queue_capacity="${10}"
+  local selected_fec_scheme="$4"
+  local selected_block_size="$5"
+  local selected_symbols_per_block="$6"
+  local selected_payload_size="$7"
+  local selected_receive_timeout_ms="$8"
+  local selected_packet_processors="$9"
+  local selected_channel_capacity="${10}"
+  local selected_queue_capacity="${11}"
 
   require_positive_int "--tree-sweep-max" "$max_trees"
   require_positive_int "--tree-sweep-receivers" "$selected_receivers"
@@ -555,6 +589,7 @@ run_tree_sweep() {
   for ((tree_count = 1; tree_count <= max_trees; tree_count++)); do
     validate_run_request \
       "$selected_mode" \
+      "$selected_fec_scheme" \
       "$selected_receivers" \
       "$tree_count" \
       "$selected_block_size" \
@@ -566,8 +601,9 @@ run_tree_sweep() {
       "$selected_queue_capacity"
 
     run_case \
-      "$(make_case_name tree-sweep "$selected_mode" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
+      "$(make_case_name tree-sweep "$selected_mode" "$selected_fec_scheme" "$selected_receivers" "$tree_count" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
       "$selected_mode" \
+      "$selected_fec_scheme" \
       "$selected_receivers" \
       "$tree_count" \
       "$selected_block_size" \
@@ -584,13 +620,14 @@ run_receiver_sweep() {
   local max_receivers="$1"
   local selected_trees="$2"
   local selected_mode="$3"
-  local selected_block_size="$4"
-  local selected_symbols_per_block="$5"
-  local selected_payload_size="$6"
-  local selected_receive_timeout_ms="$7"
-  local selected_packet_processors="$8"
-  local selected_channel_capacity="$9"
-  local selected_queue_capacity="${10}"
+  local selected_fec_scheme="$4"
+  local selected_block_size="$5"
+  local selected_symbols_per_block="$6"
+  local selected_payload_size="$7"
+  local selected_receive_timeout_ms="$8"
+  local selected_packet_processors="$9"
+  local selected_channel_capacity="${10}"
+  local selected_queue_capacity="${11}"
 
   require_positive_int "--receiver-sweep-max" "$max_receivers"
   require_positive_int "--receiver-sweep-trees" "$selected_trees"
@@ -598,6 +635,7 @@ run_receiver_sweep() {
   for ((receiver_count = 1; receiver_count <= max_receivers; receiver_count++)); do
     validate_run_request \
       "$selected_mode" \
+      "$selected_fec_scheme" \
       "$receiver_count" \
       "$selected_trees" \
       "$selected_block_size" \
@@ -609,8 +647,9 @@ run_receiver_sweep() {
       "$selected_queue_capacity"
 
     run_case \
-      "$(make_case_name receiver-sweep "$selected_mode" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
+      "$(make_case_name receiver-sweep "$selected_mode" "$selected_fec_scheme" "$receiver_count" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
       "$selected_mode" \
+      "$selected_fec_scheme" \
       "$receiver_count" \
       "$selected_trees" \
       "$selected_block_size" \
@@ -628,7 +667,7 @@ trap cleanup_on_exit EXIT
 require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
 
 if [[ -n "$case_name" ]]; then
-  if [[ -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+  if [[ -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
     echo "--case cannot be combined with custom run or sweep options." >&2
     exit 1
   fi
@@ -646,10 +685,11 @@ mkdir -p "$artifacts_root"
 
 if [[ -n "$case_name" ]]; then
   case "$case_name" in
-    plain-1r) run_case plain-1r plain 1 1 8192 32 262144 120000 1 2048 2048 ;;
-    fec-1r) run_case fec-1r fec 1 1 8192 32 262144 120000 1 2048 2048 ;;
-    fec-2r-block) run_case fec-2r-block fec 2 2 4096 32 393216 120000 1 2048 2048 ;;
-    fec-2r-symbols) run_case fec-2r-symbols fec 2 2 8192 16 393216 120000 1 2048 2048 ;;
+    plain-1r) run_case plain-1r plain raptorq 1 1 8192 32 262144 120000 1 2048 2048 ;;
+    fec-1r) run_case fec-1r fec raptorq 1 1 8192 32 262144 120000 1 2048 2048 ;;
+    fec-2r-block) run_case fec-2r-block fec raptorq 2 2 4096 32 393216 120000 1 2048 2048 ;;
+    fec-2r-symbols) run_case fec-2r-symbols fec raptorq 2 2 8192 16 393216 120000 1 2048 2048 ;;
+    mettle-1r) run_case mettle-1r fec mettle 1 1 8192 "$mettle_min_symbols_per_block" 262144 120000 1 2048 2048 ;;
     *)
       echo "Unknown case: ${case_name}" >&2
       exit 1
@@ -659,6 +699,7 @@ if [[ -n "$case_name" ]]; then
 fi
 
 selected_mode="${mode:-fec}"
+selected_fec_scheme="${fec_scheme:-raptorq}"
 selected_block_size="${block_size:-8192}"
 selected_symbols_per_block="${symbols_per_block:-32}"
 selected_payload_size="${payload_size:-262144}"
@@ -673,6 +714,7 @@ if [[ -n "$tree_sweep_max" ]]; then
     "$tree_sweep_max" \
     "$tree_sweep_receivers" \
     "$selected_mode" \
+    "$selected_fec_scheme" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
@@ -688,6 +730,7 @@ if [[ -n "$receiver_sweep_max" ]]; then
     "$receiver_sweep_max" \
     "$receiver_sweep_trees" \
     "$selected_mode" \
+    "$selected_fec_scheme" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
@@ -698,7 +741,7 @@ if [[ -n "$receiver_sweep_max" ]]; then
   ran_any="true"
 fi
 
-if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
   if [[ -z "$receivers" || -z "$trees" ]]; then
     echo "Custom runs require both --receivers and --trees." >&2
     exit 1
@@ -706,6 +749,7 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
 
   validate_run_request \
     "$selected_mode" \
+    "$selected_fec_scheme" \
     "$receivers" \
     "$trees" \
     "$selected_block_size" \
@@ -717,8 +761,9 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
     "$selected_queue_capacity"
 
   run_case \
-    "$(make_case_name custom "$selected_mode" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
+    "$(make_case_name custom "$selected_mode" "$selected_fec_scheme" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
     "$selected_mode" \
+    "$selected_fec_scheme" \
     "$receivers" \
     "$trees" \
     "$selected_block_size" \
@@ -732,5 +777,5 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$receivers" || -n "$trees" ||
 fi
 
 if [[ "$ran_any" == "false" ]]; then
-  run_case plain-1r plain 1 1 8192 32 262144 120000 1 2048 2048
+  run_case plain-1r plain raptorq 1 1 8192 32 262144 120000 1 2048 2048
 fi
