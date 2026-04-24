@@ -95,7 +95,6 @@ impl ReceiverProgress {
     }
 
     /// Return the timestamp of the first payload unit, if any.
-    #[allow(dead_code)]
     pub fn first_payload_unit_at(&self) -> Option<Instant> {
         self.first_payload_unit_at.get().copied()
     }
@@ -1007,7 +1006,10 @@ mod tests {
         assert_plain_complete_for_round(packet_rx, 0).await;
     }
 
-    async fn assert_plain_complete_for_round(packet_rx: &mut mpsc::Receiver<Packet>, round_id: u32) {
+    async fn assert_plain_complete_for_round(
+        packet_rx: &mut mpsc::Receiver<Packet>,
+        round_id: u32,
+    ) {
         let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for replayed plain status")

@@ -1,4 +1,3 @@
-use std::io::Cursor;
 use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
@@ -37,7 +36,7 @@ impl TcpServer {
         }
     }
 
-    pub async fn start_listening(&mut self, addr: &String) {
+    pub async fn start_listening(&mut self, addr: &str) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(e) => {
@@ -70,15 +69,7 @@ impl TcpServer {
                 continue;
             }
 
-            let mut cursor = Cursor::new(&node_id_buf);
-
-            let remote_node_id = match cursor.read_u64().await {
-                Ok(id) => id as usize,
-                Err(e) => {
-                    error!("Failed to parse node ID: {}", e);
-                    continue;
-                }
-            };
+            let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
 
             info!("Incoming connection from node {}...", remote_node_id);
 
@@ -182,11 +173,9 @@ pub struct TcpReader {
 }
 
 /// Tracks an in-flight bandwidth probe on the receive side.
-#[allow(dead_code)]
 struct ProbeState {
     first_arrival: Instant,
     bytes_received: usize,
-    sender_node_id: usize,
 }
 
 /// Probe payload layout (17-byte header inside TCP payload):
@@ -234,11 +223,13 @@ impl TcpReader {
         let probe_id = u64::from_be_bytes(payload[1..9].try_into().unwrap());
         let sender_node_id = u64::from_be_bytes(payload[9..17].try_into().unwrap()) as usize;
 
-        let state = self.active_probes.entry(probe_id).or_insert_with(|| ProbeState {
-            first_arrival: Instant::now(),
-            bytes_received: 0,
-            sender_node_id,
-        });
+        let state = self
+            .active_probes
+            .entry(probe_id)
+            .or_insert_with(|| ProbeState {
+                first_arrival: Instant::now(),
+                bytes_received: 0,
+            });
         state.bytes_received += packet.packet_size;
 
         if flags == 0x01 {
