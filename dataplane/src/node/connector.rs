@@ -78,10 +78,13 @@ impl Connector {
                             self.process_packet(first_packet).await;
 
                             // starts processing packets in batches
-                            while let Ok(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
+                            while let Ok(ProcessorPacket::ProcessPacket(packet)) =
+                                self.packet_receiver.try_recv()
+                            {
                                 self.process_packet(packet).await;
                             }
                         }
+                        ProcessorPacket::SendLinkProbePackets { .. } => {}
                     }
                 }
                 Some(msg) = self.message_receiver.recv() => {

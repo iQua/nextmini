@@ -10,7 +10,7 @@ The probe tool triggers a bandwidth measurement between two dataplane nodes by i
 1. A row is inserted into the `probe_requests` table.
 2. A PostgreSQL trigger fires `pg_notify('probe_requested', ...)`.
 3. The controller receives the notification and sends a `ProbeLink` message to the sender node over WebSocket.
-4. The sender builds \~1000 probe packets (1360 B payload, 1400 B total with IP+TCP headers) and pushes them to the receiver through the existing TCP link, bypassing the scheduler queue and rate limiter.
+4. The sender builds \~1000 probe packets (1360 B payload, 1400 B total with IP+TCP headers) and pushes them to the receiver over the existing TCP link.
 5. The receiver detects probe packets by a reserved flow ID (`127.0.0.1 → 127.0.0.2`), tracks first-to-last packet arrival time, and computes throughput.
 6. The result is reported back to the controller and persisted in `probe_results`.
 
@@ -74,4 +74,4 @@ SELECT * FROM probe_results ORDER BY created_at DESC LIMIT 5;
 
 ## Limitations
 
-- Probing only works when the sender initiated the TCP connection to the receiver (i.e. the sender received an `AddNode` from the controller). In the simple 3-node example, node 1 is always the listener, so probes **to** node 1 work (`--from 2 --to 1`) but probes **from** node 1 do not.
+- Probing requires an established topology connection between the two dataplane nodes. The connection may have been initiated by either endpoint, so both directions can be measured once the topology is ready.

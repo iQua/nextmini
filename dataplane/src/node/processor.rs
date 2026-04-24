@@ -40,6 +40,10 @@ const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
 // Message types for the processor actor.
 pub enum ProcessorPacket {
     ProcessPacket(Packet),
+    SendLinkProbePackets {
+        node_id: NodeId,
+        packets: Vec<Packet>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -132,6 +136,13 @@ impl ProcessorHandle {
             .send(ProcessorMessage::AddNode(node_id, scheduler))?;
 
         Ok(())
+    }
+
+    pub fn send_link_probe_packets(&self, node_id: NodeId, packets: Vec<Packet>) {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.send_link_probe_packets(node_id, packets),
+            ProcessorHandle::Concurrent(handle) => handle.send_link_probe_packets(node_id, packets),
+        }
     }
 
     // connects the local interface to the processor
@@ -562,6 +573,11 @@ impl SequentialProcHandle {
         }
     }
 
+    fn send_link_probe_packets(&self, node_id: NodeId, packets: Vec<Packet>) {
+        let msg = ProcessorPacket::SendLinkProbePackets { node_id, packets };
+        let _ = self.packet_senders[0].try_send(msg);
+    }
+
     fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
         let idx = self.select_processor_ingress_lane(&packet);
         let sender = &self.packet_senders[idx];
@@ -767,6 +783,11 @@ impl ConcurrentProcHandle {
         }
     }
 
+    fn send_link_probe_packets(&self, node_id: NodeId, packets: Vec<Packet>) {
+        let msg = ProcessorPacket::SendLinkProbePackets { node_id, packets };
+        let _ = self.packet_sender.try_send(msg);
+    }
+
     fn try_send_to_processor(&self, packet: Packet) -> SendOutcome {
         map_flume_try_send_outcome(
             self.packet_sender
@@ -915,17 +936,12 @@ impl Processor {
         loop {
             tokio::select! {
                 // waits for the first packet or a broadcast message
-                Some(msg) = self.packet_receiver.recv() => {
-                    match msg {
-                        ProcessorPacket::ProcessPacket(first_packet) => {
-                            // starts a batch with the first packet
-                            self.process_packet(first_packet).await;
+                Some(first_msg) = self.packet_receiver.recv() => {
+                    self.handle_packet_message(first_msg).await;
 
-                            // starts processing packets in batches
-                            while let Some(ProcessorPacket::ProcessPacket(packet)) = self.packet_receiver.try_recv() {
-                                self.process_packet(packet).await;
-                            }
-                        }
+                    // starts processing queued packet messages in batches
+                    while let Some(msg) = self.packet_receiver.try_recv() {
+                        self.handle_packet_message(msg).await;
                     }
                 }
                 Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
@@ -933,6 +949,23 @@ impl Processor {
                 }
                 else => break,
             }
+        }
+    }
+
+    async fn handle_packet_message(&mut self, msg: ProcessorPacket) {
+        match msg {
+            ProcessorPacket::ProcessPacket(packet) => {
+                self.process_packet(packet).await;
+            }
+            ProcessorPacket::SendLinkProbePackets { node_id, packets } => {
+                self.send_link_probe_packets(node_id, packets);
+            }
+        }
+    }
+
+    fn send_link_probe_packets(&self, node_id: NodeId, packets: Vec<Packet>) {
+        if let Some(scheduler) = self.schedulers.get(&node_id) {
+            scheduler.send_link_probe_packets(packets);
         }
     }
 
