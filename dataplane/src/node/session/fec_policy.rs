@@ -7,7 +7,6 @@ use nextmini_messages::lossless_session::{
 };
 
 use crate::node::config::{LosslessConfig, LosslessFecScheme};
-use crate::node::session::fec::METTLE_MIN_SOURCE_SYMBOLS;
 
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +17,6 @@ pub enum PreflightError {
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
-    MettleSymbolsPerBlockTooSmall { value: u16, min: usize },
     MultiTreeRequiresTreeVisibleIngress,
 }
 
@@ -58,18 +56,10 @@ pub(super) fn derive_sender_policy(
         LosslessFecScheme::RaptorQ => LosslessSessionMode::Fec(
             LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids),
         ),
-        LosslessFecScheme::Mettle => {
-            if usize::from(symbols_per_block) < METTLE_MIN_SOURCE_SYMBOLS {
-                return Err(PreflightError::MettleSymbolsPerBlockTooSmall {
-                    value: symbols_per_block,
-                    min: METTLE_MIN_SOURCE_SYMBOLS,
-                });
-            }
-            LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
-                symbols_per_block,
-                tree_ids,
-            ))
-        }
+        LosslessFecScheme::Mettle => LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
+            symbols_per_block,
+            tree_ids,
+        )),
     };
 
     Ok(SenderPolicy { mode })
@@ -124,10 +114,6 @@ impl Display for PreflightError {
             Self::TooManyTreeIds { configured, max } => write!(
                 f,
                 "configured fec tree_ids length {configured} exceeds wire manifest capacity {max}"
-            ),
-            Self::MettleSymbolsPerBlockTooSmall { value, min } => write!(
-                f,
-                "METTLE requires symbols_per_block >= {min} (got {value})"
             ),
             Self::MultiTreeRequiresTreeVisibleIngress => write!(
                 f,

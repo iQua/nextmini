@@ -24,7 +24,6 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::SessionId;
 use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
-use crate::node::session::fec as session_fec;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
@@ -358,9 +357,7 @@ impl SessionReceiver {
 fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
     match fec.scheme_kind() {
         Some(FecScheme::RaptorQ) => true,
-        Some(FecScheme::Mettle) => {
-            usize::from(fec.symbols_per_block) >= session_fec::METTLE_MIN_SOURCE_SYMBOLS
-        }
+        Some(FecScheme::Mettle) => true,
         None => false,
     }
 }
@@ -780,18 +777,17 @@ mod tests {
     }
 
     #[test]
-    fn receiver_supports_mettle_only_at_minimum_geometry() {
+    fn receiver_supports_mettle_for_small_experimental_geometry() {
+        const PAPER_SCALE_METTLE_K: u16 = 2400;
+
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
-                session_fec::METTLE_MIN_SOURCE_SYMBOLS as u16,
+                PAPER_SCALE_METTLE_K,
                 vec![0],
             )
         ));
-        assert!(!receiver_supports_fec_scheme(
-            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
-                session_fec::METTLE_MIN_SOURCE_SYMBOLS as u16 - 1,
-                vec![0],
-            )
+        assert!(receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(16, vec![0])
         ));
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])

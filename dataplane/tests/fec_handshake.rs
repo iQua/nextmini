@@ -183,7 +183,7 @@ async fn start_sender_defaults_to_raptorq_fec_scheme() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn start_sender_rejects_mettle_below_minimum_symbols_per_block() {
+async fn start_sender_accepts_small_experimental_mettle_symbols_per_block() {
     let cfg = LocalConfig {
         node_id: 1,
         n_nodes: 2,
@@ -196,20 +196,12 @@ async fn start_sender_rejects_mettle_below_minimum_symbols_per_block() {
     let mut runtime_cfg = cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = true;
     runtime_cfg.fec_default_scheme = LosslessFecScheme::Mettle;
-    runtime_cfg.fec_default_symbols_per_block = 2399;
+    runtime_cfg.fec_default_symbols_per_block = 16;
     runtime_cfg.fec_default_tree_ids = vec![1];
 
     let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2006).await;
 
-    assert!(
-        matches!(
-            started,
-            Err(StartError::Preflight(
-                PreflightError::MettleSymbolsPerBlockTooSmall { value: 2399, .. }
-            ))
-        ),
-        "METTLE should reject K below the sender policy minimum"
-    );
+    assert_eq!(started.expect("small-K METTLE should start"), 0x0FEC_2006);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

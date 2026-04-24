@@ -9,7 +9,6 @@ use tokio::time::timeout;
 
 use nextmini::node::packet::Packet;
 use nextmini::node::session::api::{InboundFrame, SessionOutcome};
-use nextmini::node::session::fec as session_fec;
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{ReceiverConfig, SenderConfig};
 use nextmini::node::session::sender;
@@ -25,6 +24,7 @@ const SRC_PORT: u16 = 4700;
 const DST_PORT: u16 = 4800;
 const PEER_REPORT_TIMEOUT_MS: u64 = 30_000;
 const RECEIVER_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
+const PAPER_SCALE_METTLE_K: usize = 2400;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_flow() {
@@ -48,13 +48,13 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
     .await;
 
     let session_id = 0x4D45_5454_1E01;
-    let k = session_fec::METTLE_MIN_SOURCE_SYMBOLS;
+    let k = PAPER_SCALE_METTLE_K;
     let source_bytes = patterned_source_bytes(k);
     // Fixed one-erasure case for this session seed under the METTLE paper graph.
     // The real Need, repair, Complete, and sink-byte assertions below catch drift.
     let missing_source = 45usize;
     assert!(missing_source < k);
-    let symbols_per_block = u16::try_from(k).expect("METTLE minimum K fits u16");
+    let symbols_per_block = u16::try_from(k).expect("paper-scale METTLE K fits u16");
     let manifest = LosslessSessionManifest {
         block_size: k as u32,
         total_bytes: k as u64,

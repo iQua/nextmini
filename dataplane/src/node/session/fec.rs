@@ -11,7 +11,6 @@ use raptorq::{
 
 const FEC_BLOCK_SEED_SESSION_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
-pub const METTLE_MIN_SOURCE_SYMBOLS: usize = 2400;
 
 /// Deterministically derives the FEC block seed shared by sender and receiver.
 #[must_use]
@@ -344,6 +343,8 @@ fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item
 mod tests {
     use super::*;
 
+    const PAPER_SCALE_METTLE_K: usize = 2400;
+
     #[test]
     fn block_seed_is_stable_for_known_input() {
         assert_eq!(block_seed(0xA55A, 17), 0xD429_E47F_291A_692B);
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn mettle_rejects_repair_esi_below_k() {
-        let k = METTLE_MIN_SOURCE_SYMBOLS;
+        let k = PAPER_SCALE_METTLE_K;
         let params = BlockParams::with_scheme(k, 1, 0x1234, FecScheme::Mettle);
         let decoder = Decoder::from_block(params);
 
@@ -482,7 +483,7 @@ mod tests {
 
     #[test]
     fn mettle_deficit_accounts_for_non_contiguous_repairs() {
-        let k = METTLE_MIN_SOURCE_SYMBOLS;
+        let k = PAPER_SCALE_METTLE_K;
         let params = BlockParams::with_scheme(k, 1, 0xA55A, FecScheme::Mettle);
         let received_sources = (0..(k - 3)).map(|source_index| source_index as u32);
         let received_repairs = [10u32, 12, 17].map(|repair_index| k as u32 + repair_index);

@@ -8,14 +8,15 @@ controller_bin="${CONTROLLER_BIN:-${root_dir}/target/release/controller}"
 dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 cargo_bin="${CARGO_BIN:-}"
 database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
-mettle_min_symbols_per_block="2400"
+mettle_paper_scale_symbols_per_block="2400"
 
 # RaptorQ legacy baseline used for namespace sanity checks:
 #   --mode fec --trees 2 --receivers 10 --payload-size $((256*1024*1024)) \
 #     --block-size $((128*1024)) --symbols-per-block 16
 #
-# METTLE cannot use K=16. For RaptorQ-vs-METTLE backend comparisons, keep the
-# same topology and payload, but use K >= 2400 for both backends.
+# METTLE small-K runs are useful for engineering sweeps, but they are below the
+# paper-scale regime. For paper-scale RaptorQ-vs-METTLE comparisons, keep the
+# same topology and payload, and use K >= 2400 for both backends.
 case_name=""
 no_build="false"
 mode=""
@@ -239,10 +240,6 @@ validate_run_request() {
 
   if [[ "$selected_mode" == "plain" ]] && (( selected_trees != 1 )); then
     echo "plain mode only supports exactly one tree." >&2
-    exit 1
-  fi
-  if [[ "$selected_mode" == "fec" && "$selected_fec_scheme" == "mettle" ]] && (( selected_symbols_per_block < mettle_min_symbols_per_block )); then
-    echo "METTLE requires --symbols-per-block >= ${mettle_min_symbols_per_block}." >&2
     exit 1
   fi
 }
@@ -696,8 +693,8 @@ if [[ -n "$case_name" ]]; then
     fec-1r) run_case fec-1r fec raptorq 1 1 8192 32 262144 120000 1 2048 2048 ;;
     fec-2r-block) run_case fec-2r-block fec raptorq 2 2 4096 32 393216 120000 1 2048 2048 ;;
     fec-2r-symbols) run_case fec-2r-symbols fec raptorq 2 2 8192 16 393216 120000 1 2048 2048 ;;
-    raptorq-2t-2r-k2400) run_case raptorq-2t-2r-k2400 fec raptorq 2 2 2457600 "$mettle_min_symbols_per_block" 67108864 120000 1 2048 2048 ;;
-    mettle-2t-2r-k2400) run_case mettle-2t-2r-k2400 fec mettle 2 2 2457600 "$mettle_min_symbols_per_block" 67108864 120000 1 2048 2048 ;;
+    raptorq-2t-2r-k2400) run_case raptorq-2t-2r-k2400 fec raptorq 2 2 2457600 "$mettle_paper_scale_symbols_per_block" 67108864 120000 1 2048 2048 ;;
+    mettle-2t-2r-k2400) run_case mettle-2t-2r-k2400 fec mettle 2 2 2457600 "$mettle_paper_scale_symbols_per_block" 67108864 120000 1 2048 2048 ;;
     *)
       echo "Unknown case: ${case_name}" >&2
       exit 1

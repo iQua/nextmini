@@ -6,7 +6,6 @@ import pathlib
 
 
 SOURCE_NODE_ID = 1
-METTLE_MIN_SYMBOLS_PER_BLOCK = 2400
 
 
 def parse_args() -> argparse.Namespace:
@@ -70,13 +69,6 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--receive-timeout-ms must be positive.")
     if args.mode == "plain" and args.trees != 1:
         raise SystemExit("plain mode currently supports exactly one tree in this harness.")
-    if args.mode == "fec" and args.fec_scheme == "mettle":
-        if args.symbols_per_block < METTLE_MIN_SYMBOLS_PER_BLOCK:
-            raise SystemExit(
-                "METTLE requires --symbols-per-block >= "
-                f"{METTLE_MIN_SYMBOLS_PER_BLOCK}."
-            )
-
 
 def relay_pairs(tree_count: int) -> list[tuple[int, int]]:
     pairs: list[tuple[int, int]] = []
