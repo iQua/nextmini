@@ -95,12 +95,10 @@ fn mettle_compare_outcome(source_count: usize, scenario: CompareScenario) -> Com
     let mut decoder =
         TestDecoder::new_terminated(params, source_symbol_bytes, 0, source_count as u64);
     let mut decoded_sources = Vec::new();
-    let mut sent_packets = 0usize;
     let mut delivered_packets = 0usize;
     let expected = expected_mettle_decode(source_count);
 
     for (packet_ordinal, (bin_id, payload)) in emitted_bins.into_iter().enumerate() {
-        sent_packets += 1;
         if !scenario.keeps_packet(packet_ordinal as u64) {
             continue;
         }
@@ -109,7 +107,7 @@ fn mettle_compare_outcome(source_count: usize, scenario: CompareScenario) -> Com
         if decoded_sources.len() == source_count {
             assert_eq!(decoded_sources, expected);
             return CompareOutcome {
-                sent_packets,
+                sent_packets: packet_ordinal + 1,
                 delivered_packets,
                 source_count,
             };
