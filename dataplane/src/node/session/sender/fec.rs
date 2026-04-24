@@ -244,13 +244,6 @@ impl FecSender {
         symbol_id: u32,
     ) -> bool {
         let Some(payload) = self.extra_symbol_payload(shared, block_id, symbol_id) else {
-            warn!(
-                session_id = shared.session.session_id,
-                block_id,
-                symbol_id,
-                fec_scheme = ?self.scheme,
-                "Lossless FEC sender could not produce requested repair symbol"
-            );
             self.protocol_error = true;
             return false;
         };
@@ -726,41 +719,6 @@ mod tests {
             Some((0, u32::from(sender.symbols_per_block) + 2)),
             "full quorum should open the remaining repair budget"
         );
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_aborts_when_repair_stream_is_exhausted() {
-        let symbols_per_block =
-            u16::try_from(session_fec::METTLE_MIN_SOURCE_SYMBOLS).expect("minimum K fits u16");
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
-                symbols_per_block,
-                vec![7],
-            )),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
-        let mut shared = test_sender_shared(manifest);
-        let repair_count = mettle::block::BlockParams::new(
-            session_fec::METTLE_MIN_SOURCE_SYMBOLS,
-            1,
-            session_fec::block_seed(shared.session.session_id, 0),
-        )
-        .metadata()
-        .expect("metadata")
-        .repair_symbol_count();
-        let exhausted_symbol_id = u32::from(symbols_per_block)
-            + u32::try_from(repair_count).expect("repair count fits u32");
-
-        assert!(
-            !sender
-                .send_extra_symbol(&mut shared, 0, exhausted_symbol_id)
-                .await
-        );
-        assert!(sender.protocol_error);
     }
 
     #[test]

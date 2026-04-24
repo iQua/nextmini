@@ -60,14 +60,6 @@ impl FecReceiver {
             return;
         }
         if payload.len() != self.geometry.symbol_size() {
-            warn!(
-                session_id = shared.session_id,
-                block_id = symbol.block_id,
-                symbol_id = symbol.symbol_id,
-                expected = self.geometry.symbol_size(),
-                actual = payload.len(),
-                "Lossless receiver rejected malformed FEC symbol payload length"
-            );
             return;
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
@@ -131,14 +123,6 @@ impl FecReceiver {
 
         for (&symbol_id, payload) in &block_state.symbols {
             if payload.len() != self.geometry.symbol_size() {
-                warn!(
-                    session_id = shared.session_id,
-                    block_id,
-                    symbol_id,
-                    symbol_size = self.geometry.symbol_size(),
-                    payload_len = payload.len(),
-                    "Lossless receiver rejected malformed stored FEC symbol payload length"
-                );
                 return false;
             }
             if symbol_id < u32::from(fec_mode.symbols_per_block) {

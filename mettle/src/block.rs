@@ -31,16 +31,16 @@ impl BlockParams {
 
     fn validate(self) -> Result<ValidatedBlockParams, BlockError> {
         if self.source_symbols == 0 {
-            return Err(BlockError::ZeroSourceSymbols);
+            return Err(BlockError::InvalidParams);
         }
         let source_symbol_bytes =
-            NonZeroUsize::new(self.symbol_size).ok_or(BlockError::ZeroSymbolSize)?;
+            NonZeroUsize::new(self.symbol_size).ok_or(BlockError::InvalidParams)?;
         let source_block_len = self
             .source_symbols
             .checked_mul(self.symbol_size)
-            .ok_or(BlockError::BlockSizeOverflow)?;
-        let terminal_source_count = u64::try_from(self.source_symbols)
-            .map_err(|_| BlockError::SourceSymbolCountOverflow)?;
+            .ok_or(BlockError::InvalidParams)?;
+        let terminal_source_count =
+            u64::try_from(self.source_symbols).map_err(|_| BlockError::InvalidParams)?;
 
         Ok(ValidatedBlockParams {
             params: self,
@@ -75,67 +75,17 @@ struct ValidatedBlockParams {
 /// Block construction and symbol lookup failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BlockError {
-    ZeroSourceSymbols,
-    ZeroSymbolSize,
-    BlockSizeOverflow,
-    SourceSymbolCountOverflow,
-    WrongSourceBlockLength {
-        expected: usize,
-        actual: usize,
-    },
-    SourceIndexOutOfRange {
-        source_index: usize,
-        source_symbols: usize,
-    },
-    RepairIndexOutOfRange {
-        repair_index: usize,
-        repair_symbols: usize,
-    },
+    InvalidParams,
+    WrongSourceBlockLength,
+    SourceIndexOutOfRange,
+    RepairIndexOutOfRange,
 }
-
-impl std::fmt::Display for BlockError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ZeroSourceSymbols => write!(f, "source_symbols must be non-zero"),
-            Self::ZeroSymbolSize => write!(f, "symbol_size must be non-zero"),
-            Self::BlockSizeOverflow => write!(f, "source block byte length overflowed usize"),
-            Self::SourceSymbolCountOverflow => {
-                write!(
-                    f,
-                    "source_symbols does not fit in the METTLE source id space"
-                )
-            }
-            Self::WrongSourceBlockLength { expected, actual } => {
-                write!(
-                    f,
-                    "source block length must be exactly {expected} bytes, got {actual}"
-                )
-            }
-            Self::SourceIndexOutOfRange {
-                source_index,
-                source_symbols,
-            } => write!(
-                f,
-                "source index {source_index} is outside the block's {source_symbols} sources"
-            ),
-            Self::RepairIndexOutOfRange {
-                repair_index,
-                repair_symbols,
-            } => write!(
-                f,
-                "repair index {repair_index} is outside the block's {repair_symbols} repairs"
-            ),
-        }
-    }
-}
-
-impl std::error::Error for BlockError {}
 
 /// Adapter-level decode failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     Block(BlockError),
-    WrongSymbolLength { expected: usize, actual: usize },
+    WrongSymbolLength,
     InsufficientSymbols,
 }
 
@@ -144,23 +94,6 @@ impl From<BlockError> for DecodeError {
         Self::Block(error)
     }
 }
-
-impl std::fmt::Display for DecodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Block(error) => write!(f, "{error}"),
-            Self::WrongSymbolLength { expected, actual } => {
-                write!(
-                    f,
-                    "symbol payload length must be {expected} bytes, got {actual}"
-                )
-            }
-            Self::InsufficientSymbols => write!(f, "InsufficientSymbols"),
-        }
-    }
-}
-
-impl std::error::Error for DecodeError {}
 
 /// Opaque received symbol for decoder input.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -203,10 +136,7 @@ impl BlockMetadata {
         self.repair_bin_ids
             .get(repair_index)
             .copied()
-            .ok_or(BlockError::RepairIndexOutOfRange {
-                repair_index,
-                repair_symbols: self.repair_bin_ids.len(),
-            })
+            .ok_or(BlockError::RepairIndexOutOfRange)
     }
 
     /// Estimate how many future repair symbols are needed if future repairs
@@ -215,8 +145,8 @@ impl BlockMetadata {
         &self,
         received_sources: impl IntoIterator<Item = usize>,
         received_repairs: impl IntoIterator<Item = usize>,
-    ) -> Result<RepairDeficit, BlockError> {
-        let mut estimator = MetadataPeelingEstimator::new(self.params);
+    ) -> Result<Option<usize>, BlockError> {
+        let mut estimator = MetadataPeelingEstimator::new(self.params.source_symbols);
 
         for source_index in received_sources {
             estimator.observe_source(source_index)?;
@@ -238,11 +168,7 @@ impl BlockMetadata {
             estimator.drain();
         }
 
-        Ok(RepairDeficit {
-            decoded_source_symbols: estimator.decoded_source_symbols(),
-            additional_repair_symbols: estimator.is_complete().then_some(additional_repair_symbols),
-            next_repair_index: next_future_repair_index,
-        })
+        Ok(estimator.is_complete().then_some(additional_repair_symbols))
     }
 
     fn repair_touchers(&self, repair_index: usize) -> Result<Vec<usize>, BlockError> {
@@ -273,41 +199,23 @@ impl BlockMetadata {
     }
 }
 
-/// Repair deficit estimate for a future monotonic repair stream.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RepairDeficit {
-    /// Number of source symbols recoverable from the current set plus the
-    /// modeled future repair stream.
-    pub decoded_source_symbols: usize,
-    /// Additional future repairs needed, or `None` if this finite block's
-    /// remaining repair stream cannot complete the block.
-    pub additional_repair_symbols: Option<usize>,
-    /// First repair index not consumed by the estimate.
-    pub next_repair_index: usize,
-}
-
 #[derive(Debug)]
 struct MetadataPeelingEstimator {
-    params: BlockParams,
     known_sources: Vec<bool>,
     repairs: Vec<Vec<usize>>,
 }
 
 impl MetadataPeelingEstimator {
-    fn new(params: BlockParams) -> Self {
+    fn new(source_symbols: usize) -> Self {
         Self {
-            params,
-            known_sources: vec![false; params.source_symbols],
+            known_sources: vec![false; source_symbols],
             repairs: Vec::new(),
         }
     }
 
     fn observe_source(&mut self, source_index: usize) -> Result<(), BlockError> {
         let Some(known) = self.known_sources.get_mut(source_index) else {
-            return Err(BlockError::SourceIndexOutOfRange {
-                source_index,
-                source_symbols: self.params.source_symbols,
-            });
+            return Err(BlockError::SourceIndexOutOfRange);
         };
         *known = true;
         Ok(())
@@ -341,13 +249,6 @@ impl MetadataPeelingEstimator {
         }
     }
 
-    fn decoded_source_symbols(&self) -> usize {
-        self.known_sources
-            .iter()
-            .filter(|&&source_is_known| source_is_known)
-            .count()
-    }
-
     fn is_complete(&self) -> bool {
         self.known_sources
             .iter()
@@ -358,8 +259,6 @@ impl MetadataPeelingEstimator {
 /// Thin encoder wrapper around the METTLE paper encoder.
 #[derive(Debug)]
 pub struct Encoder {
-    params: BlockParams,
-    source_symbols: Vec<Vec<u8>>,
     repair_symbols: Vec<Vec<u8>>,
 }
 
@@ -368,14 +267,10 @@ impl Encoder {
     pub fn from_block(params: BlockParams, source_block: &[u8]) -> Result<Self, BlockError> {
         let validated = params.validate()?;
         if source_block.len() != validated.source_block_len {
-            return Err(BlockError::WrongSourceBlockLength {
-                expected: validated.source_block_len,
-                actual: source_block.len(),
-            });
+            return Err(BlockError::WrongSourceBlockLength);
         }
 
         let metadata = BlockMetadata::new(params)?;
-        let mut source_symbols = Vec::with_capacity(params.source_symbols);
         let mut encoder = MettleEncoder::new_terminated(
             params.mettle_params(),
             validated.source_symbol_bytes,
@@ -385,7 +280,6 @@ impl Encoder {
         let mut encoded_bins = Vec::new();
 
         for source_payload in source_block.chunks_exact(params.symbol_size) {
-            source_symbols.push(source_payload.to_vec());
             encoded_bins.extend(encoder.push_source(source_payload));
         }
         encoded_bins.extend(encoder.finish());
@@ -408,22 +302,7 @@ impl Encoder {
             .map(|(_, payload)| payload)
             .collect::<Vec<_>>();
 
-        Ok(Self {
-            params,
-            source_symbols,
-            repair_symbols,
-        })
-    }
-
-    /// Generates a raw systematic source symbol payload for the source index.
-    pub fn source_symbol(&self, source_index: usize) -> Result<Vec<u8>, BlockError> {
-        self.source_symbols
-            .get(source_index)
-            .cloned()
-            .ok_or(BlockError::SourceIndexOutOfRange {
-                source_index,
-                source_symbols: self.params.source_symbols,
-            })
+        Ok(Self { repair_symbols })
     }
 
     /// Generates a deterministic repair symbol payload for the repair index.
@@ -431,15 +310,7 @@ impl Encoder {
         self.repair_symbols
             .get(repair_index)
             .cloned()
-            .ok_or(BlockError::RepairIndexOutOfRange {
-                repair_index,
-                repair_symbols: self.repair_symbols.len(),
-            })
-    }
-
-    /// Returns metadata for this finite block.
-    pub fn metadata(&self) -> Result<BlockMetadata, BlockError> {
-        BlockMetadata::new(self.params)
+            .ok_or(BlockError::RepairIndexOutOfRange)
     }
 }
 
@@ -450,14 +321,6 @@ pub struct DecodeOutput {
     pub source_symbols: Vec<Vec<u8>>,
 }
 
-impl DecodeOutput {
-    /// Flatten the reconstructed fixed-K source block.
-    #[must_use]
-    pub fn into_source_block(self) -> Vec<u8> {
-        self.source_symbols.into_iter().flatten().collect()
-    }
-}
-
 /// Thin decoder wrapper around the METTLE paper decoder.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Decoder {
@@ -465,12 +328,6 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    /// Construct a decoder for one logical block with the paper-native profile.
-    #[must_use]
-    pub fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
-        Self::from_block(BlockParams::new(source_symbols, symbol_size, seed))
-    }
-
     /// Construct a decoder from shared block parameters.
     #[must_use]
     pub const fn from_block(params: BlockParams) -> Self {
@@ -495,11 +352,6 @@ impl Decoder {
         }
     }
 
-    /// Returns metadata for this finite block.
-    pub fn metadata(&self) -> Result<BlockMetadata, BlockError> {
-        BlockMetadata::new(self.params)
-    }
-
     /// Attempt to reconstruct the full fixed-K source block.
     pub fn decode(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
         let validated = self.params.validate()?;
@@ -514,20 +366,13 @@ impl Decoder {
 
         for symbol in symbols {
             if symbol.payload.len() != self.params.symbol_size {
-                return Err(DecodeError::WrongSymbolLength {
-                    expected: self.params.symbol_size,
-                    actual: symbol.payload.len(),
-                });
+                return Err(DecodeError::WrongSymbolLength);
             }
 
             let bin_id = match symbol.kind {
                 ReceivedSymbolKind::Source { source_index } => {
                     if source_index >= self.params.source_symbols {
-                        return Err(BlockError::SourceIndexOutOfRange {
-                            source_index,
-                            source_symbols: self.params.source_symbols,
-                        }
-                        .into());
+                        return Err(BlockError::SourceIndexOutOfRange.into());
                     }
                     self.params.mettle_params().tle_bin_id(source_index as u64)
                 }

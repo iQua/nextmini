@@ -176,30 +176,6 @@ pub struct Decoder {
 }
 
 impl Decoder {
-    /// Construct a decoder for one logical block.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn new(source_symbols: usize, symbol_size: usize, _seed: u64) -> Self {
-        Self::from_block(BlockParams::new(source_symbols, symbol_size, _seed))
-    }
-
-    /// Construct a decoder for one logical block using the selected scheme.
-    #[must_use]
-    #[allow(dead_code)]
-    pub fn with_scheme(
-        source_symbols: usize,
-        symbol_size: usize,
-        seed: u64,
-        scheme: FecScheme,
-    ) -> Self {
-        Self::from_block(BlockParams::with_scheme(
-            source_symbols,
-            symbol_size,
-            seed,
-            scheme,
-        ))
-    }
-
     /// Construct a decoder from shared block parameters.
     #[must_use]
     pub fn from_block(params: BlockParams) -> Self {
@@ -310,9 +286,7 @@ impl Decoder {
                     Err(DecodeError::InsufficientSymbols)
                 }
                 mettle::block::DecodeError::Block(_)
-                | mettle::block::DecodeError::WrongSymbolLength { .. } => {
-                    Err(DecodeError::InvalidSymbol)
-                }
+                | mettle::block::DecodeError::WrongSymbolLength => Err(DecodeError::InvalidSymbol),
             },
             |output| {
                 Ok(DecodeOutput {
@@ -359,11 +333,9 @@ fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item
         }
     }
 
-    let Ok(deficit) = metadata.estimate_repair_deficit(sources, repairs) else {
-        return 1;
-    };
-    let Some(additional) = deficit.additional_repair_symbols else {
-        return 1;
+    let additional = match metadata.estimate_repair_deficit(sources, repairs) {
+        Ok(Some(additional)) => additional,
+        _ => return 1,
     };
     u16::try_from(additional).unwrap_or(u16::MAX).max(1)
 }
@@ -524,10 +496,9 @@ mod tests {
             .rev()
             .find_map(|source_index| {
                 let sources = (0..k).filter(|&candidate| candidate != source_index);
-                let deficit = metadata
+                let additional = metadata
                     .estimate_repair_deficit(sources, std::iter::empty::<usize>())
-                    .ok()?;
-                let additional = deficit.additional_repair_symbols?;
+                    .ok()??;
                 (additional > 0).then_some((source_index, additional))
             })
             .expect("production-valid METTLE geometry should have a repair-decodable erasure");
