@@ -9,18 +9,6 @@ dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 cargo_bin="${CARGO_BIN:-}"
 database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
 mettle_min_symbols_per_block="2400"
-default_custom_receivers="10"
-default_fec_trees="2"
-default_plain_trees="1"
-default_fec_block_size="2457600"
-default_plain_block_size="8192"
-default_fec_symbols_per_block="2400"
-default_plain_symbols_per_block="32"
-default_payload_size="268435456"
-default_receive_timeout_ms="120000"
-default_packet_processors="1"
-default_channel_capacity="2048"
-default_queue_capacity="2048"
 case_name=""
 no_build="false"
 mode=""
@@ -50,11 +38,11 @@ Options:
   --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols | raptorq-2t-2r-k2400 | mettle-2t-2r-k2400.
   --mode MODE                Custom run/sweep mode: plain | fec (default for custom runs: fec).
   --fec-scheme SCHEME        FEC backend for custom/sweep runs: raptorq | mettle (default: raptorq).
-  --receivers N              Custom run receiver count (default: 10).
-  --trees N                  Custom run tree count (default: 2 for fec, 1 for plain).
-  --block-size N             Custom run block size (default: 2457600 for fec, 8192 for plain).
-  --symbols-per-block N      Custom run symbols_per_block (default: 2400 for fec, 32 for plain).
-  --payload-size N           Custom run payload size bytes (default: 268435456).
+  --receivers N              Custom run receiver count.
+  --trees N                  Custom run tree count.
+  --block-size N             Custom run block size (default: 8192).
+  --symbols-per-block N      Custom run symbols_per_block (default: 32).
+  --payload-size N           Custom run payload size bytes (default: 262144).
   --receive-timeout-ms N     Session completion timeout in ms (default: 120000).
   --packet-processors N      Dataplane packet processor lanes (default: 1).
   --channel-capacity N       Dataplane channel capacity (default: 2048).
@@ -713,24 +701,13 @@ fi
 
 selected_mode="${mode:-fec}"
 selected_fec_scheme="${fec_scheme:-raptorq}"
-if [[ "$selected_mode" == "plain" ]]; then
-  default_trees="$default_plain_trees"
-  default_block_size="$default_plain_block_size"
-  default_symbols_per_block="$default_plain_symbols_per_block"
-else
-  default_trees="$default_fec_trees"
-  default_block_size="$default_fec_block_size"
-  default_symbols_per_block="$default_fec_symbols_per_block"
-fi
-selected_receivers="${receivers:-$default_custom_receivers}"
-selected_trees="${trees:-$default_trees}"
-selected_block_size="${block_size:-$default_block_size}"
-selected_symbols_per_block="${symbols_per_block:-$default_symbols_per_block}"
-selected_payload_size="${payload_size:-$default_payload_size}"
-selected_receive_timeout_ms="${receive_timeout_ms:-$default_receive_timeout_ms}"
-selected_packet_processors="${packet_processors:-$default_packet_processors}"
-selected_channel_capacity="${channel_capacity:-$default_channel_capacity}"
-selected_queue_capacity="${queue_capacity:-$default_queue_capacity}"
+selected_block_size="${block_size:-8192}"
+selected_symbols_per_block="${symbols_per_block:-32}"
+selected_payload_size="${payload_size:-262144}"
+selected_receive_timeout_ms="${receive_timeout_ms:-120000}"
+selected_packet_processors="${packet_processors:-1}"
+selected_channel_capacity="${channel_capacity:-2048}"
+selected_queue_capacity="${queue_capacity:-2048}"
 ran_any="false"
 
 if [[ -n "$tree_sweep_max" ]]; then
@@ -766,11 +743,16 @@ if [[ -n "$receiver_sweep_max" ]]; then
 fi
 
 if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
+  if [[ -z "$receivers" || -z "$trees" ]]; then
+    echo "Custom runs require both --receivers and --trees." >&2
+    exit 1
+  fi
+
   validate_run_request \
     "$selected_mode" \
     "$selected_fec_scheme" \
-    "$selected_receivers" \
-    "$selected_trees" \
+    "$receivers" \
+    "$trees" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
@@ -780,11 +762,11 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receiver
     "$selected_queue_capacity"
 
   run_case \
-    "$(make_case_name custom "$selected_mode" "$selected_fec_scheme" "$selected_receivers" "$selected_trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
+    "$(make_case_name custom "$selected_mode" "$selected_fec_scheme" "$receivers" "$trees" "$selected_block_size" "$selected_symbols_per_block" "$selected_packet_processors" "$selected_channel_capacity" "$selected_queue_capacity")" \
     "$selected_mode" \
     "$selected_fec_scheme" \
-    "$selected_receivers" \
-    "$selected_trees" \
+    "$receivers" \
+    "$trees" \
     "$selected_block_size" \
     "$selected_symbols_per_block" \
     "$selected_payload_size" \
