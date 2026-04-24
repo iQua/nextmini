@@ -53,10 +53,10 @@ impl SchedulerWriter {
                     }
                 }
             }
-            if !probe_packets.is_empty() {
-                if let Err(e) = self.net_interface.send(probe_packets).await {
-                    error!("SchedulerWriter: Error sending probe packets: {}", e);
-                }
+            if !probe_packets.is_empty()
+                && let Err(e) = self.net_interface.send(probe_packets).await
+            {
+                error!("SchedulerWriter: Error sending probe packets: {}", e);
             }
 
             // waits for notification if queues are empty,

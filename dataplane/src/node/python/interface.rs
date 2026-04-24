@@ -87,17 +87,6 @@ impl PythonInterfaceHandle {
         rx
     }
 
-    #[allow(dead_code)]
-    pub async fn unregister_receiver(&self, flow_id: FlowId) {
-        let mut map = self.inner.senders.lock().await;
-        map.remove(&flow_id);
-    }
-
-    #[allow(dead_code)]
-    pub async fn has_receiver(&self, flow_id: FlowId) -> bool {
-        self.inner.senders.lock().await.contains_key(&flow_id)
-    }
-
     pub async fn deliver(&self, packet: Packet) -> Result<(), Packet> {
         let flow_id = packet.flow_id;
         let entry = {

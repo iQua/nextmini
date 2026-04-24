@@ -604,28 +604,6 @@ impl LocalConfig {
         self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
     }
 
-    /// Initializes the config for the namespace nodes.
-    #[allow(unused)]
-    pub fn new_for_namespace(config_path: &str, ns_addr: &str, node_index: usize) -> LocalConfig {
-        let (mut cfgs, _) = Self::from_file_and_args();
-
-        // manually sets namespace node's ip addresses
-        cfgs.private_network_addr = ns_addr.to_string();
-        cfgs.public_network_addr = ns_addr.to_string();
-
-        // The node_id is now based on the creation index + 1, since IDs are 1-based.
-        // The node_id_offset from the config is applied in the caller manager.rs.
-        cfgs.node_id = (node_index + 1) as NodeId;
-
-        if cfgs.num_packet_processors == 0 {
-            cfgs.num_packet_processors = num_cpus::get();
-        }
-
-        cfgs.config_path = config_path.to_string();
-
-        cfgs
-    }
-
     pub fn update(&mut self, response: Result<Message, Error>) {
         match response {
             Ok(Message::Binary(data)) => {

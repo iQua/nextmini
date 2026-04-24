@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use mettle::test_support::{Decoder as TestDecoder, Encoder as TestEncoder};
 use mettle::{MettleParams, OverheadRatio};
-use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
+use raptorq::{
+    EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder,
+};
 
 const BENCH_SYMBOL_SIZE: usize = 1500;
 const TABLE_V_SOURCE_COUNTS: [usize; 7] = [127, 257, 511, 1002, 2040, 4069, 8194];
@@ -19,7 +21,10 @@ fn benchmark_sources(source_count: usize) -> Vec<Vec<u8>> {
 }
 
 fn benchmark_flat_data(source_count: usize) -> Vec<u8> {
-    benchmark_sources(source_count).into_iter().flatten().collect()
+    benchmark_sources(source_count)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
@@ -30,7 +35,9 @@ fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {
         .collect()
 }
 
-fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Vec<(u128, Vec<u8>)>) {
+fn mettle_decode_fixture(
+    source_count: usize,
+) -> (MettleParams, NonZeroUsize, Vec<(u128, Vec<u8>)>) {
     let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
     let source_symbol_bytes = NonZeroUsize::new(BENCH_SYMBOL_SIZE).expect("non-zero");
     let mut encoder =
@@ -63,7 +70,12 @@ fn mettle_decode_fixture(source_count: usize) -> (MettleParams, NonZeroUsize, Ve
 fn raptorq_decode_fixture(
     source_count: usize,
     target_packet_count: usize,
-) -> (ObjectTransmissionInformation, u64, Vec<EncodingPacket>, Vec<u8>) {
+) -> (
+    ObjectTransmissionInformation,
+    u64,
+    Vec<EncodingPacket>,
+    Vec<u8>,
+) {
     let oti = ObjectTransmissionInformation::new(
         (source_count * BENCH_SYMBOL_SIZE) as u64,
         BENCH_SYMBOL_SIZE as u16,
@@ -80,12 +92,14 @@ fn raptorq_decode_fixture(
         .into_iter()
         .take(source_packet_count)
         .collect::<Vec<_>>();
-    packets.extend(encoder.repair_packets(
-        0,
-        repair_packet_count
-            .try_into()
-            .expect("benchmark packet count fits in u32"),
-    ));
+    packets.extend(
+        encoder.repair_packets(
+            0,
+            repair_packet_count
+                .try_into()
+                .expect("benchmark packet count fits in u32"),
+        ),
+    );
 
     (oti, flat_data.len() as u64, packets, flat_data)
 }
@@ -152,7 +166,8 @@ fn benchmark_decode_ratio(source_count: usize, iterations: usize) -> (usize, u12
     let mettle_start = Instant::now();
     let mut mettle_decoded = 0;
     for bins in mettle_runs {
-        mettle_decoded += mettle_decode_once(mettle_params, mettle_symbol_bytes, source_count, bins);
+        mettle_decoded +=
+            mettle_decode_once(mettle_params, mettle_symbol_bytes, source_count, bins);
     }
     let mettle_elapsed = mettle_start.elapsed();
 
@@ -171,7 +186,12 @@ fn benchmark_decode_ratio(source_count: usize, iterations: usize) -> (usize, u12
     let raptorq_ns_per_packet = raptorq_elapsed.as_nanos() / total_packets;
     let ratio = raptorq_ns_per_packet as f64 / mettle_ns_per_packet as f64;
 
-    (mettle_packet_count, mettle_ns_per_packet, raptorq_ns_per_packet, ratio)
+    (
+        mettle_packet_count,
+        mettle_ns_per_packet,
+        raptorq_ns_per_packet,
+        ratio,
+    )
 }
 
 #[test]

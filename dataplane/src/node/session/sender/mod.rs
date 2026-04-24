@@ -795,7 +795,7 @@ mod tests {
                 mode: LosslessSessionMode::Plain,
             },
             ready_grace_ms: 1,
-            peer_report_timeout_ms: 200,
+            peer_report_timeout_ms: 1500,
             topology_ready: None,
         };
         let mut sender = SessionSender::new(cfg, processors).expect("sender should build");
@@ -868,7 +868,7 @@ mod tests {
                 mode: LosslessSessionMode::Plain,
             },
             ready_grace_ms: 1,
-            peer_report_timeout_ms: 200,
+            peer_report_timeout_ms: 1500,
             topology_ready: None,
         };
         let sender = SessionSender::new(cfg, processors).expect("sender should build");

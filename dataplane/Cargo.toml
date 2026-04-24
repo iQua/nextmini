@@ -20,7 +20,7 @@ toml = "1.0"
 futures = "0.3"
 network-interface = "2"
 tokio = { version = "1", features = ["full", "rt", "test-util"] }
-tokio-tungstenite = "0.28"
+tokio-tungstenite = "0.29"
 tokio-util = { version = "0.7", features = ["rt"] }
 tun-rs = { version = "2", features = ["async"] }
 url = "2"
@@ -37,16 +37,16 @@ tracing-subscriber = "0.3"
 jumphash = "0.1"
 ahash = "0.8"
 flume = "0.12"
-smoltcp = "0.12"
+smoltcp = "0.13"
 once_cell = "1"
 socket2 = { version = "0.6", default-features = false, features = ["all"] }
 smallvec = "1"
 hex = "0.4"
-sha2 = "0.10"
+sha2 = "0.11"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 tokio-splice = "0.2"
-rtnetlink = "0.20"
+rtnetlink = "0.21"
 nix = { version = "0.31", features = ["sched", "hostname", "fs", "mman", "signal"] }
 
 [features]

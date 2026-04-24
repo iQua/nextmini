@@ -131,7 +131,6 @@ impl FecSender {
 
             if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
                 if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    self.round_source_done_sent = false;
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
