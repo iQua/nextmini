@@ -306,7 +306,7 @@ async fn recv_receiver_control_packet(packet_rx: &mut mpsc::Receiver<Packet>) ->
             .expect("receiver control packet channel closed");
         if packet
             .tcp_payload()
-            .and_then(|payload| lossless_session::decode_control(payload))
+            .and_then(lossless_session::decode_control)
             .is_some()
         {
             return packet;

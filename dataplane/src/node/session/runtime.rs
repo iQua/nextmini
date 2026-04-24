@@ -13,8 +13,7 @@ use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
 
 use crate::node::config::LosslessConfig;
-use crate::node::packet::{LosslessTransportMeta, Packet};
-use crate::node::processor::{LosslessIngressContract, ProcessorHandle};
+use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::{
     CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage, LosslessSessionHandle,
     SessionId, SessionOutcome, SessionState, StartError,
@@ -392,8 +391,6 @@ impl LosslessRuntime {
             total_blocks: plan.total_blocks(),
             mode: policy.mode,
         };
-        self.validate_sender_ingress_contract(&req.route, &req.session, &manifest)?;
-
         let mut cfg = SenderConfig {
             session: req.session,
             route: req.route,
@@ -441,42 +438,6 @@ impl LosslessRuntime {
             state_receiver,
             self.message_sender.clone(),
         ))
-    }
-
-    /// Reject multi-tree FEC sessions unless processor ingress exposes
-    /// tree-specific non-blocking backpressure for this exact path.
-    fn validate_sender_ingress_contract(
-        &self,
-        route: &TransportRoute,
-        session: &SessionConfig,
-        manifest: &LosslessSessionManifest,
-    ) -> Result<(), PreflightError> {
-        let nextmini_messages::lossless_session::LosslessSessionMode::Fec(fec) = &manifest.mode
-        else {
-            return Ok(());
-        };
-        if fec.tree_ids.len() <= 1 {
-            return Ok(());
-        }
-
-        let probe = Packet::build_ipv4_tcp_packet_with_lossless_meta(
-            route.src_ip,
-            route.src_port,
-            route.dst_ip,
-            route.dst_port,
-            Some(LosslessTransportMeta {
-                session_id: session.session_id,
-                tree_id: Some(fec.tree_ids[0]),
-            }),
-            b"x",
-        );
-        if self.processors.lossless_ingress_contract(&probe)
-            != LosslessIngressContract::TreeVisibleNonBlocking
-        {
-            return Err(PreflightError::MultiTreeRequiresTreeVisibleIngress);
-        }
-
-        Ok(())
     }
 
     /// Allocate an ingress channel and spawn the receiver task.
@@ -660,6 +621,7 @@ mod tests {
     use super::*;
     use crate::node::NodeIdExt;
     use crate::node::config::LocalConfig;
+    use crate::node::packet::Packet;
 
     const SOURCE_NODE_ID: usize = 61;
     const RECEIVER_NODE_ID: usize = 62;

@@ -17,7 +17,6 @@ pub enum PreflightError {
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
-    MultiTreeRequiresTreeVisibleIngress,
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -114,10 +113,6 @@ impl Display for PreflightError {
             Self::TooManyTreeIds { configured, max } => write!(
                 f,
                 "configured fec tree_ids length {configured} exceeds wire manifest capacity {max}"
-            ),
-            Self::MultiTreeRequiresTreeVisibleIngress => write!(
-                f,
-                "collaborative multi-tree fec requires tree-visible non-blocking ingress for this session path"
             ),
         }
     }
