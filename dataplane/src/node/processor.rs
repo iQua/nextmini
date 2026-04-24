@@ -931,6 +931,7 @@ impl Processor {
                 Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
                     self.handle_message(broadcast_msg).await;
                 }
+                else => break,
             }
         }
     }

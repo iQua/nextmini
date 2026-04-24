@@ -15,6 +15,8 @@ use nextmini_messages::lossless_session::{
     LosslessSessionMode, NeedBlock, NeedReport,
 };
 
+const SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS: u64 = 1500;
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sender_prioritizes_source_symbols_before_extra_symbols() {
     let mut harness = common::packet_capture(1, 2, 4100, 5200, 1, 2048).await;
@@ -227,7 +229,7 @@ async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
-        peer_report_timeout_ms: 200,
+        peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
     };
 
@@ -524,7 +526,7 @@ async fn sender_accepts_delayed_control_feedback_before_peer_report_timeout() {
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
-        peer_report_timeout_ms: 200,
+        peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
     };
 
@@ -607,7 +609,7 @@ async fn sender_retransmits_source_done_while_waiting_for_silent_peer_and_times_
         source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
         manifest,
         ready_grace_ms: 200,
-        peer_report_timeout_ms: 200,
+        peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
     };
 

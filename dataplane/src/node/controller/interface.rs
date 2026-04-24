@@ -437,7 +437,7 @@ impl ControllerToDataplaneReceiver {
                             tcp_flows.len(),
                             self.config.node_id
                         );
-                        self.pending_tcp_flows.extend(tcp_flows.into_iter());
+                        self.pending_tcp_flows.extend(tcp_flows);
                     }
                 }
 
