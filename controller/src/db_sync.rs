@@ -51,14 +51,8 @@ pub fn spawn_db_sync(
                     to_node_id,
                     probe_bytes,
                 } => {
-                    if let Err(e) = send_probe_link(
-                        &node_ws,
-                        id,
-                        from_node_id,
-                        to_node_id,
-                        probe_bytes,
-                    )
-                    .await
+                    if let Err(e) =
+                        send_probe_link(&node_ws, id, from_node_id, to_node_id, probe_bytes).await
                     {
                         error!("Failed to send probe request {}: {}", id, e);
                     }
@@ -254,13 +248,7 @@ async fn send_probe_link(
     };
     let msg_binary = rmp_serde::to_vec(&msg)?;
 
-    let ws_arc = {
-        node_ws
-            .read()
-            .await
-            .get(&(from_node_id as usize))
-            .cloned()
-    };
+    let ws_arc = { node_ws.read().await.get(&(from_node_id as usize)).cloned() };
     let Some(ws_arc) = ws_arc else {
         anyhow::bail!("no websocket for node {}", from_node_id);
     };

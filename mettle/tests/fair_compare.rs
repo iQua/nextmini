@@ -2,7 +2,9 @@ use std::num::NonZeroUsize;
 
 use mettle::test_support::{Decoder as TestDecoder, Encoder as TestEncoder};
 use mettle::{MettleParams, OverheadRatio};
-use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
+use raptorq::{
+    EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder,
+};
 
 const COMPARE_SYMBOL_SIZE: usize = 1500;
 const COMPARE_SOURCE_COUNT: usize = 127;
@@ -11,7 +13,10 @@ const MAX_COMPARE_PACKETS_MULTIPLIER: usize = 4;
 #[derive(Clone, Copy)]
 enum CompareScenario {
     NoLoss,
-    Bec { erasure_numerator: u64, erasure_denominator: u64 },
+    Bec {
+        erasure_numerator: u64,
+        erasure_denominator: u64,
+    },
 }
 
 impl CompareScenario {
@@ -61,7 +66,10 @@ fn compare_sources(source_count: usize) -> Vec<Vec<u8>> {
 }
 
 fn flat_compare_sources(source_count: usize) -> Vec<u8> {
-    compare_sources(source_count).into_iter().flatten().collect()
+    compare_sources(source_count)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 fn expected_mettle_decode(source_count: usize) -> Vec<(u64, Vec<u8>)> {

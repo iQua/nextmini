@@ -3,7 +3,9 @@ use std::time::Instant;
 
 use mettle::test_support::{Decoder as TestDecoder, Encoder as TestEncoder};
 use mettle::{MettleParams, OverheadRatio};
-use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
+use raptorq::{
+    EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder,
+};
 
 const PAPER_SPEED_SYMBOL_SIZE: usize = 1500;
 const PAPER_SPEED_METTLE_STREAM_SOURCE_COUNT: usize = 100_000;
@@ -73,7 +75,10 @@ fn mettle_streaming_fixture(
     }
 
     assert_eq!(decoder.next_source_id(), mettle_stream_source_count as u64);
-    assert_eq!(decoded_sources, expected_mettle_decode(mettle_stream_source_count));
+    assert_eq!(
+        decoded_sources,
+        expected_mettle_decode(mettle_stream_source_count)
+    );
 
     (params, source_symbol_bytes, emitted_bins)
 }
@@ -91,9 +96,10 @@ fn raptorq_repair_only_fixture(
             1,
             1,
         ),
-        RaptorqConfigMode::Defaults => {
-            ObjectTransmissionInformation::with_defaults(transfer_length, PAPER_SPEED_SYMBOL_SIZE as u16)
-        }
+        RaptorqConfigMode::Defaults => ObjectTransmissionInformation::with_defaults(
+            transfer_length,
+            PAPER_SPEED_SYMBOL_SIZE as u16,
+        ),
     };
     let flat_data = benchmark_flat_data(raptorq_k, oti.symbol_size() as usize);
     let encoder = SourceBlockEncoder::new(0, &oti, &flat_data);
@@ -137,7 +143,10 @@ fn raptorq_decode_once(
         .expect("decoded block length fits in u64")
 }
 
-fn benchmark_mettle_ns_per_packet(iterations: usize, mettle_stream_source_count: usize) -> (usize, u128) {
+fn benchmark_mettle_ns_per_packet(
+    iterations: usize,
+    mettle_stream_source_count: usize,
+) -> (usize, u128) {
     let (params, source_symbol_bytes, bins) = mettle_streaming_fixture(mettle_stream_source_count);
     let packet_count = bins.len();
     let runs = (0..iterations).map(|_| bins.clone()).collect::<Vec<_>>();
@@ -156,10 +165,8 @@ fn benchmark_mettle_ns_per_packet(iterations: usize, mettle_stream_source_count:
 }
 
 fn benchmark_raptorq_ns_per_packet(iterations: usize, raptorq_k: usize) -> u128 {
-    let (oti, block_length, packets) = raptorq_repair_only_fixture(
-        raptorq_k,
-        raptorq_config_mode(),
-    );
+    let (oti, block_length, packets) =
+        raptorq_repair_only_fixture(raptorq_k, raptorq_config_mode());
     let runs = (0..iterations).map(|_| packets.clone()).collect::<Vec<_>>();
     let start = Instant::now();
     let mut decoded_bytes = 0u64;
@@ -194,18 +201,20 @@ fn paper_decode_speed_harness_builds() {
 
     let (oti, block_length, packets) =
         raptorq_repair_only_fixture(127, RaptorqConfigMode::ExplicitMinimal);
-    assert_eq!(raptorq_decode_once(&oti, block_length, packets), block_length);
+    assert_eq!(
+        raptorq_decode_once(&oti, block_length, packets),
+        block_length
+    );
 }
 
 #[test]
 #[ignore = "manual paper-style decode-speed reproduction"]
 fn report_paper_decode_speed() {
     let iterations = env_or_default_usize("METTLE_PAPER_SPEED_ITERATIONS", 10);
-    let mettle_source_count =
-        env_or_default_usize(
-            "METTLE_PAPER_SPEED_METTLE_SOURCE_COUNT",
-            PAPER_SPEED_METTLE_STREAM_SOURCE_COUNT,
-        );
+    let mettle_source_count = env_or_default_usize(
+        "METTLE_PAPER_SPEED_METTLE_SOURCE_COUNT",
+        PAPER_SPEED_METTLE_STREAM_SOURCE_COUNT,
+    );
     let k_filter = std::env::var("METTLE_PAPER_SPEED_FILTER").ok();
 
     let (mettle_packet_count, mettle_ns_per_packet) =

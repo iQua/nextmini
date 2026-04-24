@@ -6,7 +6,9 @@ use mettle::test_support::{
     terminal_departure_end_exclusive,
 };
 use mettle::{MettleParams, OverheadRatio};
-use raptorq::{EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder};
+use raptorq::{
+    EncodingPacket, ObjectTransmissionInformation, SourceBlockDecoder, SourceBlockEncoder,
+};
 
 const PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT: usize = 100_000;
 const PAPER_CODING_EFFICIENCY_METTLE_SEED: u64 = 0;
@@ -344,8 +346,8 @@ fn mettle_source_is_fully_erased(
         graph_seed,
         Some(terminal_source_count),
     )
-        .into_iter()
-        .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
+    .into_iter()
+    .all(|bin_id| !delivered_bin_ids.contains(&bin_id))
 }
 
 fn offline_peeling_outcome(
@@ -368,7 +370,10 @@ fn offline_peeling_outcome(
         ) {
             if delivered_bin_ids.contains(&bin_id) && !delivered_edges.contains(&bin_id) {
                 delivered_edges.push(bin_id);
-                bin_touchers.entry(bin_id).or_default().push(source_id as usize);
+                bin_touchers
+                    .entry(bin_id)
+                    .or_default()
+                    .push(source_id as usize);
             }
         }
         source_edges.push(delivered_edges);
@@ -388,10 +393,12 @@ fn offline_peeling_outcome(
         if remaining_touchers.get(&bin_id).copied() != Some(1) {
             continue;
         }
-        let Some(source_id) = bin_touchers
-            .get(&bin_id)
-            .and_then(|touchers| touchers.iter().copied().find(|&source_id| !decoded[source_id]))
-        else {
+        let Some(source_id) = bin_touchers.get(&bin_id).and_then(|touchers| {
+            touchers
+                .iter()
+                .copied()
+                .find(|&source_id| !decoded[source_id])
+        }) else {
             continue;
         };
         decoded[source_id] = true;
@@ -544,14 +551,10 @@ fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: us
     )
 }
 
-fn replay_mettle_trial(
-    case: CodingEfficiencyCase,
-    seed: u64,
-    source_count: usize,
-) -> MettleReplay {
+fn replay_mettle_trial(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> MettleReplay {
     let params = case_params(case);
-    let source_symbol_bytes =
-        NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE).expect("non-zero symbol size");
+    let source_symbol_bytes = NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE)
+        .expect("non-zero symbol size");
     let terminal_source_count = source_count as u64;
     let graph_seed = mettle_graph_seed(seed);
     let mut encoder = TestEncoder::new_terminated(
@@ -600,7 +603,11 @@ fn replay_mettle_trial(
     }
 }
 
-fn skip_profile_after_replay(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> SkipProfile {
+fn skip_profile_after_replay(
+    case: CodingEfficiencyCase,
+    seed: u64,
+    source_count: usize,
+) -> SkipProfile {
     let terminal_source_count = source_count as u64;
     let MettleReplay { mut decoder, .. } = replay_mettle_trial(case, seed, source_count);
     let mut total_skipped_sources = 0;
@@ -626,7 +633,10 @@ fn skip_profile_after_replay(case: CodingEfficiencyCase, seed: u64, source_count
     }
 }
 
-fn raptorq_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> FailureRateEstimate {
+fn raptorq_estimated_failure_rate(
+    case: CodingEfficiencyCase,
+    trials: usize,
+) -> FailureRateEstimate {
     let failures = (0..trials)
         .filter(|&trial| !raptorq_trial_succeeds(case, trial as u64 + 1))
         .count();
@@ -732,10 +742,7 @@ fn mettle_graph_estimated_failure_rate(
     }
 }
 
-fn mettle_estimated_failure_rate(
-    case: CodingEfficiencyCase,
-    trials: usize,
-) -> FailureRateEstimate {
+fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> FailureRateEstimate {
     let print_first_failure = std::env::var("METTLE_TABLE_IV_PRINT_FIRST_FAILURE")
         .ok()
         .is_some_and(|value| value != "0");
@@ -824,7 +831,8 @@ fn mettle_estimated_failure_rate(
 
                 failures += 1;
                 if print_first_failure && failures == 1 {
-                    let skip_profile = skip_profile_after_replay(case, trial as u64 + 1, source_count);
+                    let skip_profile =
+                        skip_profile_after_replay(case, trial as u64 + 1, source_count);
                     let edge_bin_ids = edge_bin_ids_with_terminal_source_count(
                         params,
                         next_source_id,

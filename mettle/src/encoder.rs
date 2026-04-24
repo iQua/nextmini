@@ -251,12 +251,7 @@ mod tests {
         let mut emitted_bin_ids = Vec::new();
 
         for _ in 0..20 {
-            emitted_bin_ids.extend(
-                encoder
-                    .push_source(&[1])
-                    .into_iter()
-                    .map(|bin| bin.bin_id),
-            );
+            emitted_bin_ids.extend(encoder.push_source(&[1]).into_iter().map(|bin| bin.bin_id));
         }
 
         assert_eq!(
