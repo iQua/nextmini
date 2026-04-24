@@ -24,6 +24,7 @@ COPY Cargo.toml /var/nextmini/Cargo.toml
 COPY controller /var/nextmini/controller
 COPY messages /var/nextmini/messages
 COPY cert-gen /var/nextmini/cert-gen
+COPY mettle /var/nextmini/mettle
 COPY python-api /var/nextmini/python-api
 COPY dataplane/Cargo.toml /var/nextmini/dataplane/Cargo.toml
 COPY dataplane/src /var/nextmini/dataplane/src
