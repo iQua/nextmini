@@ -313,6 +313,34 @@ mod tests {
     }
 
     #[test]
+    fn manifest_validation_accepts_known_fec_schemes_and_rejects_unknown() {
+        let mettle = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 1024,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(8, vec![1, 3])),
+        };
+        mettle
+            .validate()
+            .expect("METTLE should be a known FEC scheme");
+
+        let unknown = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 1024,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode {
+                scheme: 99,
+                symbols_per_block: 8,
+                tree_ids: vec![1, 3],
+            }),
+        };
+        assert_eq!(
+            unknown.validate(),
+            Err(LosslessSessionValidationError::UnknownFecScheme { scheme: 99 })
+        );
+    }
+
+    #[test]
     fn plain_mode_rejects_fec_only_frames() {
         let manifest = plain_manifest();
         let symbol = LosslessSessionBlockSymbol {

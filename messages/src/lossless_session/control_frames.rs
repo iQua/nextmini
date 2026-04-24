@@ -339,8 +339,8 @@ mod tests {
         fec_manifest, fec_need, plain_manifest, plain_need,
     };
     use crate::lossless_session::{
-        FecScheme, LosslessSessionControl, LosslessSessionHeader, NeedBlock, NeedReport,
-        encode_block_data,
+        FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
+        LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport, encode_block_data,
     };
 
     #[test]
@@ -404,6 +404,26 @@ mod tests {
         let (hdr, decoded) = decode_control(&buf).expect("decode ready");
         assert_eq!(hdr.body_len, 0);
         assert_eq!(buf.len(), LosslessSessionHeader::LEN);
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn mettle_manifest_roundtrips_as_known_fec_scheme() {
+        let ctrl = LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size: 1024,
+                total_bytes: 2048,
+                total_blocks: 2,
+                mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(8, vec![2, 4])),
+            },
+        };
+
+        let encoded = encode_control(88, &ctrl);
+        assert_eq!(
+            encoded[LosslessSessionHeader::LEN + 1],
+            FecScheme::Mettle as u8
+        );
+        let (_, decoded) = decode_control(&encoded).expect("decode METTLE manifest");
         assert_eq!(decoded, ctrl);
     }
 

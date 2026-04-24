@@ -16,8 +16,8 @@ use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
-    NeedReport,
+    self, FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, MissingBlockRange, NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -268,6 +268,16 @@ impl SessionReceiver {
             );
             return;
         }
+        if let LosslessSessionMode::Fec(fec) = &manifest.mode
+            && !receiver_supports_fec_scheme(fec)
+        {
+            warn!(
+                session_id = self.shared.session_id,
+                fec_scheme = fec.scheme,
+                "Lossless receiver rejected unsupported FEC manifest"
+            );
+            return;
+        }
 
         let Ok(block_size) = usize::try_from(manifest.block_size) else {
             return;
@@ -347,6 +357,10 @@ impl SessionReceiver {
             _ => None,
         }
     }
+}
+
+fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
+    matches!(fec.scheme_kind(), Some(FecScheme::RaptorQ))
 }
 
 impl ReceiverShared {
@@ -761,6 +775,85 @@ mod tests {
         };
 
         assert!(!receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn receiver_rejects_mettle_manifest_before_ready() {
+        let cfg = LocalConfig {
+            node_id: RECEIVER_NODE_ID,
+            n_nodes: SOURCE_NODE_ID.max(RECEIVER_NODE_ID) + 1,
+            num_packet_processors: 1,
+            channel_capacity: 2048,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        };
+        let processors = ProcessorHandle::new(cfg.clone());
+        processors
+            .update_routing_table(vec![RoutingTableEntry {
+                route_id: 1,
+                next_hops: vec![cfg.node_id],
+                src_node_id: cfg.node_id,
+                dst_node_id: SOURCE_NODE_ID,
+                forward_mode: RouteForwardingMode::Unicast,
+            }])
+            .await;
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: RECEIVER_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            dst_ip: SOURCE_NODE_ID.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+            src_port: 4755,
+            dst_port: 5755,
+        };
+        let flow_id =
+            Packet::flow_id_from_parts(route.src_ip, route.src_port, route.dst_ip, route.dst_port);
+        let (packet_tx, mut packet_rx) = mpsc::channel(8);
+        processors.connect_user_space_sender(flow_id, packet_tx);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let mut receiver = SessionReceiver::new(
+            ReceiverConfig {
+                session_id: 13,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                sink_buffer: None,
+                progress: None,
+                peer_report_timeout_ms: 200,
+                fec_enabled: true,
+            },
+            processors,
+        );
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::Manifest {
+                        manifest: LosslessSessionManifest {
+                            block_size: 8,
+                            total_bytes: 16,
+                            total_blocks: 2,
+                            mode: LosslessSessionMode::Fec(
+                                nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
+                                    4,
+                                    vec![0, 1],
+                                ),
+                            ),
+                        },
+                    },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert!(receiver.shared.manifest.is_none());
+        assert!(receiver.mode.is_none());
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "unsupported METTLE manifests must not receive READY"
+        );
     }
 
     #[tokio::test]

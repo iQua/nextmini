@@ -44,6 +44,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
             ready_grace_ms: 300,
+            peer_report_timeout_ms: 300,
         })
         .await
         .expect("sender should start");
@@ -129,6 +130,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"qrstuvwxyzabcdef"),
             ready_grace_ms: 120,
+            peer_report_timeout_ms: 120,
         })
         .await
         .expect("sender should start");
@@ -539,6 +541,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
             total_bytes: 32,
             source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456"),
             ready_grace_ms: 300,
+            peer_report_timeout_ms: 300,
         })
         .await
         .expect("sender should start");

@@ -48,6 +48,7 @@ impl LosslessSessionModeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FecScheme {
     RaptorQ = 1,
+    Mettle = 2,
 }
 
 impl FecScheme {
@@ -60,6 +61,7 @@ impl FecScheme {
     pub fn from_wire(raw: u8) -> Option<Self> {
         match raw {
             x if x == Self::RaptorQ as u8 => Some(Self::RaptorQ),
+            x if x == Self::Mettle as u8 => Some(Self::Mettle),
             _ => None,
         }
     }
@@ -78,6 +80,15 @@ impl LosslessSessionFecMode {
     pub fn new_raptorq(symbols_per_block: u16, tree_ids: Vec<u16>) -> Self {
         Self {
             scheme: FecScheme::RaptorQ.to_wire(),
+            symbols_per_block,
+            tree_ids,
+        }
+    }
+
+    #[must_use]
+    pub fn new_mettle(symbols_per_block: u16, tree_ids: Vec<u16>) -> Self {
+        Self {
+            scheme: FecScheme::Mettle.to_wire(),
             symbols_per_block,
             tree_ids,
         }
