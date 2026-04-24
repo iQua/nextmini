@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use nextmini_messages::lossless_session::{self, LosslessSessionMode, NeedBlock, NeedReport};
+use nextmini_messages::lossless_session::{
+    self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
+};
 use tracing::{debug, warn};
 
 use crate::node::session::api::InboundFrame;
@@ -57,6 +59,17 @@ impl FecReceiver {
         if manifest.validate_block_symbol(&symbol).is_err() {
             return;
         }
+        if payload.len() != self.geometry.symbol_size() {
+            warn!(
+                session_id = shared.session_id,
+                block_id = symbol.block_id,
+                symbol_id = symbol.symbol_id,
+                expected = self.geometry.symbol_size(),
+                actual = payload.len(),
+                "Lossless receiver rejected malformed FEC symbol payload length"
+            );
+            return;
+        }
         if shared.complete_blocks.contains(&symbol.block_id) {
             return;
         }
@@ -104,31 +117,34 @@ impl FecReceiver {
             return true;
         }
 
-        let params = BlockParams::new(
+        let Some(scheme) = fec_mode.scheme_kind() else {
+            return false;
+        };
+        let params = BlockParams::with_scheme(
             source_symbols,
             self.geometry.symbol_size(),
             session_fec::block_seed(shared.session_id, block_id),
+            scheme,
         );
         let decoder = Decoder::from_block(params);
         let mut received = Vec::with_capacity(block_state.symbols.len());
 
         for (&symbol_id, payload) in &block_state.symbols {
-            let mut padded = payload.clone();
-            let additional = self.geometry.symbol_size().saturating_sub(padded.len());
-            if padded.try_reserve_exact(additional).is_err() {
+            if payload.len() != self.geometry.symbol_size() {
                 warn!(
                     session_id = shared.session_id,
                     block_id,
+                    symbol_id,
                     symbol_size = self.geometry.symbol_size(),
-                    "Lossless receiver failed to reserve space for FEC symbol padding"
+                    payload_len = payload.len(),
+                    "Lossless receiver rejected malformed stored FEC symbol payload length"
                 );
                 return false;
             }
-            padded.resize(self.geometry.symbol_size(), 0);
             if symbol_id < u32::from(fec_mode.symbols_per_block) {
-                received.push(decoder.source_symbol(symbol_id, padded));
+                received.push(decoder.source_symbol(symbol_id, payload.clone()));
             } else {
-                received.push(decoder.coded_symbol(symbol_id, padded));
+                received.push(decoder.coded_symbol(symbol_id, payload.clone()));
             }
         }
 
@@ -190,9 +206,22 @@ impl FecReceiver {
         let present = self
             .blocks
             .get(&block_id)
-            .map(|state| state.symbols.len())
-            .unwrap_or(0);
+            .map(|state| state.symbols.keys().copied().collect::<Vec<_>>())
+            .unwrap_or_default();
+        let Some(scheme) = fec_mode.scheme_kind() else {
+            return 1;
+        };
         let total = usize::from(fec_mode.symbols_per_block);
+        if scheme == FecScheme::Mettle {
+            let params = BlockParams::with_scheme(
+                total,
+                self.geometry.symbol_size(),
+                session_fec::block_seed(shared.session_id, block_id),
+                scheme,
+            );
+            return session_fec::repair_deficit(params, present);
+        }
+        let present = present.len();
         if present >= total {
             1
         } else {
@@ -271,11 +300,10 @@ fn systematic_block_payload(
 
     for symbol_id in 0..source_symbols as u32 {
         let payload = block_state.symbols.get(&symbol_id)?;
-        let copy_len = payload.len().min(symbol_size);
-        block.extend_from_slice(&payload[..copy_len]);
-        if copy_len < symbol_size {
-            block.resize(block.len() + (symbol_size - copy_len), 0);
+        if payload.len() != symbol_size {
+            return None;
         }
+        block.extend_from_slice(payload);
     }
 
     block.truncate(block_len);

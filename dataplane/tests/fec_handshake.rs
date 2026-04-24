@@ -7,7 +7,7 @@ use bytes::Bytes;
 use tokio::time::timeout;
 
 use nextmini::node::NodeIdExt;
-use nextmini::node::config::LocalConfig;
+use nextmini::node::config::{LocalConfig, LosslessFecScheme};
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::{
     LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome, StartError,
@@ -150,6 +150,65 @@ async fn start_sender_rejects_zero_symbols_per_block_without_clamping() {
             Err(StartError::Preflight(PreflightError::ZeroSymbolsPerBlock))
         ),
         "zero configured symbols_per_block should be rejected directly"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_defaults_to_raptorq_fec_scheme() {
+    let mut harness = start_runtime_sender(true, 400, 0x0FEC_2005).await;
+
+    let manifest_packet = common::recv_packet(&mut harness.capture.packet_rx).await;
+    let manifest_payload = manifest_packet
+        .tcp_payload()
+        .expect("manifest packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(manifest_payload).expect("expected manifest control");
+    let LosslessSessionControl::Manifest { manifest } = control else {
+        panic!("unexpected control frame");
+    };
+    let LosslessSessionMode::Fec(fec) = manifest.mode else {
+        panic!("expected FEC manifest");
+    };
+
+    assert_eq!(
+        fec.scheme_kind(),
+        Some(nextmini_messages::lossless_session::FecScheme::RaptorQ)
+    );
+
+    harness.runtime.deliver(
+        harness.session_id,
+        common::ready_frame(harness.session_id, 2),
+    );
+    drop(harness.session);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_rejects_mettle_below_minimum_symbols_per_block() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_scheme = LosslessFecScheme::Mettle;
+    runtime_cfg.fec_default_symbols_per_block = 2399;
+    runtime_cfg.fec_default_tree_ids = vec![1];
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2006).await;
+
+    assert!(
+        matches!(
+            started,
+            Err(StartError::Preflight(
+                PreflightError::MettleSymbolsPerBlockTooSmall { value: 2399, .. }
+            ))
+        ),
+        "METTLE should reject K below the sender policy minimum"
     );
 }
 

@@ -24,6 +24,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::SessionId;
 use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
+use crate::node::session::fec as session_fec;
 use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
@@ -360,7 +361,13 @@ impl SessionReceiver {
 }
 
 fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
-    matches!(fec.scheme_kind(), Some(FecScheme::RaptorQ))
+    match fec.scheme_kind() {
+        Some(FecScheme::RaptorQ) => true,
+        Some(FecScheme::Mettle) => {
+            usize::from(fec.symbols_per_block) >= session_fec::METTLE_MIN_SOURCE_SYMBOLS
+        }
+        None => false,
+    }
 }
 
 impl ReceiverShared {
@@ -853,6 +860,56 @@ mod tests {
                 .await
                 .is_err(),
             "unsupported METTLE manifests must not receive READY"
+        );
+    }
+
+    #[test]
+    fn receiver_supports_mettle_only_at_minimum_geometry() {
+        assert!(receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
+                session_fec::METTLE_MIN_SOURCE_SYMBOLS as u16,
+                vec![0],
+            )
+        ));
+        assert!(!receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
+                session_fec::METTLE_MIN_SOURCE_SYMBOLS as u16 - 1,
+                vec![0],
+            )
+        ));
+        assert!(receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])
+        ));
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_rejects_malformed_symbol_payload_length() {
+        let (mut receiver, _packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+
+        receiver
+            .handle_block_symbol_frame(InboundFrame {
+                bytes: lossless_session::encode_block_symbol(
+                    receiver.shared.session_id,
+                    0,
+                    0,
+                    0,
+                    &[1],
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert!(
+            receiver
+                .mode
+                .as_ref()
+                .and_then(|mode| match mode {
+                    ReceiverMode::Fec(fec) => fec.blocks.get(&0),
+                    ReceiverMode::Plain(_) => None,
+                })
+                .is_none(),
+            "malformed FEC symbol payloads must be dropped before insertion"
         );
     }
 

@@ -43,6 +43,14 @@ pub enum Feature {
     Concurrent,
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LosslessFecScheme {
+    #[default]
+    RaptorQ,
+    Mettle,
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -705,6 +713,10 @@ pub struct LosslessConfig {
     #[serde(default = "default_fec_default_symbols_per_block")]
     pub fec_default_symbols_per_block: u16,
 
+    /// Default FEC scheme used when runtime derives sender manifests internally.
+    #[serde(default)]
+    pub fec_default_scheme: LosslessFecScheme,
+
     /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
@@ -729,6 +741,7 @@ impl Default for LosslessConfig {
             peer_report_timeout_ms: 1500,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
+            fec_default_scheme: LosslessFecScheme::RaptorQ,
             fec_default_tree_ids: vec![0],
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
@@ -921,7 +934,7 @@ fn default_netmask() -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::{
-        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig,
+        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig, LosslessFecScheme,
         deserialize_edge_pairs,
     };
     use serde::Deserialize;
@@ -1006,6 +1019,7 @@ mod tests {
             "FEC must be explicit opt-in by default"
         );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
+        assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
@@ -1040,11 +1054,13 @@ mod tests {
     fn lossless_fec_defaults_are_not_canonicalized() {
         let cfg = LosslessConfig {
             fec_default_symbols_per_block: 0,
+            fec_default_scheme: LosslessFecScheme::Mettle,
             fec_default_tree_ids: vec![5, 1, 5, 3],
             ..Default::default()
         };
 
         assert_eq!(cfg.fec_default_symbols_per_block, 0);
+        assert_eq!(cfg.fec_default_scheme, LosslessFecScheme::Mettle);
         assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
     }
 
