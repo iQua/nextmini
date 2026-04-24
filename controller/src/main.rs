@@ -1133,7 +1133,7 @@ async fn handle_set_group_routes_update(
     label: &str,
 ) -> AnyResult<()> {
     let group = sqlx::query_as::<_, crate::models::Group>(
-        "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
+        "SELECT id, src_node_id, group_ip FROM groups WHERE id = $1",
     )
     .bind(group_id as i32)
     .fetch_optional(db_pool)
@@ -1577,13 +1577,11 @@ mod tests {
         let groups = vec![
             Group {
                 id: 42,
-                label: "alpha".to_string(),
                 src_node_id: 1,
                 group_ip: "239.0.0.1".to_string(),
             },
             Group {
                 id: 77,
-                label: "beta".to_string(),
                 src_node_id: 9,
                 group_ip: "239.0.0.2".to_string(),
             },

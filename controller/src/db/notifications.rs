@@ -126,10 +126,7 @@ pub async fn setup_flow_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc:
     });
 }
 
-pub async fn setup_probe_notification(
-    db_pool: Arc<Pool<Postgres>>,
-    sender: mpsc::Sender<DbEvent>,
-) {
+pub async fn setup_probe_notification(db_pool: Arc<Pool<Postgres>>, sender: mpsc::Sender<DbEvent>) {
     let mut listener = match PgListener::connect_with(&db_pool).await {
         Ok(l) => l,
         Err(e) => {

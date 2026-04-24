@@ -95,7 +95,6 @@ impl ReceiverProgress {
     }
 
     /// Return the timestamp of the first payload unit, if any.
-    #[allow(dead_code)]
     pub fn first_payload_unit_at(&self) -> Option<Instant> {
         self.first_payload_unit_at.get().copied()
     }
@@ -561,12 +560,12 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
-                if round_id < *replay_round_id {
+                if round_id != *replay_round_id {
                     debug!(
                         session_id = session,
                         round_id,
                         replay_round_id,
-                        "Lossless runtime dropped stale replay attempt for a completed plain receiver"
+                        "Lossless runtime dropped out-of-round replay attempt for a completed plain receiver"
                     );
                     return false;
                 }
@@ -593,12 +592,12 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
-                if round_id < *replay_round_id {
+                if round_id != *replay_round_id {
                     debug!(
                         session_id = session,
                         round_id,
                         replay_round_id,
-                        "Lossless runtime dropped stale replay attempt for a completed FEC receiver"
+                        "Lossless runtime dropped out-of-round replay attempt for a completed FEC receiver"
                     );
                     return false;
                 }
@@ -754,7 +753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deliver_frame_replays_completed_receiver_for_same_or_future_rounds_only() {
+    async fn deliver_frame_replays_completed_receiver_for_the_cached_round_only() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E40A;
 
@@ -792,13 +791,32 @@ mod tests {
                 InboundFrame {
                     bytes: lossless_session::encode_control(
                         session_id,
+                        &LosslessSessionControl::SourceDone { round_id: 1 },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+        assert_plain_complete_for_round(&mut packet_rx, 1).await;
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
                         &LosslessSessionControl::SourceDone { round_id: 2 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
             .await;
-        assert_plain_complete_for_round(&mut packet_rx, 2).await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "future round replay must be dropped"
+        );
     }
 
     #[tokio::test]
@@ -1007,7 +1025,10 @@ mod tests {
         assert_plain_complete_for_round(packet_rx, 0).await;
     }
 
-    async fn assert_plain_complete_for_round(packet_rx: &mut mpsc::Receiver<Packet>, round_id: u32) {
+    async fn assert_plain_complete_for_round(
+        packet_rx: &mut mpsc::Receiver<Packet>,
+        round_id: u32,
+    ) {
         let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for replayed plain status")

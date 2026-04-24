@@ -36,8 +36,6 @@ pub struct Topology {
     #[serde(rename = "type")]
     pub topology_type: Option<PresetTopology>,
 
-    // To Do: the total number of nodes will need to be computed, rather than specified in the configuration file
-    // explicitly
     #[serde(default)]
     pub n_nodes: Option<usize>,
 

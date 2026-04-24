@@ -32,6 +32,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
     let mut runtime_cfg = capture.cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = false;
     runtime_cfg.ready_grace_ms = 300;
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
 
     let session_id = 0xA11C_E301;
@@ -44,6 +45,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
             ready_grace_ms: 300,
+            peer_report_timeout_ms,
         })
         .await
         .expect("sender should start");
@@ -116,6 +118,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
     let mut runtime_cfg = capture.cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = false;
     runtime_cfg.ready_grace_ms = 120;
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     runtime.set_topology_ready(true);
 
@@ -129,6 +132,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
             total_bytes: 16,
             source_buffer: Bytes::from_static(b"qrstuvwxyzabcdef"),
             ready_grace_ms: 120,
+            peer_report_timeout_ms,
         })
         .await
         .expect("sender should start");
@@ -526,6 +530,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     let mut runtime_cfg = capture.cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = false;
     runtime_cfg.ready_grace_ms = 300;
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     runtime.set_topology_ready(true);
 
@@ -539,6 +544,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
             total_bytes: 32,
             source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwxyz123456"),
             ready_grace_ms: 300,
+            peer_report_timeout_ms,
         })
         .await
         .expect("sender should start");

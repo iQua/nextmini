@@ -25,7 +25,7 @@ impl TcpMaxServer {
     }
 
     /// Accepts incoming TCP connections.
-    pub async fn start_listening(&mut self, addr: &String) {
+    pub async fn start_listening(&mut self, addr: &str) {
         let listener = match TcpListener::bind(addr).await {
             Ok(listener) => listener,
             Err(e) => {

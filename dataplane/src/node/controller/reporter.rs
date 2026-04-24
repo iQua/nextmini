@@ -58,7 +58,10 @@ impl ControllerReporterHandle {
             to_node_id,
             bandwidth_mbps,
         }) {
-            error!("Error sending probe result to the controller reporter: {}", e);
+            error!(
+                "Error sending probe result to the controller reporter: {}",
+                e
+            );
         }
     }
 

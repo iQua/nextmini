@@ -1,8 +1,6 @@
 use std::collections::HashSet;
 
-use controller::utils::{
-    build_group_routes_for_node, build_group_routes_for_node_multitree, compute_multitree_route_id,
-};
+use controller::utils::{build_group_routes_for_node_multitree, compute_multitree_route_id};
 use nextmini_messages::{ControllerToDataplane, GroupRouteTree, MULTITREE_STRIDE};
 
 #[test]
@@ -76,14 +74,20 @@ fn multitree_install_payloads_are_stable_and_complete() {
 }
 
 #[test]
-fn legacy_single_tree_builder_maps_to_tree_zero_route_id() {
+fn single_tree_payload_maps_to_tree_zero_route_id() {
     let group_id = 5usize;
     let members = HashSet::new();
-    let legacy = build_group_routes_for_node(group_id, 1, &[(1, 2), (2, 3)], 1, &members).unwrap();
+    let trees = [GroupRouteTree {
+        tree_id: 0,
+        weight: None,
+        edges: vec![(1, 2), (2, 3)],
+    }];
+    let routes = build_group_routes_for_node_multitree(group_id, 1, &trees, 1, &members).unwrap();
+    let route = routes.first().unwrap();
 
     assert_eq!(
-        legacy.route_id,
+        route.route_id,
         compute_multitree_route_id(group_id, 0).unwrap()
     );
-    assert_eq!(legacy.route_id / MULTITREE_STRIDE, group_id);
+    assert_eq!(route.route_id / MULTITREE_STRIDE, group_id);
 }

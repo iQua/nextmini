@@ -36,7 +36,7 @@ pub async fn create_group(
         r#"
         INSERT INTO groups (id, label, src_node_id, group_ip)
         VALUES ($1, $2, $3, $4)
-        RETURNING id, label, src_node_id, group_ip
+        RETURNING id, src_node_id, group_ip
         "#,
     )
     .bind(next_id as i32)
@@ -90,7 +90,7 @@ pub async fn remove_group_member(
 pub async fn load_group_directory(db_pool: &Pool<Postgres>) -> AnyResult<Vec<Group>> {
     let groups = sqlx::query_as::<_, Group>(
         r#"
-        SELECT id, label, src_node_id, group_ip
+        SELECT id, src_node_id, group_ip
         FROM groups
         ORDER BY id
         "#,
@@ -106,7 +106,7 @@ pub async fn load_group_members(
 ) -> AnyResult<Vec<GroupMember>> {
     let members = sqlx::query_as::<_, GroupMember>(
         r#"
-        SELECT group_id, node_id
+        SELECT node_id
         FROM group_members
         WHERE group_id = $1
         ORDER BY node_id

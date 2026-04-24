@@ -51,14 +51,8 @@ pub fn spawn_db_sync(
                     to_node_id,
                     probe_bytes,
                 } => {
-                    if let Err(e) = send_probe_link(
-                        &node_ws,
-                        id,
-                        from_node_id,
-                        to_node_id,
-                        probe_bytes,
-                    )
-                    .await
+                    if let Err(e) =
+                        send_probe_link(&node_ws, id, from_node_id, to_node_id, probe_bytes).await
                     {
                         error!("Failed to send probe request {}: {}", id, e);
                     }
@@ -231,7 +225,6 @@ fn multicast_nodes_to_notify(
         .iter()
         .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b]))
         .collect();
-    nodes.extend(plan.dag_nodes.iter().copied());
     nodes.insert(plan.group.src_node_id as u32);
     nodes.extend(plan.member_node_ids.iter().copied());
     if let Some(node_id) = prior_member_node_id {
@@ -254,13 +247,7 @@ async fn send_probe_link(
     };
     let msg_binary = rmp_serde::to_vec(&msg)?;
 
-    let ws_arc = {
-        node_ws
-            .read()
-            .await
-            .get(&(from_node_id as usize))
-            .cloned()
-    };
+    let ws_arc = { node_ws.read().await.get(&(from_node_id as usize)).cloned() };
     let Some(ws_arc) = ws_arc else {
         anyhow::bail!("no websocket for node {}", from_node_id);
     };
@@ -319,7 +306,6 @@ mod tests {
         let plan = RecomputedGroupRoutes {
             group: Group {
                 id: 8,
-                label: "g".to_string(),
                 src_node_id: 1,
                 group_ip: "224.0.0.8".to_string(),
             },
@@ -330,7 +316,6 @@ mod tests {
                 weight: None,
                 edges: vec![(1, 2)],
             }],
-            dag_nodes: HashSet::from([1u32, 2]),
         };
 
         let nodes = multicast_nodes_to_notify(&plan, Some(9));

@@ -401,36 +401,6 @@ pub fn build_group_routes_for_node_multitree(
     Ok(routes)
 }
 
-/// Build per-node multicast routing entries including local delivery for members.
-#[allow(dead_code)]
-pub fn build_group_routes_for_node(
-    group_id: GroupId,
-    src_node_id: u32,
-    dag_edges: &[(u32, u32)],
-    node_id: u32,
-    member_node_ids: &HashSet<u32>,
-) -> Option<GroupRoutingTableEntry> {
-    let route_id = match compute_multitree_route_id(group_id, 0) {
-        Ok(route_id) => route_id,
-        Err(e) => {
-            warn!(
-                "Skipping legacy multicast route for group {} due to invalid route-id: {}",
-                group_id, e
-            );
-            return None;
-        }
-    };
-
-    build_group_routes_for_node_with_route_id(
-        group_id,
-        route_id,
-        src_node_id,
-        dag_edges,
-        node_id,
-        member_node_ids,
-    )
-}
-
 /// Merge all routes from configuration (both custom and topology-generated).
 pub fn merge_all_routes(config: &config::Config) -> RouteCollection {
     let mut routes: RouteCollection = Vec::new();
@@ -686,8 +656,6 @@ mod tests {
                 flow_len_duration: None,
                 flow_rate: Some(64),
                 flow_weight: Some(1),
-                is_finished: false,
-                is_probe: false,
             },
             DbFlow {
                 id: 2,
@@ -698,8 +666,6 @@ mod tests {
                 flow_len_duration: Some(1.0),
                 flow_rate: None,
                 flow_weight: None,
-                is_finished: false,
-                is_probe: false,
             },
             DbFlow {
                 id: 3,
@@ -710,8 +676,6 @@ mod tests {
                 flow_len_duration: None,
                 flow_rate: None,
                 flow_weight: None,
-                is_finished: false,
-                is_probe: false,
             },
             DbFlow {
                 id: 4,
@@ -722,8 +686,6 @@ mod tests {
                 flow_len_duration: None,
                 flow_rate: None,
                 flow_weight: None,
-                is_finished: false,
-                is_probe: false,
             },
         ];
         let flow_routes = vec![DbFlowRoute {
@@ -759,8 +721,6 @@ mod tests {
                 flow_len_duration: Some(2.5),
                 flow_rate: None,
                 flow_weight: None,
-                is_finished: false,
-                is_probe: false,
             },
             DbFlow {
                 id: 2,
@@ -771,8 +731,6 @@ mod tests {
                 flow_len_duration: None,
                 flow_rate: None,
                 flow_weight: None,
-                is_finished: false,
-                is_probe: false,
             },
         ];
 
@@ -1164,25 +1122,41 @@ mod tests {
     fn test_build_group_routes_for_node_includes_local_delivery() {
         let dag_edges = vec![(1, 2), (2, 3), (2, 4)];
         let member_nodes = HashSet::from_iter([3u32]);
+        let trees = [GroupRouteTree {
+            tree_id: 0,
+            weight: None,
+            edges: dag_edges,
+        }];
 
-        let src_entry = build_group_routes_for_node(7, 1, &dag_edges, 1, &member_nodes).unwrap();
+        let src_entry =
+            build_group_routes_for_node_multitree(7, 1, &trees, 1, &member_nodes).unwrap();
+        let src_entry = src_entry.first().unwrap();
         assert_eq!(src_entry.next_hops, vec![2]);
 
-        let member_entry = build_group_routes_for_node(7, 1, &dag_edges, 3, &member_nodes).unwrap();
+        let member_entry =
+            build_group_routes_for_node_multitree(7, 1, &trees, 3, &member_nodes).unwrap();
+        let member_entry = member_entry.first().unwrap();
         assert_eq!(member_entry.next_hops, vec![3]);
 
         assert!(
-            build_group_routes_for_node(7, 1, &dag_edges, 5, &member_nodes).is_none(),
+            build_group_routes_for_node_multitree(7, 1, &trees, 5, &member_nodes)
+                .unwrap()
+                .is_empty(),
             "Non-participants should not receive route entries"
         );
     }
 
     #[test]
     fn test_build_group_routes_for_node_member_with_forwarding() {
-        let dag_edges = vec![(1, 2), (2, 3)];
         let member_nodes = HashSet::from_iter([2u32]);
+        let trees = [GroupRouteTree {
+            tree_id: 0,
+            weight: None,
+            edges: vec![(1, 2), (2, 3)],
+        }];
 
-        let entry = build_group_routes_for_node(7, 1, &dag_edges, 2, &member_nodes).unwrap();
+        let routes = build_group_routes_for_node_multitree(7, 1, &trees, 2, &member_nodes).unwrap();
+        let entry = routes.first().unwrap();
         let mut next_hops = entry.next_hops.clone();
         next_hops.sort();
         assert_eq!(next_hops, vec![2, 3]);
@@ -1194,7 +1168,14 @@ mod tests {
         let cases = [Vec::new(), vec![(1, 2)]];
 
         for dag_edges in cases {
-            let entry = build_group_routes_for_node(7, 1, &dag_edges, 9, &member_nodes).unwrap();
+            let trees = [GroupRouteTree {
+                tree_id: 0,
+                weight: None,
+                edges: dag_edges,
+            }];
+            let routes =
+                build_group_routes_for_node_multitree(7, 1, &trees, 9, &member_nodes).unwrap();
+            let entry = routes.first().unwrap();
             assert_eq!(entry.next_hops, vec![9]);
         }
     }
