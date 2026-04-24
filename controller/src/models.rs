@@ -35,29 +35,20 @@ pub struct DbFlow {
     pub flow_len_duration: Option<f64>,
     pub flow_rate: Option<i32>,
     pub flow_weight: Option<i32>,
-    #[allow(dead_code)]
-    pub is_finished: bool,
-    #[allow(dead_code)]
-    pub is_probe: bool,
 }
 
-#[allow(dead_code)]
 #[derive(FromRow, Debug)]
 pub struct Group {
     pub id: i32,
-    pub label: String,
     pub src_node_id: i32,
     pub group_ip: String,
 }
 
-#[allow(dead_code)]
 #[derive(FromRow, Debug)]
 pub struct GroupMember {
-    pub group_id: i32,
     pub node_id: i32,
 }
 
-#[allow(dead_code)]
 #[derive(Clone, FromRow, Debug)]
 pub struct DbGroupRoute {
     pub group_id: i32,

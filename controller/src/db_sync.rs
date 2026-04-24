@@ -225,7 +225,6 @@ fn multicast_nodes_to_notify(
         .iter()
         .flat_map(|tree| tree.edges.iter().flat_map(|(a, b)| [*a, *b]))
         .collect();
-    nodes.extend(plan.dag_nodes.iter().copied());
     nodes.insert(plan.group.src_node_id as u32);
     nodes.extend(plan.member_node_ids.iter().copied());
     if let Some(node_id) = prior_member_node_id {
@@ -307,7 +306,6 @@ mod tests {
         let plan = RecomputedGroupRoutes {
             group: Group {
                 id: 8,
-                label: "g".to_string(),
                 src_node_id: 1,
                 group_ip: "224.0.0.8".to_string(),
             },
@@ -318,7 +316,6 @@ mod tests {
                 weight: None,
                 edges: vec![(1, 2)],
             }],
-            dag_nodes: HashSet::from([1u32, 2]),
         };
 
         let nodes = multicast_nodes_to_notify(&plan, Some(9));

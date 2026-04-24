@@ -13,7 +13,6 @@ pub(crate) struct RecomputedGroupRoutes {
     pub member_node_ids: Vec<u32>,
     pub member_node_set: HashSet<u32>,
     pub trees: Vec<GroupRouteTree>,
-    pub dag_nodes: HashSet<u32>,
 }
 
 pub(crate) async fn recompute_group_routes(
@@ -34,31 +33,20 @@ pub(crate) async fn recompute_group_routes(
     let member_node_ids: Vec<u32> = members.iter().map(|m| m.node_id as u32).collect();
     let member_node_set: HashSet<u32> = member_node_ids.iter().copied().collect();
 
-    // Membership changes affect local delivery, but edge fan-out remains sourced from stored trees.
-    let mut dag_nodes = HashSet::new();
-    for tree in &trees {
-        for (a, b) in &tree.edges {
-            dag_nodes.insert(*a);
-            dag_nodes.insert(*b);
-        }
-    }
-
     Ok(Some(RecomputedGroupRoutes {
         group,
         member_node_ids,
         member_node_set,
         trees,
-        dag_nodes,
     }))
 }
 
 async fn load_group(db_pool: &Pool<Postgres>, group_id: i32) -> AnyResult<Option<Group>> {
-    let group = sqlx::query_as::<_, Group>(
-        "SELECT id, label, src_node_id, group_ip FROM groups WHERE id = $1",
-    )
-    .bind(group_id)
-    .fetch_optional(db_pool)
-    .await?;
+    let group =
+        sqlx::query_as::<_, Group>("SELECT id, src_node_id, group_ip FROM groups WHERE id = $1")
+            .bind(group_id)
+            .fetch_optional(db_pool)
+            .await?;
     Ok(group)
 }
 
