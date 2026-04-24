@@ -42,7 +42,8 @@ Named case presets:
 - `fec-1r` (RaptorQ)
 - `fec-2r-block` (RaptorQ)
 - `fec-2r-symbols` (RaptorQ)
-- `mettle-1r`
+- `raptorq-2t-2r-k2400`
+- `mettle-2t-2r-k2400`
 
 Run one custom case without editing the script:
 
@@ -52,11 +53,11 @@ Run one custom case without editing the script:
 
 For custom runs, `--mode` defaults to `fec` when omitted and `--fec-scheme` defaults to `raptorq`.
 Use `--fec-scheme mettle` to run the METTLE backend. METTLE requires `--symbols-per-block >= 2400`.
-For apples-to-apples backend comparisons, keep `--symbols-per-block`, `--block-size`, payload size, topology, and queue settings identical:
+For apples-to-apples backend comparisons, keep `--symbols-per-block`, `--block-size`, payload size, topology, and queue settings identical. Use at least two trees for both backends, and do not compare the legacy small-`K` RaptorQ presets against METTLE:
 
 ```bash
-./examples/ns-lossless/run.sh --mode fec --fec-scheme raptorq --trees 1 --receivers 1 --symbols-per-block 2400
-./examples/ns-lossless/run.sh --mode fec --fec-scheme mettle --trees 1 --receivers 1 --symbols-per-block 2400
+./examples/ns-lossless/run.sh --mode fec --fec-scheme raptorq --trees 2 --receivers 2 --symbols-per-block 2400 --block-size $((2400*1024)) --payload-size $((64*1024*1024))
+./examples/ns-lossless/run.sh --mode fec --fec-scheme mettle --trees 2 --receivers 2 --symbols-per-block 2400 --block-size $((2400*1024)) --payload-size $((64*1024*1024))
 ```
 
 `plain` mode is only valid with `--trees 1`.

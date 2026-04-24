@@ -35,7 +35,7 @@ usage() {
 Usage: run.sh [options]
 
 Options:
-  --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols | mettle-1r.
+  --case NAME                Run one named case: plain-1r | fec-1r | fec-2r-block | fec-2r-symbols | raptorq-2t-2r-k2400 | mettle-2t-2r-k2400.
   --mode MODE                Custom run/sweep mode: plain | fec (default for custom runs: fec).
   --fec-scheme SCHEME        FEC backend for custom/sweep runs: raptorq | mettle (default: raptorq).
   --receivers N              Custom run receiver count.
@@ -689,7 +689,8 @@ if [[ -n "$case_name" ]]; then
     fec-1r) run_case fec-1r fec raptorq 1 1 8192 32 262144 120000 1 2048 2048 ;;
     fec-2r-block) run_case fec-2r-block fec raptorq 2 2 4096 32 393216 120000 1 2048 2048 ;;
     fec-2r-symbols) run_case fec-2r-symbols fec raptorq 2 2 8192 16 393216 120000 1 2048 2048 ;;
-    mettle-1r) run_case mettle-1r fec mettle 1 1 8192 "$mettle_min_symbols_per_block" 262144 120000 1 2048 2048 ;;
+    raptorq-2t-2r-k2400) run_case raptorq-2t-2r-k2400 fec raptorq 2 2 2457600 "$mettle_min_symbols_per_block" 67108864 120000 1 2048 2048 ;;
+    mettle-2t-2r-k2400) run_case mettle-2t-2r-k2400 fec mettle 2 2 2457600 "$mettle_min_symbols_per_block" 67108864 120000 1 2048 2048 ;;
     *)
       echo "Unknown case: ${case_name}" >&2
       exit 1
