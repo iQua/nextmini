@@ -141,7 +141,6 @@ impl ControllerInterfaceHandle {
             routes_installed: false,
             group_directory_installed: false,
             local_topology_ready_sent: false,
-            schedulers: HashMap::new(),
         };
 
         tokio::spawn(async move {
@@ -312,8 +311,6 @@ pub struct ControllerToDataplaneReceiver {
     routes_installed: bool,
     group_directory_installed: bool,
     local_topology_ready_sent: bool,
-    /// Scheduler handles cloned for direct probe sending (bypasses processor).
-    schedulers: HashMap<usize, SchedulerHandle>,
 }
 
 impl ControllerToDataplaneReceiver {
@@ -366,7 +363,6 @@ impl ControllerToDataplaneReceiver {
 
                 let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
-                self.schedulers.insert(remote_node_id, scheduler.clone());
                 let _ = self.processors.add_node(remote_node_id, scheduler);
 
                 self.record_neighbor_connected(remote_node_id).await;
@@ -594,14 +590,6 @@ impl ControllerToDataplaneReceiver {
     const PROBE_PAYLOAD_SIZE: usize = 1360;
 
     fn send_probe(&self, remote_node_id: usize, probe_id: u64, probe_bytes: usize) {
-        let scheduler = match self.schedulers.get(&remote_node_id) {
-            Some(s) => s,
-            None => {
-                error!("ProbeLink: no connection to node {}.", remote_node_id);
-                return;
-            }
-        };
-
         let num_packets = (probe_bytes / Self::PROBE_PAYLOAD_SIZE).max(1);
         let sender_id = self.config.node_id as u64;
         let mut packets = Vec::with_capacity(num_packets);
@@ -629,7 +617,8 @@ impl ControllerToDataplaneReceiver {
             num_packets * Self::PROBE_PAYLOAD_SIZE,
             remote_node_id,
         );
-        scheduler.send_probe_bypass(packets);
+        self.processors
+            .send_link_probe_packets(remote_node_id, packets);
     }
 
     async fn maybe_send_local_topology_ready(&mut self) {
