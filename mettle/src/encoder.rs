@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
 use crate::MettleParams;
@@ -29,7 +29,8 @@ pub(crate) struct MettleEncoder {
     next_departure_bin_id: u128,
     seed: u64,
     terminal_source_count: Option<u64>,
-    open_bins: BTreeMap<u128, Vec<u8>>,
+    open_bins: VecDeque<Option<Vec<u8>>>,
+    source_scratch: Vec<u8>,
 }
 
 impl MettleEncoder {
@@ -64,7 +65,8 @@ impl MettleEncoder {
             next_departure_bin_id: 0,
             seed,
             terminal_source_count,
-            open_bins: BTreeMap::new(),
+            open_bins: VecDeque::new(),
+            source_scratch: vec![0; source_symbol_bytes.get()],
         }
     }
 
@@ -74,17 +76,15 @@ impl MettleEncoder {
             assert!(self.next_source_id < terminal_source_count);
         }
 
-        let mut padded_source_payload = vec![0; self.source_symbol_bytes.get()];
-        padded_source_payload[..payload.len()].copy_from_slice(payload);
-        let fake_source_payload =
-            self.fake_source_payload(self.next_source_id, padded_source_payload);
+        self.source_scratch.fill(0);
+        self.source_scratch[..payload.len()].copy_from_slice(payload);
+        self.apply_previous_fake_tle_payload(self.next_source_id);
 
         for bin_id in self.unique_edge_bin_ids(self.next_source_id) {
-            let entry = self
-                .open_bins
-                .entry(bin_id)
-                .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
-            xor_payload(entry, &fake_source_payload);
+            let slot_index = self.ensure_open_bin_slot(bin_id);
+            let entry = self.open_bins[slot_index]
+                .get_or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
+            xor_payload(entry, &self.source_scratch);
         }
 
         self.next_source_id += 1;
@@ -105,13 +105,30 @@ impl MettleEncoder {
         self.flush_open_bins()
     }
 
-    fn fake_source_payload(&self, source_id: u64, mut source_payload: Vec<u8>) -> Vec<u8> {
+    fn apply_previous_fake_tle_payload(&mut self, source_id: u64) {
         let tle_bin_id = self.params.tle_bin_id(source_id);
-        if let Some(previous_fake_tle_payloads) = self.open_bins.get(&tle_bin_id) {
-            // Paper: choose q_x so the TLE/source bin carries raw p_x:
-            // q_x = p_x xor all prior q_i that also touch TLE(x).
+        if tle_bin_id < self.next_departure_bin_id {
+            return;
+        }
+        let slot_index =
+            usize::try_from(tle_bin_id - self.next_departure_bin_id).expect("open bin index fits");
+        let Self {
+            open_bins,
+            source_scratch,
+            ..
+        } = self;
+        if let Some(Some(previous_fake_tle_payloads)) = open_bins.get(slot_index) {
+            xor_payload(source_scratch, previous_fake_tle_payloads);
+        }
+    }
+
+    fn fake_source_payload(&self, source_id: u64, mut source_payload: Vec<u8>) -> Vec<u8> {
+        if let Some(previous_fake_tle_payloads) =
+            self.open_bin_payload(self.params.tle_bin_id(source_id))
+        {
             xor_payload(&mut source_payload, previous_fake_tle_payloads);
         }
+
         source_payload
     }
 
@@ -123,36 +140,57 @@ impl MettleEncoder {
         )
     }
 
-    fn take_finalized_bins_until(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
-        let future_bins = self.open_bins.split_off(&end_exclusive);
-        let mut finalized_bins = std::mem::replace(&mut self.open_bins, future_bins).into_iter();
-        let mut next_finalized = finalized_bins.next();
-        let mut emitted = Vec::new();
+    fn ensure_open_bin_slot(&mut self, bin_id: u128) -> usize {
+        assert!(bin_id >= self.next_departure_bin_id);
+        let slot_index =
+            usize::try_from(bin_id - self.next_departure_bin_id).expect("open bin index fits");
+        while self.open_bins.len() <= slot_index {
+            self.open_bins.push_back(None);
+        }
+        slot_index
+    }
 
-        for bin_id in self.next_departure_bin_id..end_exclusive {
-            let payload = if next_finalized
-                .as_ref()
-                .is_some_and(|(finalized_bin_id, _)| *finalized_bin_id == bin_id)
-            {
-                let (_, payload) = next_finalized.take().expect("just matched finalized bin");
-                next_finalized = finalized_bins.next();
-                payload
-            } else {
-                vec![0; self.source_symbol_bytes.get()]
-            };
+    fn open_bin_payload(&self, bin_id: u128) -> Option<&Vec<u8>> {
+        if bin_id < self.next_departure_bin_id {
+            return None;
+        }
+        let slot_index = usize::try_from(bin_id - self.next_departure_bin_id).ok()?;
+        self.open_bins.get(slot_index)?.as_ref()
+    }
+
+    fn take_finalized_bins_until(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
+        let emit_count =
+            usize::try_from(end_exclusive - self.next_departure_bin_id).expect("emit count fits");
+        while self.open_bins.len() < emit_count {
+            self.open_bins.push_back(None);
+        }
+        let mut emitted = Vec::with_capacity(emit_count);
+
+        for _ in 0..emit_count {
+            let bin_id = self.next_departure_bin_id;
+            let payload = self
+                .open_bins
+                .pop_front()
+                .flatten()
+                .unwrap_or_else(|| vec![0; self.source_symbol_bytes.get()]);
             emitted.push(MettleBin { bin_id, payload });
+            self.next_departure_bin_id += 1;
         }
 
-        self.next_departure_bin_id = end_exclusive;
         emitted
     }
 
     fn flush_open_bins(&mut self) -> Vec<MettleBin> {
-        let remaining_bins = std::mem::take(&mut self.open_bins);
-
-        remaining_bins
+        let start_bin_id = self.next_departure_bin_id;
+        std::mem::take(&mut self.open_bins)
             .into_iter()
-            .map(|(bin_id, payload)| MettleBin { bin_id, payload })
+            .enumerate()
+            .filter_map(|(offset, payload)| {
+                Some(MettleBin {
+                    bin_id: start_bin_id + offset as u128,
+                    payload: payload?,
+                })
+            })
             .collect()
     }
 }
@@ -228,15 +266,17 @@ mod tests {
         }
 
         encoder.push_source(&[0b1010_0000]);
-        assert!(encoder.open_bins.contains_key(&shared_bin));
+        assert_eq!(
+            encoder.open_bin_payload(shared_bin),
+            Some(&vec![0b1010_0000])
+        );
 
         for _ in (first_source_id + 1)..second_source_id {
             encoder.push_source(&[0]);
         }
 
         let mut expected_shared_payload = encoder
-            .open_bins
-            .get(&shared_bin)
+            .open_bin_payload(shared_bin)
             .cloned()
             .expect("first source opened shared bin");
         let second_fake_payload = encoder.fake_source_payload(second_source_id, vec![0b1100_0000]);
@@ -246,7 +286,7 @@ mod tests {
 
         assert!(!second_emitted.iter().any(|bin| bin.bin_id == shared_bin));
         assert_eq!(
-            encoder.open_bins.get(&shared_bin),
+            encoder.open_bin_payload(shared_bin),
             Some(&expected_shared_payload)
         );
     }

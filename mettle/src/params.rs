@@ -358,18 +358,43 @@ fn mix_entropy(seed: u64, source_id: u64, edge_index: u64) -> u64 {
 #[cfg_attr(not(test), allow(dead_code))]
 fn sample_power_of_two_binomial(trials: u128, denominator: u32, mut state: u64) -> u128 {
     debug_assert!(denominator.is_power_of_two());
-    let mask = u64::from(denominator - 1);
+    let bit_planes = denominator.trailing_zeros();
     let mut successes = 0;
     let mut remaining = trials;
 
-    while remaining != 0 {
-        if next_entropy(&mut state) & mask == 0 {
-            successes += 1;
-        }
-        remaining -= 1;
+    while remaining >= u128::from(u64::BITS) {
+        successes += u128::from(sample_power_of_two_binomial_chunk(
+            u64::BITS,
+            bit_planes,
+            &mut state,
+        ));
+        remaining -= u128::from(u64::BITS);
+    }
+
+    if remaining != 0 {
+        successes += u128::from(sample_power_of_two_binomial_chunk(
+            remaining as u32,
+            bit_planes,
+            &mut state,
+        ));
     }
 
     successes
+}
+
+fn sample_power_of_two_binomial_chunk(width: u32, bit_planes: u32, state: &mut u64) -> u32 {
+    debug_assert!((1..=u64::BITS).contains(&width));
+
+    let mut success_mask = u64::MAX;
+    for _ in 0..bit_planes {
+        success_mask &= !next_entropy(state);
+    }
+
+    if width != u64::BITS {
+        success_mask &= (1u64 << width) - 1;
+    }
+
+    success_mask.count_ones()
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -513,7 +538,7 @@ mod tests {
     #[test]
     fn second_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 363);
+        assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 362);
     }
 
     #[test]
@@ -538,7 +563,7 @@ mod tests {
     #[test]
     fn third_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 509);
+        assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 511);
     }
 
     #[test]
@@ -573,7 +598,7 @@ mod tests {
     #[test]
     fn fourth_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 590);
+        assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 574);
     }
 
     #[test]

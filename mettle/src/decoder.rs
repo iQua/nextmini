@@ -596,29 +596,39 @@ mod tests {
     #[test]
     fn push_bin_uses_source_observation_to_unblock_overlap_bins() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_id = 537u64;
+        let future_overlap_bin_id = params
+            .edge_bin_ids(source_id, 0)
+            .into_iter()
+            .find(|&bin_id| bin_id >= params.tle_bin_id(source_id + 1))
+            .expect("expected a future overlap bin");
         let mut decoder = MettleDecoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
-        decoder.next_decoded_source_id = 537;
-        decoder.decoded_prefix_equation_payloads = VecDeque::from(vec![vec![0]; 537]);
+        decoder.next_decoded_source_id = source_id;
+        decoder.decoded_prefix_equation_payloads =
+            VecDeque::from(vec![vec![0]; source_id as usize]);
 
         assert!(
             decoder
-                .push_bin(MettleBin::new(1116, vec![0b0110_0000]))
+                .push_bin(MettleBin::new(future_overlap_bin_id, vec![0b0110_0000]))
                 .is_empty()
         );
 
-        let decoded = decoder.push_bin(MettleBin::new(563, vec![0b1010_0000]));
+        let decoded = decoder.push_bin(MettleBin::new(
+            params.tle_bin_id(source_id),
+            vec![0b1010_0000],
+        ));
 
         assert_eq!(
             decoded,
             vec![DecodedSource {
-                source_id: 537,
+                source_id,
                 payload: vec![0b1010_0000],
             }]
         );
-        assert_eq!(decoder.next_decoded_source_id, 538);
-        assert!(!decoder.seen_bin_ids.contains(&563));
-        assert!(decoder.seen_bin_ids.contains(&1116));
-        assert!(!decoder.received_bins.contains_key(&1116));
+        assert_eq!(decoder.next_decoded_source_id, source_id + 1);
+        assert!(!decoder.seen_bin_ids.contains(&params.tle_bin_id(source_id)));
+        assert!(decoder.seen_bin_ids.contains(&future_overlap_bin_id));
+        assert!(!decoder.received_bins.contains_key(&future_overlap_bin_id));
     }
 
     #[test]
@@ -739,7 +749,13 @@ mod tests {
     fn fast_tle_path_still_peels_future_tle_bins() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         let source_symbol_bytes = NonZeroUsize::new(1).expect("non-zero");
-        let future_tle_source_id = 320u64;
+        let future_tle_source_id = (1..=1024)
+            .find(|&source_id| {
+                params
+                    .edge_bin_ids(0, 0)
+                    .contains(&params.tle_bin_id(source_id))
+            })
+            .expect("source 0 should touch some future TLE bin");
         let future_tle_bin_id = params.tle_bin_id(future_tle_source_id);
         let source_count = future_tle_source_id + 1;
         let mut encoder =
