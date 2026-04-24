@@ -9,6 +9,13 @@ dataplane_bin="${NEXTMINI_BIN:-${root_dir}/target/release/nextmini}"
 cargo_bin="${CARGO_BIN:-}"
 database_container_name="${DATABASE_CONTAINER_NAME:-nextmini-database}"
 mettle_min_symbols_per_block="2400"
+
+# RaptorQ legacy baseline used for namespace sanity checks:
+#   --mode fec --trees 2 --receivers 10 --payload-size $((256*1024*1024)) \
+#     --block-size $((128*1024)) --symbols-per-block 16
+#
+# METTLE cannot use K=16. For RaptorQ-vs-METTLE backend comparisons, keep the
+# same topology and payload, but use K >= 2400 for both backends.
 case_name=""
 no_build="false"
 mode=""
