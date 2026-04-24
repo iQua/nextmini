@@ -177,9 +177,82 @@ fn fixed_k_padded_block_boundary_is_not_trimmed() {
 }
 
 #[test]
+fn future_source_observations_participate_in_systematic_peeling() {
+    let params = BlockParams::new(1024, 1, 0);
+    let source_block = source_block(params.source_symbols, params.symbol_size);
+    let source_symbols = expected_symbols(&source_block, params.symbol_size);
+    let encoder = Encoder::from_block(params, &source_block).expect("valid block encoder");
+    let decoder = Decoder::from_block(params);
+    let metadata = params.metadata().expect("metadata");
+    let mut rng = XorShift64::new(0xC0DE_CAFE_F00D_BAAD);
+    let mut delivered_sources = Vec::new();
+    let mut delivered_repairs = Vec::new();
+
+    for source_index in 0..params.source_symbols {
+        if rng.delivers(0.005) {
+            delivered_sources.push(source_index);
+        }
+    }
+    for repair_index in 0..metadata.repair_symbol_count() {
+        if rng.delivers(0.005) {
+            delivered_repairs.push(repair_index);
+        }
+    }
+
+    assert!(
+        delivered_sources.len() < params.source_symbols,
+        "fixture should erase at least one source observation"
+    );
+
+    let mut symbols = delivered_sources
+        .into_iter()
+        .map(|source_index| {
+            decoder.source_symbol(source_index, source_symbols[source_index].clone())
+        })
+        .collect::<Vec<_>>();
+    symbols.extend(delivered_repairs.into_iter().map(|repair_index| {
+        decoder.repair_symbol(
+            repair_index,
+            encoder
+                .repair_symbol(repair_index)
+                .expect("repair symbol exists"),
+        )
+    }));
+
+    let output = decoder
+        .decode(&symbols)
+        .expect("future source observations should remain usable as peeling equations");
+
+    assert_eq!(output.source_symbols, source_symbols);
+}
+
+#[test]
 fn encoder_rejects_non_exact_source_block_length() {
     let params = BlockParams::new(4, 4, 0);
     let source_block = vec![0; params.source_symbols * params.symbol_size - 1];
 
     assert!(Encoder::from_block(params, &source_block).is_err());
+}
+
+struct XorShift64 {
+    state: u64,
+}
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        Self { state: seed | 1 }
+    }
+
+    fn delivers(&mut self, loss_rate: f64) -> bool {
+        self.next_unit_f64() >= loss_rate
+    }
+
+    fn next_unit_f64(&mut self) -> f64 {
+        let mut x = self.state;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.state = x;
+        (x as f64) / (u64::MAX as f64)
+    }
 }

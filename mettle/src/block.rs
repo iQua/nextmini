@@ -149,7 +149,7 @@ impl BlockMetadata {
         let mut estimator = MetadataPeelingEstimator::new(self.params.source_symbols);
 
         for source_index in received_sources {
-            estimator.observe_source(source_index)?;
+            estimator.observe_source(self, source_index)?;
         }
 
         let mut next_future_repair_index = 0usize;
@@ -171,19 +171,18 @@ impl BlockMetadata {
         Ok(estimator.is_complete().then_some(additional_repair_symbols))
     }
 
-    fn repair_touchers(&self, repair_index: usize) -> Result<Vec<usize>, BlockError> {
-        let repair_bin_id = self.repair_bin_id(repair_index)?;
+    fn bin_touchers(&self, bin_id: u128) -> Vec<usize> {
         let terminal_source_count =
             u64::try_from(self.params.source_symbols).expect("validated in constructor");
         let Some((earliest_source_id, latest_source_id)) = self
             .params
             .mettle_params()
-            .possible_source_id_range_for_bin(repair_bin_id, Some(terminal_source_count))
+            .possible_source_id_range_for_bin(bin_id, Some(terminal_source_count))
         else {
-            return Ok(Vec::new());
+            return Vec::new();
         };
 
-        Ok((earliest_source_id..=latest_source_id)
+        (earliest_source_id..=latest_source_id)
             .filter(|&source_id| {
                 self.params
                     .mettle_params()
@@ -192,10 +191,15 @@ impl BlockMetadata {
                         self.params.seed,
                         Some(terminal_source_count),
                     )
-                    .contains(&repair_bin_id)
+                    .contains(&bin_id)
             })
             .map(|source_id| source_id as usize)
-            .collect())
+            .collect()
+    }
+
+    fn repair_touchers(&self, repair_index: usize) -> Result<Vec<usize>, BlockError> {
+        let repair_bin_id = self.repair_bin_id(repair_index)?;
+        Ok(self.bin_touchers(repair_bin_id))
     }
 }
 
@@ -213,11 +217,20 @@ impl MetadataPeelingEstimator {
         }
     }
 
-    fn observe_source(&mut self, source_index: usize) -> Result<(), BlockError> {
-        let Some(known) = self.known_sources.get_mut(source_index) else {
+    fn observe_source(
+        &mut self,
+        metadata: &BlockMetadata,
+        source_index: usize,
+    ) -> Result<(), BlockError> {
+        if source_index >= self.known_sources.len() {
             return Err(BlockError::SourceIndexOutOfRange);
-        };
-        *known = true;
+        }
+        let source_id = u64::try_from(source_index).expect("source index fits u64");
+        let source_bin_id = metadata.params.mettle_params().tle_bin_id(source_id);
+        let touchers = metadata.bin_touchers(source_bin_id);
+        if !touchers.is_empty() {
+            self.repairs.push(touchers);
+        }
         Ok(())
     }
 

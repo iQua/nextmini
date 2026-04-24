@@ -108,13 +108,16 @@ impl MettleDecoder {
         }
 
         if let Some(source_id) = self.tle_source_id_for_bin(bin_id) {
-            return self.push_source_observation(source_id, payload);
+            return self.push_source_observation(source_id, bin_id, payload);
         }
 
+        self.push_equation_bin(bin_id, payload)
+    }
+
+    fn push_equation_bin(&mut self, bin_id: u128, mut payload: Vec<u8>) -> Vec<DecodedSource> {
         if self.bin_has_no_undecoded_touchers(bin_id) {
             return Vec::new();
         }
-        let mut payload = payload;
         self.peel_known_prefix_from_bin(bin_id, &mut payload);
         let remaining_touchers = self.count_remaining_touchers(bin_id);
         if remaining_touchers == 0 {
@@ -133,23 +136,25 @@ impl MettleDecoder {
     fn push_source_observation(
         &mut self,
         source_id: u64,
+        bin_id: u128,
         source_payload: Vec<u8>,
     ) -> Vec<DecodedSource> {
-        if source_id < self.next_decoded_source_id
-            || self
-                .decoded_future_equation_payloads
-                .contains_key(&source_id)
-        {
+        if source_id < self.next_decoded_source_id {
             return Vec::new();
         }
         if source_id != self.next_decoded_source_id {
-            // Paper: systematic TLE/source observations carry p_x, not an equation
-            // payload. Keep them out of the repair-bin peeling state until q_x can
-            // be derived from the decoded prefix.
-            self.received_source_payloads
-                .entry(source_id)
-                .or_insert(source_payload);
-            return Vec::new();
+            if !self
+                .decoded_future_equation_payloads
+                .contains_key(&source_id)
+            {
+                self.received_source_payloads
+                    .entry(source_id)
+                    .or_insert_with(|| source_payload.clone());
+            }
+            // Systematic TLE/source observations carry raw p_x. They are also a
+            // valid triangular equation over q_x and earlier q_i values that
+            // touch TLE(x), so future observations must participate in peeling.
+            return self.push_equation_bin(bin_id, source_payload);
         }
 
         let mut decoded = self.observe_source_and_release(source_id, source_payload);
@@ -293,11 +298,15 @@ impl MettleDecoder {
 
     fn apply_decoded_source_edges(&mut self, source_id: u64, payload: &[u8]) {
         let edge_bin_ids = self.edge_bin_ids(source_id);
+        let mut drained_bin_ids = Vec::new();
 
         for bin_id in edge_bin_ids {
             if let Some(bin) = self.received_bins.get_mut(&bin_id) {
                 xor_payload(&mut bin.payload, payload);
                 bin.remaining_touchers = bin.remaining_touchers.saturating_sub(1);
+                if bin.remaining_touchers == 0 {
+                    drained_bin_ids.push(bin_id);
+                }
             }
             if let Some(tle_source_id) = self.tle_source_id_for_bin(bin_id) {
                 if tle_source_id <= source_id {
@@ -309,6 +318,9 @@ impl MettleDecoder {
                     .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
                 xor_payload(peeled_prefix, payload);
             }
+        }
+        for bin_id in drained_bin_ids {
+            self.received_bins.remove(&bin_id);
         }
     }
 
@@ -628,7 +640,6 @@ mod tests {
         assert_eq!(decoder.next_decoded_source_id, source_id + 1);
         assert!(!decoder.seen_bin_ids.contains(&params.tle_bin_id(source_id)));
         assert!(decoder.seen_bin_ids.contains(&future_overlap_bin_id));
-        assert!(!decoder.received_bins.contains_key(&future_overlap_bin_id));
     }
 
     #[test]
