@@ -60,6 +60,14 @@ impl FecSender {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build fec sender for plain manifest");
         };
+        let scheme = fec
+            .scheme_kind()
+            .ok_or("unsupported fec scheme for fec sender")?;
+        if scheme == FecScheme::Mettle
+            && usize::from(fec.symbols_per_block) < session_fec::METTLE_MIN_SOURCE_SYMBOLS
+        {
+            return Err("METTLE symbols_per_block below sender minimum");
+        }
         let geometry = plan
             .symbol_geometry(fec.symbols_per_block)
             .map_err(|_| "invalid symbol geometry for fec sender")?;
@@ -76,9 +84,7 @@ impl FecSender {
                     encoder: None,
                 })
                 .collect(),
-            scheme: fec
-                .scheme_kind()
-                .ok_or("unsupported fec scheme for fec sender")?,
+            scheme,
             symbols_per_block: fec.symbols_per_block,
             tree_ids: fec.tree_ids.clone(),
             geometry,
@@ -756,6 +762,25 @@ mod tests {
                 .await
         );
         assert!(sender.protocol_error);
+    }
+
+    #[test]
+    fn mettle_sender_rejects_explicit_manifest_below_minimum_k() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
+                session_fec::METTLE_MIN_SOURCE_SYMBOLS as u16 - 1,
+                vec![7],
+            )),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+
+        assert!(matches!(
+            FecSender::new(&manifest, plan),
+            Err("METTLE symbols_per_block below sender minimum")
+        ));
     }
 
     fn test_manifest() -> LosslessSessionManifest {
