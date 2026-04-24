@@ -1,3 +1,4 @@
+pub mod block;
 mod decoder;
 mod encoder;
 mod params;
