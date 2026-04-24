@@ -16,16 +16,34 @@ pub struct BlockParams {
     pub symbol_size: usize,
     /// Deterministic graph seed shared by sender and receiver.
     pub seed: u64,
+    overhead: OverheadRatio,
 }
 
 impl BlockParams {
     /// Build a reusable parameter bundle with the paper-native METTLE profile.
     #[must_use]
     pub const fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
+        Self::with_overhead(
+            source_symbols,
+            symbol_size,
+            seed,
+            OverheadRatio::PAPER_DEFAULT,
+        )
+    }
+
+    /// Build a reusable parameter bundle with an explicit METTLE overhead ratio.
+    #[must_use]
+    pub const fn with_overhead(
+        source_symbols: usize,
+        symbol_size: usize,
+        seed: u64,
+        overhead: OverheadRatio,
+    ) -> Self {
         Self {
             source_symbols,
             symbol_size,
             seed,
+            overhead,
         }
     }
 
@@ -56,11 +74,7 @@ impl BlockParams {
     }
 
     fn mettle_params(self) -> MettleParams {
-        // Paper: Phase-1 block integration fixes the graph profile to the paper
-        // constants (l=4, w=600) and 5% coded-bin expansion, rather than taking
-        // locally configurable parameters that are not negotiated on the wire.
-        let overhead = OverheadRatio::new(1, 20).expect("paper overhead is non-zero");
-        MettleParams::new(overhead)
+        MettleParams::new(self.overhead)
     }
 }
 

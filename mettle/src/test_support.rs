@@ -6,8 +6,7 @@
 use std::num::NonZeroUsize;
 
 use crate::MettleParams;
-use crate::decoder::DecodedSource;
-use crate::decoder::MettleDecoder;
+use crate::decoder::{DecodedSource, MettleDecoder};
 use crate::encoder::{MettleBin, MettleEncoder};
 
 #[doc(hidden)]
@@ -85,6 +84,20 @@ impl Decoder {
         terminal_source_count: u64,
     ) -> Self {
         Self(MettleDecoder::new_terminated(
+            params,
+            source_symbol_bytes,
+            seed,
+            terminal_source_count,
+        ))
+    }
+
+    pub fn new_non_systematic_terminated(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Self {
+        Self(MettleDecoder::new_non_systematic_terminated(
             params,
             source_symbol_bytes,
             seed,

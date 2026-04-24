@@ -1,3 +1,4 @@
+use mettle::OverheadRatio;
 use mettle::block::{BlockParams, DecodeError, Decoder, Encoder};
 
 fn source_block(k: usize, symbol_size: usize) -> Vec<u8> {
@@ -151,6 +152,28 @@ fn metadata_only_large_k_maps_repair_indexes_without_payload_pressure() {
         .estimate_repair_deficit(0..4090, [10, 12, 17])
         .expect("deficit estimate");
     assert!(deficit.is_some());
+}
+
+#[test]
+fn explicit_overhead_changes_finite_repair_budget() {
+    let paper = BlockParams::new(4096, 1, 0xCAFE_BABE);
+    let higher = BlockParams::with_overhead(
+        4096,
+        1,
+        0xCAFE_BABE,
+        OverheadRatio::new(1, 4).expect("valid overhead"),
+    );
+
+    let paper_repairs = paper
+        .metadata()
+        .expect("paper metadata")
+        .repair_symbol_count();
+    let higher_repairs = higher
+        .metadata()
+        .expect("higher-overhead metadata")
+        .repair_symbol_count();
+
+    assert!(higher_repairs > paper_repairs);
 }
 
 #[test]

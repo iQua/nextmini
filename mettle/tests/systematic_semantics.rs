@@ -267,3 +267,46 @@ fn repair_assisted_decode_outputs_raw_p_not_fake_q() {
     );
     assert_ne!(decoded[0].1, fixture.fake_sources[source_index]);
 }
+
+#[test]
+fn non_systematic_tle_equations_decode_raw_sources() {
+    let params = paper_params();
+    let source_symbol_bytes = NonZeroUsize::new(SYMBOL_BYTES).expect("non-zero");
+    let source_count = 8u64;
+    let seed = 0u64;
+    let sources = systematic_sources(source_count);
+    let mut raw_bins = BTreeMap::<u128, Vec<u8>>::new();
+
+    for source_id in 0..source_count {
+        for bin_id in unique_edge_bin_ids(params, source_id, seed, source_count) {
+            let payload = raw_bins
+                .entry(bin_id)
+                .or_insert_with(|| vec![0; SYMBOL_BYTES]);
+            xor_payload(payload, &sources[source_id as usize]);
+        }
+    }
+
+    let mut decoder =
+        TestDecoder::new_non_systematic_terminated(params, source_symbol_bytes, seed, source_count);
+    let mut decoded = Vec::new();
+
+    for source_id in 0..source_count {
+        let bin_id = tle_bin_id(params, source_id);
+        decoded.extend(
+            decoder.push_bin(
+                bin_id,
+                raw_bins
+                    .get(&bin_id)
+                    .unwrap_or_else(|| panic!("missing TLE bin {bin_id}"))
+                    .clone(),
+            ),
+        );
+    }
+
+    let expected = sources
+        .into_iter()
+        .enumerate()
+        .map(|(source_id, payload)| (source_id as u64, payload))
+        .collect::<Vec<_>>();
+    assert_eq!(decoded, expected);
+}

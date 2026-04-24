@@ -11,6 +11,12 @@ pub struct OverheadRatio {
 }
 
 impl OverheadRatio {
+    /// Paper default coded-bin expansion, c = 5%.
+    pub const PAPER_DEFAULT: Self = Self {
+        numerator: 1,
+        denominator: 20,
+    };
+
     pub fn new(numerator: u32, denominator: u32) -> Result<Self, ParamsError> {
         if denominator == 0 {
             return Err(ParamsError::ZeroDenominator);
@@ -105,6 +111,20 @@ impl MettleParams {
         seed: u64,
         terminal_source_count: Option<u64>,
     ) -> Vec<u128> {
+        let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer_with_terminal_source_count(
+            source_id,
+            seed,
+            terminal_source_count,
+        );
+        edge_bin_ids[..edge_count].to_vec()
+    }
+
+    pub(crate) fn unique_edge_bin_id_buffer_with_terminal_source_count(
+        self,
+        source_id: u64,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+    ) -> ([u128; Self::EDGE_COUNT], usize) {
         // Paper: the graph is a binary source-to-bin adjacency. If seeded edge
         // sampling picks the same bin more than once, that source still has one
         // coefficient in the bin equation.
@@ -112,14 +132,16 @@ impl MettleParams {
             self.edge_bin_ids_with_terminal_source_count(source_id, seed, terminal_source_count);
         edge_bin_ids.sort_unstable();
 
-        let mut unique_edge_bin_ids = Vec::with_capacity(Self::EDGE_COUNT);
+        let mut unique_edge_bin_ids = [0; Self::EDGE_COUNT];
+        let mut edge_count = 0usize;
         for bin_id in edge_bin_ids {
-            if unique_edge_bin_ids.last() != Some(&bin_id) {
-                unique_edge_bin_ids.push(bin_id);
+            if edge_count == 0 || unique_edge_bin_ids[edge_count - 1] != bin_id {
+                unique_edge_bin_ids[edge_count] = bin_id;
+                edge_count += 1;
             }
         }
 
-        unique_edge_bin_ids
+        (unique_edge_bin_ids, edge_count)
     }
 
     #[cfg_attr(not(test), allow(dead_code))]

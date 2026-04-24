@@ -80,7 +80,8 @@ impl MettleEncoder {
         self.source_scratch[..payload.len()].copy_from_slice(payload);
         self.apply_previous_fake_tle_payload(self.next_source_id);
 
-        for bin_id in self.unique_edge_bin_ids(self.next_source_id) {
+        let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer(self.next_source_id);
+        for &bin_id in &edge_bin_ids[..edge_count] {
             let slot_index = self.ensure_open_bin_slot(bin_id);
             let entry = self.open_bins[slot_index]
                 .get_or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
@@ -132,12 +133,16 @@ impl MettleEncoder {
         source_payload
     }
 
-    fn unique_edge_bin_ids(&self, source_id: u64) -> Vec<u128> {
-        self.params.unique_edge_bin_ids_with_terminal_source_count(
-            source_id,
-            self.seed,
-            self.terminal_source_count,
-        )
+    fn unique_edge_bin_id_buffer(
+        &self,
+        source_id: u64,
+    ) -> ([u128; MettleParams::EDGE_COUNT], usize) {
+        self.params
+            .unique_edge_bin_id_buffer_with_terminal_source_count(
+                source_id,
+                self.seed,
+                self.terminal_source_count,
+            )
     }
 
     fn ensure_open_bin_slot(&mut self, bin_id: u128) -> usize {
