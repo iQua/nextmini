@@ -177,6 +177,9 @@ impl FecReceiver {
         shared.write_block(block_id, &block).await;
         shared.complete_blocks.insert(block_id);
         self.blocks.remove(&block_id);
+        if shared.has_all_blocks() {
+            shared.mark_object_complete();
+        }
     }
 
     /// Compute how many additional source-equivalent symbols are still needed.

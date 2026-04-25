@@ -393,10 +393,13 @@ impl ReceiverShared {
         let Some(first_payload_at) = progress.first_payload_unit_at() else {
             return;
         };
+        let Some(object_complete_at) = progress.object_complete_at() else {
+            return;
+        };
         let Some(manifest) = &self.manifest else {
             return;
         };
-        let payload_phase = first_payload_at.elapsed();
+        let payload_phase = object_complete_at.saturating_duration_since(first_payload_at);
         if payload_phase.is_zero() {
             return;
         }

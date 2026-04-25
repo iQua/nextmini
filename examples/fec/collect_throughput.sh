@@ -18,23 +18,25 @@ strip_ansi() {
 }
 
 write_header() {
-  printf 'run_id\tcase_name\tnode_id\treceiver_mbps\tpayload_phase_ms\n'
+  printf 'run_id\tcase_name\tnode_id\tpayload_bytes\treceiver_mbps\tpayload_phase_ms\n'
 }
 
 emit_row() {
-  local node_id="$1" receiver_mbps="$2" payload_phase_ms="$3"
-  printf '%s\t%s\t%s\t%s\t%s\n' \
-    "$RUN_ID" "$CASE_NAME" "$node_id" "$receiver_mbps" "$payload_phase_ms"
+  local node_id="$1" payload_bytes="$2" receiver_mbps="$3" payload_phase_ms="$4"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$RUN_ID" "$CASE_NAME" "$node_id" "$payload_bytes" "$receiver_mbps" "$payload_phase_ms"
 }
 
 extract_receiver_row() {
-  local node_id="$1" log_path="$2" line receiver_mbps payload_phase_ms
+  local node_id="$1" log_path="$2" line payload_bytes receiver_mbps payload_phase_ms
   line="$(strip_ansi < "$log_path" | grep 'Lossless receiver payload-phase throughput' | tail -n 1 || true)"
   [[ -n "$line" ]] || return 0
+  payload_bytes="$(printf '%s\n' "$line" | sed -nE 's/.*total_bytes=([0-9]+).*/\1/p')"
   receiver_mbps="$(printf '%s\n' "$line" | sed -nE 's/.*receiver_mbps=([0-9]+(\.[0-9]+)?).*/\1/p')"
   payload_phase_ms="$(printf '%s\n' "$line" | sed -nE 's/.*payload_phase_ms=([0-9]+).*/\1/p')"
+  [[ -n "$payload_bytes" ]] || return 0
   [[ -n "$receiver_mbps" ]] || return 0
-  emit_row "$node_id" "$receiver_mbps" "$payload_phase_ms"
+  emit_row "$node_id" "$payload_bytes" "$receiver_mbps" "$payload_phase_ms"
 }
 
 tmp_rows="$(mktemp)"
