@@ -177,6 +177,24 @@ fn explicit_overhead_changes_finite_repair_budget() {
 }
 
 #[test]
+fn small_k_prefix_loss_can_require_a_large_repair_burst() {
+    let params = BlockParams::new(64, 1, 0x1234_5678);
+    let metadata = params.metadata().expect("metadata");
+    let present_sources = 1..params.source_symbols;
+
+    let deficit = metadata
+        .estimate_repair_deficit(present_sources, [])
+        .expect("deficit estimate")
+        .expect("finite repair stream should recover this erasure pattern");
+
+    assert!(
+        deficit > 100,
+        "K=64 is below the paper coupling window and can require a large repair burst"
+    );
+    assert!(deficit < metadata.repair_symbol_count());
+}
+
+#[test]
 fn fixed_k_padded_block_boundary_is_not_trimmed() {
     let params = BlockParams::new(4, 4, 0);
     let source_block = [
