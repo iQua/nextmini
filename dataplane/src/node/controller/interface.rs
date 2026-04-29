@@ -262,8 +262,11 @@ impl DataplaneToControllerSender {
                         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                         .await
                     {
-                        error!("Failed to send message to controller: {}. Closing sender.", e);
-                        break;
+                        error!(
+                            "Fatal controller connection failure while sending message: {}. Terminating node.",
+                            e
+                        );
+                        std::process::exit(70);
                     }
                 }
                 _ = ping_interval.tick() => {
@@ -272,14 +275,15 @@ impl DataplaneToControllerSender {
                         .send(Message::Ping(Vec::new().into()))
                         .await
                     {
-                        warn!("Failed to send ping to controller: {}. Closing sender.", e);
-                        break;
+                        error!(
+                            "Fatal controller connection failure while sending ping: {}. Terminating node.",
+                            e
+                        );
+                        std::process::exit(70);
                     }
                 }
             }
         }
-
-        info!("DataplaneToController sender stopped.");
     }
 }
 
@@ -316,13 +320,18 @@ pub struct ControllerToDataplaneReceiver {
 impl ControllerToDataplaneReceiver {
     pub async fn run(&mut self) {
         loop {
-            let msg = match self.receiver_stream.next().await.unwrap() {
-                Ok(msg) => msg,
-                Err(e) => {
-                    error!("Disconnected from the controller. Restarting the node...");
+            let msg = match self.receiver_stream.next().await {
+                Some(Ok(msg)) => msg,
+                Some(Err(e)) => {
+                    error!(
+                        "Fatal controller connection failure while receiving. Terminating node."
+                    );
                     error!("{:?}", e);
-
-                    break;
+                    std::process::exit(70);
+                }
+                None => {
+                    error!("Fatal controller connection failure: stream closed. Terminating node.");
+                    std::process::exit(70);
                 }
             };
 

@@ -56,6 +56,7 @@ struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
     lifecycle: ReceiverLifecycle,
+    passive_complete_deadline: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +100,7 @@ impl SessionReceiver {
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
         }
     }
 
@@ -115,12 +117,17 @@ impl SessionReceiver {
 
         loop {
             let frame = if self.is_passive_complete() {
-                let passive_timeout = timing::session_finish_timeout_for(
-                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
-                );
+                let Some(deadline) = self.passive_complete_deadline else {
+                    self.finish_session("missing_passive_complete_deadline");
+                    break;
+                };
+                if deadline <= tokio::time::Instant::now() {
+                    self.finish_session("session_finish_timeout");
+                    break;
+                }
                 tokio::select! {
                     maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep(passive_timeout) => {
+                    _ = tokio::time::sleep_until(deadline) => {
                         self.finish_session("session_finish_timeout");
                         break;
                     }
@@ -197,6 +204,12 @@ impl SessionReceiver {
         }
         self.shared.mark_object_complete();
         self.lifecycle = ReceiverLifecycle::PassiveComplete;
+        self.passive_complete_deadline = Some(
+            tokio::time::Instant::now()
+                + timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
+                    self.shared.cfg.peer_report_timeout_ms,
+                )),
+        );
         debug!(
             session_id = self.shared.session_id,
             object_complete = self.object_complete(),
@@ -774,6 +787,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
         };
 
         assert!(!receiver.is_complete());
@@ -1241,6 +1255,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
         };
 
         receiver
@@ -1641,6 +1656,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
+                passive_complete_deadline: None,
             },
             packet_rx,
         )
@@ -1724,6 +1740,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,
+                passive_complete_deadline: None,
             },
             packet_rx,
         )

@@ -36,6 +36,7 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 // Keep tree-aware ingress hashing deterministic and aligned with FlowIdExt::hash.
 const FLOW_TREE_HASH_KEY_0: u64 = 0x1234567890ABCDEF;
 const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
+const PROCESSOR_CONTROL_BROADCAST_CAPACITY: usize = 1024;
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -440,7 +441,11 @@ pub struct SequentialProcHandle {
 
 impl SequentialProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (broadcast_sender, _) = broadcast::channel(
+            config
+                .channel_capacity
+                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
+        );
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
@@ -654,7 +659,11 @@ pub struct ConcurrentProcHandle {
 
 impl ConcurrentProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (broadcast_sender, _) = broadcast::channel(
+            config
+                .channel_capacity
+                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
+        );
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {

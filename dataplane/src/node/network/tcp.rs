@@ -17,6 +17,8 @@ use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
+const MAX_ACCEPTED_NODE_ID: usize = 1_000_000;
+
 pub struct TcpServer {
     config: LocalConfig,
     processors: ProcessorHandle,
@@ -48,10 +50,10 @@ impl TcpServer {
         let mut node_id_buf: [u8; 8] = [0; 8];
 
         loop {
-            let mut stream = match listener.accept().await {
+            let (mut stream, socket_addr) = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
                     info!("Connection accepted from {:?}.", socket_addr);
-                    stream
+                    (stream, socket_addr)
                 }
                 Err(e) => {
                     error!("Failed to accept TCP connection: {}", e);
@@ -70,6 +72,20 @@ impl TcpServer {
             }
 
             let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+
+            let outside_configured_range =
+                self.config.n_nodes > 1 && remote_node_id > self.config.n_nodes;
+            if remote_node_id == 0
+                || remote_node_id == self.config.node_id
+                || remote_node_id > MAX_ACCEPTED_NODE_ID
+                || outside_configured_range
+            {
+                warn!(
+                    "Rejecting TCP connection with invalid remote node ID {} from {}.",
+                    remote_node_id, socket_addr
+                );
+                continue;
+            }
 
             info!("Incoming connection from node {}...", remote_node_id);
 
@@ -203,12 +219,21 @@ impl TcpReader {
 
     pub async fn run(mut self) {
         loop {
-            if let Ok(packet) = framing::read_packet(&mut self.stream).await {
-                if packet.flow_id == PROBE_FLOW_ID {
-                    self.handle_probe(packet);
-                } else {
-                    self.processors.process_packet(packet).await;
+            let packet = match framing::read_packet(&mut self.stream).await {
+                Ok(packet) => packet,
+                Err(e) => {
+                    warn!(
+                        "TCP reader on node {} stopped after read error: {}",
+                        self.local_node_id, e
+                    );
+                    break;
                 }
+            };
+
+            if packet.flow_id == PROBE_FLOW_ID {
+                self.handle_probe(packet);
+            } else {
+                self.processors.process_packet(packet).await;
             }
         }
     }
