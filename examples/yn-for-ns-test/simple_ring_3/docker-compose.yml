@@ -4,7 +4,7 @@ networks:
     ipam:
       driver: default
       config:
-        - subnet: 172.16.8.0/24
+        - subnet: 170.16.8.0/24
 
 services:
   postgres:
@@ -24,7 +24,7 @@ services:
       retries: 30
     networks:
       network:
-        ipv4_address: 172.16.8.2
+        ipv4_address: 170.16.8.2
     volumes:
       - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: unless-stopped
@@ -38,7 +38,7 @@ services:
       dockerfile: controller/Dockerfile
     networks:
       network:
-        ipv4_address: 172.16.8.3
+        ipv4_address: 170.16.8.3
     stdin_open: true
     volumes:
       - ./controller-config.toml:/var/nextmini/config.toml

@@ -14,6 +14,7 @@ auto_add_forward_rules = true
 
 controller_addr = "127.0.0.1:3000"
 
+
 # Reduce timer wakeups during namespace runs
 metrics_collection_interval = 3600
 
