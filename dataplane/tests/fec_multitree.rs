@@ -7,6 +7,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use tokio::time::timeout;
 
+use nextmini::node::session::api::InboundFrame;
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
@@ -61,6 +62,7 @@ async fn sender_stripes_symbols_across_configured_trees() {
             match control {
                 LosslessSessionControl::Manifest { .. } => {}
                 LosslessSessionControl::SourceDone { .. } => saw_source_done = true,
+                LosslessSessionControl::TreeBackpressure { .. } => {}
                 other => panic!("unexpected control frame: {other:?}"),
             }
             continue;
@@ -94,5 +96,93 @@ async fn sender_stripes_symbols_across_configured_trees() {
     assert_eq!(
         observed, configured,
         "with uncongested trees, the sender should stripe across every configured tree"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sender_skips_trees_paused_by_relay_backpressure() {
+    let mut harness = common::packet_capture(1, 2, 4110, 5220, 1, 2048).await;
+
+    let session_id = 0xBAD5_EED1;
+    let manifest = LosslessSessionManifest {
+        block_size: 24,
+        total_bytes: 24,
+        total_blocks: 1,
+        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(6, vec![1, 3])),
+    };
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 24),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2],
+        source_buffer: Bytes::from_static(b"abcdefghijklmnopqrstuvwx"),
+        manifest,
+        ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
+        topology_ready: None,
+    };
+
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .expect("ready frame should enqueue");
+    ctrl_tx
+        .send(InboundFrame {
+            bytes: lossless_session::encode_control(
+                session_id,
+                &LosslessSessionControl::TreeBackpressure {
+                    tree_id: 1,
+                    blocked: true,
+                },
+            ),
+            peer_id: Some(99),
+        })
+        .await
+        .expect("tree backpressure should enqueue");
+
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    let mut observed = BTreeSet::new();
+    let mut saw_source_done = false;
+    while !saw_source_done {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet
+            .tcp_payload()
+            .expect("captured packet should include TCP payload");
+        if let Some((_, control)) = lossless_session::decode_control(payload) {
+            match control {
+                LosslessSessionControl::Manifest { .. } => {}
+                LosslessSessionControl::SourceDone { .. } => saw_source_done = true,
+                LosslessSessionControl::TreeBackpressure { .. } => {}
+                other => panic!("unexpected control frame: {other:?}"),
+            }
+            continue;
+        }
+
+        let (_, symbol, _) =
+            lossless_session::decode_block_symbol(payload).expect("expected block symbol");
+        observed.insert(symbol.tree_id);
+    }
+
+    ctrl_tx
+        .send(common::fec_status_frame(
+            session_id,
+            2,
+            0,
+            NeedReport::Complete,
+        ))
+        .await
+        .expect("completion status should enqueue");
+
+    timeout(Duration::from_secs(5), sender_task)
+        .await
+        .expect("sender task timed out")
+        .expect("sender task failed");
+
+    assert_eq!(
+        observed,
+        BTreeSet::from([3u16]),
+        "sender should skip relay-paused trees under pure RR"
     );
 }

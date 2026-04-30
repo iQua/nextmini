@@ -72,6 +72,9 @@ pub(super) trait ModeHooks {
             .copied()
             .collect()
     }
+
+    /// Observe relay-driven tree pause/resume signals for FEC payload striping.
+    fn on_tree_backpressure(&mut self, _shared: &mut SenderShared, _tree_id: u16, _blocked: bool) {}
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -504,6 +507,9 @@ impl SenderShared {
                     return;
                 }
                 mode.on_need(self, peer_id, round_id, report);
+            }
+            LosslessSessionControl::TreeBackpressure { tree_id, blocked } => {
+                mode.on_tree_backpressure(self, tree_id, blocked);
             }
         }
     }
@@ -958,6 +964,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMode {
         needs: Vec<(usize, u32, NeedReport)>,
+        tree_backpressure: Vec<(u16, bool)>,
     }
 
     impl ModeHooks for RecordingMode {
@@ -970,5 +977,36 @@ mod tests {
         ) {
             self.needs.push((peer_id, round_id, report));
         }
+
+        fn on_tree_backpressure(
+            &mut self,
+            _shared: &mut SenderShared,
+            tree_id: u16,
+            blocked: bool,
+        ) {
+            self.tree_backpressure.push((tree_id, blocked));
+        }
+    }
+
+    #[tokio::test]
+    async fn tree_backpressure_control_is_forwarded_to_mode_hooks() {
+        let mut shared = test_sender_shared();
+        let mut mode = RecordingMode::default();
+
+        shared.handle_control(
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    7,
+                    &LosslessSessionControl::TreeBackpressure {
+                        tree_id: 9,
+                        blocked: true,
+                    },
+                ),
+                peer_id: None,
+            },
+            &mut mode,
+        );
+
+        assert_eq!(mode.tree_backpressure, vec![(9, true)]);
     }
 }

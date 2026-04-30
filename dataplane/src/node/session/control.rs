@@ -56,7 +56,7 @@ pub fn try_send_frame(
 }
 
 /// Build one control packet on the control-routing path.
-fn build_control_packet(route: FrameRoute, control: &LosslessSessionControl) -> Packet {
+pub fn build_control_packet(route: FrameRoute, control: &LosslessSessionControl) -> Packet {
     let frame = lossless_session::encode_control(route.session_id, control);
     build_packet(
         FrameRoute {

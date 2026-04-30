@@ -2,6 +2,7 @@
 /// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
+use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ahash::AHashMap;
@@ -12,6 +13,7 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
+use nextmini_messages::lossless_session::LosslessSessionControl;
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
     RoutingTableEntry, TokenBucketSpec,
@@ -29,8 +31,9 @@ use crate::node::packet::Packet;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::sched::SchedulerHandle;
+use crate::node::scheduler::sched::{SchedulerHandle, SchedulerTrySendOutcome};
 use crate::node::session::api::{InboundFrame as LosslessInboundFrame, LosslessRuntimeHandle};
+use crate::node::session::control;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Keep tree-aware ingress hashing deterministic and aligned with FlowIdExt::hash.
@@ -917,6 +920,7 @@ struct Processor {
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
     lossless_handle: Option<LosslessRuntimeHandle>,
+    remote_paused_trees: BTreeSet<(u64, u16)>,
 }
 
 impl Processor {
@@ -938,6 +942,7 @@ impl Processor {
             #[cfg(feature = "python-extension")]
             python_interface: None,
             lossless_handle: None,
+            remote_paused_trees: BTreeSet::new(),
         }
     }
 
@@ -1043,8 +1048,12 @@ impl Processor {
 
     /// Processes inbound packets for outbound delivery.
     async fn process_packet(&mut self, packet: Packet) {
-        let packet_flow_id = packet.flow_id;
         let fec_tree_id = packet.lossless_fec_tree_id();
+        self.forward_packet(packet, fec_tree_id).await;
+    }
+
+    async fn forward_packet(&mut self, packet: Packet, fec_tree_id: Option<u16>) {
+        let packet_flow_id = packet.flow_id;
 
         let reporter = self.flowstats_reporter.as_ref();
         match self.routing_table.get_next_hops_by_flow_and_tree(
@@ -1155,9 +1164,72 @@ impl Processor {
                     error!("Failed to send a packet in user-space flows to its local destination.");
                 }
             }
-        } else if let Some(scheduler) = self.schedulers.get(&next_hop_id) {
-            scheduler.send(packet).await;
+        } else if let Some(scheduler) = self.schedulers.get(&next_hop_id).cloned() {
+            if let (Some(session_id), Some(tree_id)) =
+                (packet.lossless_session_id(), packet.lossless_fec_tree_id())
+            {
+                self.send_remote_lossless_packet(scheduler, packet, session_id, tree_id)
+                    .await;
+            } else {
+                scheduler.send(packet).await;
+            }
         }
+    }
+
+    async fn send_remote_lossless_packet(
+        &mut self,
+        scheduler: SchedulerHandle,
+        packet: Packet,
+        session_id: u64,
+        tree_id: u16,
+    ) {
+        let flow_id = packet.flow_id;
+        match scheduler.try_send(packet) {
+            SchedulerTrySendOutcome::Queued => {}
+            SchedulerTrySendOutcome::Closed(_packet) => {
+                warn!(
+                    session_id,
+                    tree_id,
+                    "Lossless relay observed closed downstream scheduler while forwarding FEC payload"
+                );
+            }
+            SchedulerTrySendOutcome::WouldBlock(packet) => {
+                let pause_key = (session_id, tree_id);
+                let inserted = self.remote_paused_trees.insert(pause_key);
+                if inserted {
+                    self.send_tree_backpressure(flow_id, session_id, tree_id, true)
+                        .await;
+                }
+
+                scheduler.send(packet).await;
+
+                if inserted && self.remote_paused_trees.remove(&pause_key) {
+                    self.send_tree_backpressure(flow_id, session_id, tree_id, false)
+                        .await;
+                }
+            }
+        }
+    }
+
+    async fn send_tree_backpressure(
+        &mut self,
+        flow_id: FlowId,
+        session_id: u64,
+        tree_id: u16,
+        blocked: bool,
+    ) {
+        let control_packet = control::build_control_packet(
+            control::FrameRoute {
+                session_id,
+                tree_id: None,
+                src_ip: self.config.local_address,
+                src_port: flow_id.src_port(),
+                dst_ip: flow_id.src_ip(),
+                dst_port: flow_id.dst_port(),
+            },
+            &LosslessSessionControl::TreeBackpressure { tree_id, blocked },
+        );
+        Box::pin(self.forward_packet(control_packet, None)).await;
     }
 
     fn try_deliver_lossless(&mut self, packet: &Packet) -> bool {

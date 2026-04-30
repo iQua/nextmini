@@ -21,6 +21,12 @@ pub enum SchedulerReaderMessage {
     InboundPacket(Packet),
 }
 
+pub enum SchedulerTrySendOutcome {
+    Queued,
+    WouldBlock(Packet),
+    Closed(Packet),
+}
+
 /// The rate limit is to be sent by the processor, and in the unit of bytes per second.
 pub enum SchedulerWriterMessage {
     RateLimit(TokenBucketSpec),
@@ -63,6 +69,19 @@ impl SchedulerHandle {
             }
         } else if let Err(e) = self.reader_sender.try_send(msg) {
             error!("SchedulerHandle: Error sending a packet to the scheduler: {e}.");
+        }
+    }
+
+    pub fn try_send(&self, packet: Packet) -> SchedulerTrySendOutcome {
+        let msg = SchedulerReaderMessage::InboundPacket(packet);
+        match self.reader_sender.try_send(msg) {
+            Ok(()) => SchedulerTrySendOutcome::Queued,
+            Err(tokio::sync::mpsc::error::TrySendError::Full(
+                SchedulerReaderMessage::InboundPacket(packet),
+            )) => SchedulerTrySendOutcome::WouldBlock(packet),
+            Err(tokio::sync::mpsc::error::TrySendError::Closed(
+                SchedulerReaderMessage::InboundPacket(packet),
+            )) => SchedulerTrySendOutcome::Closed(packet),
         }
     }
 

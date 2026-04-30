@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -40,6 +41,7 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
+    paused_trees: BTreeSet<u16>,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -95,6 +97,7 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
+            paused_trees: BTreeSet::new(),
         })
     }
 
@@ -297,6 +300,9 @@ impl FecSender {
         for offset in 0..tree_count {
             let idx = (start_idx + offset) % tree_count;
             let tree_id = self.tree_ids[idx];
+            if self.paused_trees.contains(&tree_id) {
+                continue;
+            }
             if offset > 0 {
                 block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
@@ -438,6 +444,23 @@ impl FecSender {
 }
 
 impl super::ModeHooks for FecSender {
+    fn on_tree_backpressure(
+        &mut self,
+        _shared: &mut super::SenderShared,
+        tree_id: u16,
+        blocked: bool,
+    ) {
+        if !self.tree_ids.contains(&tree_id) {
+            return;
+        }
+
+        if blocked {
+            self.paused_trees.insert(tree_id);
+        } else {
+            self.paused_trees.remove(&tree_id);
+        }
+    }
+
     fn on_need(
         &mut self,
         shared: &mut super::SenderShared,
@@ -863,5 +886,20 @@ mod tests {
             pacer: None,
             payload_emitted: false,
         }
+    }
+
+    #[tokio::test]
+    async fn fec_sender_tracks_remote_tree_pause_state() {
+        let manifest = test_manifest();
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut shared = test_sender_shared(manifest);
+
+        sender.on_tree_backpressure(&mut shared, 7, true);
+        sender.on_tree_backpressure(&mut shared, 99, true);
+        assert_eq!(sender.paused_trees, BTreeSet::from([7]));
+
+        sender.on_tree_backpressure(&mut shared, 7, false);
+        assert!(sender.paused_trees.is_empty());
     }
 }
