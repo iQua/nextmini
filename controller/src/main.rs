@@ -456,6 +456,54 @@ async fn handle_connection(
                                     ),
                                 }
 
+                                let reciprocal_addr = if shares_private_network(
+                                    new_node.private_network_name.as_deref(),
+                                    node.private_network_name.as_deref(),
+                                ) {
+                                    new_node.private_network_addr.clone()
+                                } else {
+                                    new_node.public_network_addr.clone()
+                                };
+
+                                let neighbor_writer = {
+                                    let guard = node_ws.read().await;
+                                    guard.get(&(node.id as usize)).cloned()
+                                };
+
+                                if let Some(neighbor_writer) = neighbor_writer {
+                                    let addr_msg = ControllerToDataplane::AddNodeAddress {
+                                        remote_node_id: node_id,
+                                        remote_max_server_addr: reciprocal_addr,
+                                    };
+
+                                    match neighbor_writer
+                                        .lock()
+                                        .await
+                                        .send({
+                                            match rmp_serde::to_vec(&addr_msg) {
+                                                Ok(buf) => Message::binary(buf),
+                                                Err(e) => {
+                                                    error!(
+                                                        "Failed to encode AddNodeAddress for {}: {}.",
+                                                        node.id, e
+                                                    );
+                                                    continue;
+                                                }
+                                            }
+                                        })
+                                        .await
+                                    {
+                                        Ok(_) => info!(
+                                            "Sent an AddNodeAddress message for node {} to node {}.",
+                                            node_id, node.id
+                                        ),
+                                        Err(e) => error!(
+                                            "Failed to send an AddNodeAddress message to node {}: {}.",
+                                            node.id, e
+                                        ),
+                                    }
+                                }
+
                             }
                         }
 

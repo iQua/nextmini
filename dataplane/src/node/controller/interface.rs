@@ -371,6 +371,8 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_max_server_addr,
             } => {
+                self.neighbor_addrs
+                    .insert(remote_node_id, remote_max_server_addr.clone());
                 self.processors
                     .add_node_address(remote_node_id, remote_max_server_addr)
                     .await;
