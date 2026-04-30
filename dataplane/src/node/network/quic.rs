@@ -17,6 +17,7 @@ use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
@@ -73,17 +74,26 @@ impl QuicServer {
             info!("Connection accepted from {:?}.", remote_addr_snapshot);
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
-                let mut node_id_buf: [u8; 8] = [0; 8];
+                let mut handshake_buf = [0u8; TransportScope::ENCODED_LEN];
 
-                if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                    info!("Failed to read node ID: {}", e);
+                if let Err(e) = stream.read_exact(&mut handshake_buf).await {
+                    info!("Failed to read scoped transport handshake: {}", e);
                     connection.close(0u32.into());
                     return;
                 }
 
-                let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+                let Some((remote_node_id, scope)) =
+                    TransportScope::decode_handshake(&handshake_buf)
+                else {
+                    info!("Failed to decode scoped transport handshake");
+                    connection.close(0u32.into());
+                    return;
+                };
 
-                info!("Incoming connection from node {}...", remote_node_id);
+                info!(
+                    "Incoming {:?} connection from node {}...",
+                    scope, remote_node_id
+                );
 
                 // handles an inbound connection from a new client
                 let network_interface = NetworkInterfaceHandle::new(
@@ -92,6 +102,7 @@ impl QuicServer {
                     processors.clone(),
                     self.reporter.clone(),
                     remote_node_id,
+                    scope,
                 )
                 .await;
 
@@ -99,7 +110,7 @@ impl QuicServer {
                 let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
                 // adds the scheduler to send packets to the new node
-                if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                if let Err(e) = processors.add_node(remote_node_id, scope, scheduler) {
                     let remote_addr_for_log = remote_addr_snapshot
                         .as_ref()
                         .map(|addr| addr.to_string())
@@ -125,7 +136,12 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+        scope: TransportScope,
+    ) -> BidirectionalStream {
         let client = Client::builder()
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
@@ -173,14 +189,17 @@ impl QuicClient {
 
         info!("Connecting to node {} with QUIC...", remote_node_id);
 
-        let local_node_id = self.config.node_id;
-
         stream
-            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
+            .send(Bytes::copy_from_slice(
+                &scope.encode_handshake(self.config.node_id),
+            ))
             .await
-            .expect("Failed to send local node id to the node");
+            .expect("Failed to send scoped transport handshake to the node");
 
-        info!("Connected to node {} with QUIC.", remote_node_id);
+        info!(
+            "Connected to node {} with QUIC {:?}.",
+            remote_node_id, scope
+        );
 
         stream
     }
@@ -193,7 +212,8 @@ pub struct QuicReader {
 }
 
 impl QuicReader {
-    pub fn new(stream: ReceiveStream, processors: ProcessorHandle) -> Self {
+    pub fn new(stream: ReceiveStream, processors: ProcessorHandle, scope: TransportScope) -> Self {
+        let _ = scope;
         Self { processors, stream }
     }
 

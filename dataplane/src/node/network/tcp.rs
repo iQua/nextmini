@@ -13,11 +13,10 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
-
-const MAX_ACCEPTED_NODE_ID: usize = 1_000_000;
 
 pub struct TcpServer {
     config: LocalConfig,
@@ -47,13 +46,13 @@ impl TcpServer {
             }
         };
 
-        let mut node_id_buf: [u8; 8] = [0; 8];
+        let mut handshake_buf = [0u8; TransportScope::ENCODED_LEN];
 
         loop {
-            let (mut stream, socket_addr) = match listener.accept().await {
+            let mut stream = match listener.accept().await {
                 Ok((stream, socket_addr)) => {
                     info!("Connection accepted from {:?}.", socket_addr);
-                    (stream, socket_addr)
+                    stream
                 }
                 Err(e) => {
                     error!("Failed to accept TCP connection: {}", e);
@@ -66,28 +65,21 @@ impl TcpServer {
                 warn!("Failed to set TCP_NODELAY on accepted stream: {}", e);
             }
 
-            if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                error!("Failed to read node ID: {}", e);
+            if let Err(e) = stream.read_exact(&mut handshake_buf).await {
+                error!("Failed to read scoped transport handshake: {}", e);
                 continue;
             }
 
-            let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
-
-            let outside_configured_range =
-                self.config.n_nodes > 1 && remote_node_id > self.config.n_nodes;
-            if remote_node_id == 0
-                || remote_node_id == self.config.node_id
-                || remote_node_id > MAX_ACCEPTED_NODE_ID
-                || outside_configured_range
-            {
-                warn!(
-                    "Rejecting TCP connection with invalid remote node ID {} from {}.",
-                    remote_node_id, socket_addr
-                );
+            let Some((remote_node_id, scope)) = TransportScope::decode_handshake(&handshake_buf)
+            else {
+                warn!("Failed to decode scoped transport handshake.");
                 continue;
-            }
+            };
 
-            info!("Incoming connection from node {}...", remote_node_id);
+            info!(
+                "Incoming {:?} transport connection from node {}...",
+                scope, remote_node_id
+            );
 
             // handles an inbound connection from a new client
             let network_interface = NetworkInterfaceHandle::new(
@@ -96,6 +88,7 @@ impl TcpServer {
                 self.processors.clone(),
                 self.reporter.clone(),
                 remote_node_id,
+                scope,
             )
             .await;
 
@@ -103,7 +96,7 @@ impl TcpServer {
             let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
             // adds the scheduler to send packets to the new node
-            if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
+            if let Err(e) = self.processors.add_node(remote_node_id, scope, scheduler) {
                 error!(
                     "Failed to add node {} with address {}: {}",
                     remote_node_id,
@@ -123,7 +116,12 @@ pub struct TcpClient {
 }
 
 impl TcpClient {
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> TcpStream {
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+        scope: TransportScope,
+    ) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);
@@ -137,14 +135,12 @@ impl TcpClient {
                         warn!("Failed to set TCP_NODELAY on client stream: {}", e);
                     }
 
-                    let local_node_id = self.config.node_id; // gets the updated local node_id
-
                     stream
-                        .write_all(&local_node_id.to_be_bytes())
+                        .write_all(&scope.encode_handshake(self.config.node_id))
                         .await
-                        .expect("Failed to send local node id to the node.");
+                        .expect("Failed to send scoped transport handshake to the node.");
 
-                    info!("Connected to node {} with TCP.", remote_node_id);
+                    info!("Connected to node {} with TCP {:?}.", remote_node_id, scope);
                     return stream;
                 }
                 Ok(Err(e)) => {
@@ -184,8 +180,14 @@ pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
     processors: ProcessorHandle,
     local_node_id: usize,
+    remote_node_id: usize,
+    scope: TransportScope,
     reporter: Option<ControllerReporterHandle>,
     active_probes: AHashMap<u64, ProbeState>,
+    started_at: Instant,
+    last_stats_log_at: Instant,
+    forwarded_packets: u64,
+    process_packet_time: Duration,
 }
 
 /// Tracks an in-flight bandwidth probe on the receive side.
@@ -206,36 +208,74 @@ impl TcpReader {
         stream: ReadHalf<TcpStream>,
         processors: ProcessorHandle,
         local_node_id: usize,
+        remote_node_id: usize,
+        scope: TransportScope,
         reporter: Option<ControllerReporterHandle>,
     ) -> Self {
+        let now = Instant::now();
         Self {
             stream,
             processors,
             local_node_id,
+            remote_node_id,
+            scope,
             reporter,
             active_probes: AHashMap::new(),
+            started_at: now,
+            last_stats_log_at: now,
+            forwarded_packets: 0,
+            process_packet_time: Duration::ZERO,
         }
     }
 
     pub async fn run(mut self) {
         loop {
-            let packet = match framing::read_packet(&mut self.stream).await {
-                Ok(packet) => packet,
-                Err(e) => {
-                    warn!(
-                        "TCP reader on node {} stopped after read error: {}",
-                        self.local_node_id, e
-                    );
-                    break;
+            if let Ok(packet) = framing::read_packet(&mut self.stream).await {
+                if packet.flow_id == PROBE_FLOW_ID {
+                    self.handle_probe(packet);
+                } else {
+                    let started = Instant::now();
+                    self.processors.process_packet(packet).await;
+                    self.process_packet_time += started.elapsed();
+                    self.forwarded_packets += 1;
+                    self.maybe_log_process_share();
                 }
-            };
-
-            if packet.flow_id == PROBE_FLOW_ID {
-                self.handle_probe(packet);
-            } else {
-                self.processors.process_packet(packet).await;
             }
         }
+    }
+
+    fn maybe_log_process_share(&mut self) {
+        let now = Instant::now();
+        if now.duration_since(self.last_stats_log_at) < Duration::from_millis(250) {
+            return;
+        }
+
+        self.last_stats_log_at = now;
+        let elapsed = now.duration_since(self.started_at);
+        let process_secs = self.process_packet_time.as_secs_f64();
+        let elapsed_secs = elapsed.as_secs_f64();
+        let process_pct = if elapsed_secs > 0.0 {
+            (process_secs / elapsed_secs) * 100.0
+        } else {
+            0.0
+        };
+        let avg_process_ms = if self.forwarded_packets > 0 {
+            (process_secs * 1000.0) / self.forwarded_packets as f64
+        } else {
+            0.0
+        };
+
+        info!(
+            local_node_id = self.local_node_id,
+            remote_node_id = self.remote_node_id,
+            scope = ?self.scope,
+            forwarded_packets = self.forwarded_packets,
+            elapsed_ms = elapsed.as_millis() as u64,
+            process_packet_ms_total = self.process_packet_time.as_millis() as u64,
+            process_packet_pct = process_pct,
+            avg_process_packet_ms = avg_process_ms,
+            "TcpReader process_packet.await share"
+        );
     }
 
     fn handle_probe(&mut self, packet: Packet) {

@@ -74,7 +74,14 @@ pub(super) trait ModeHooks {
     }
 
     /// Observe relay-driven tree pause/resume signals for FEC payload striping.
-    fn on_tree_backpressure(&mut self, _shared: &mut SenderShared, _tree_id: u16, _blocked: bool) {}
+    fn on_tree_backpressure(
+        &mut self,
+        _shared: &mut SenderShared,
+        _peer_id: usize,
+        _tree_id: u16,
+        _blocked: bool,
+    ) {
+    }
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -509,7 +516,14 @@ impl SenderShared {
                 mode.on_need(self, peer_id, round_id, report);
             }
             LosslessSessionControl::TreeBackpressure { tree_id, blocked } => {
-                mode.on_tree_backpressure(self, tree_id, blocked);
+                let Some(peer_id) = frame.peer_id else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        "Lossless sender dropped TreeBackpressure without transport peer_id"
+                    );
+                    return;
+                };
+                mode.on_tree_backpressure(self, peer_id, tree_id, blocked);
             }
         }
     }
@@ -964,7 +978,7 @@ mod tests {
     #[derive(Default)]
     struct RecordingMode {
         needs: Vec<(usize, u32, NeedReport)>,
-        tree_backpressure: Vec<(u16, bool)>,
+        tree_backpressure: Vec<(usize, u16, bool)>,
     }
 
     impl ModeHooks for RecordingMode {
@@ -981,10 +995,11 @@ mod tests {
         fn on_tree_backpressure(
             &mut self,
             _shared: &mut SenderShared,
+            peer_id: usize,
             tree_id: u16,
             blocked: bool,
         ) {
-            self.tree_backpressure.push((tree_id, blocked));
+            self.tree_backpressure.push((peer_id, tree_id, blocked));
         }
     }
 
@@ -1002,11 +1017,11 @@ mod tests {
                         blocked: true,
                     },
                 ),
-                peer_id: None,
+                peer_id: Some(4),
             },
             &mut mode,
         );
 
-        assert_eq!(mode.tree_backpressure, vec![(9, true)]);
+        assert_eq!(mode.tree_backpressure, vec![(4, 9, true)]);
     }
 }

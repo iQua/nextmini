@@ -41,7 +41,7 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
-    paused_trees: BTreeSet<u16>,
+    paused_tree_peers: BTreeMap<u16, BTreeSet<usize>>,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -50,7 +50,6 @@ struct FecBlockState {
     next_fountain_symbol: u32,
     required_extra_symbols: u16,
     emitted_extra_symbols: u16,
-    repair_prefix_symbols: u16,
     encoder: Option<Encoder>,
 }
 
@@ -79,7 +78,6 @@ impl FecSender {
                     next_fountain_symbol: u32::from(fec.symbols_per_block),
                     required_extra_symbols: 0,
                     emitted_extra_symbols: 0,
-                    repair_prefix_symbols: 0,
                     encoder: None,
                 })
                 .collect(),
@@ -97,7 +95,7 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
-            paused_trees: BTreeSet::new(),
+            paused_tree_peers: BTreeMap::new(),
         })
     }
 
@@ -208,13 +206,7 @@ impl FecSender {
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
             if block.emitted_extra_symbols < block.required_extra_symbols {
-                let symbol_id = if self.scheme == FecScheme::Mettle {
-                    u32::from(self.symbols_per_block)
-                        .saturating_add(u32::from(block.emitted_extra_symbols))
-                } else {
-                    block.next_fountain_symbol
-                };
-                return Some((block_id, symbol_id));
+                return Some((block_id, block.next_fountain_symbol));
             }
         }
         None
@@ -250,13 +242,6 @@ impl FecSender {
         symbol_id: u32,
     ) -> bool {
         let Some(payload) = self.extra_symbol_payload(shared, block_id, symbol_id) else {
-            warn!(
-                session_id = shared.session.session_id,
-                block_id,
-                symbol_id,
-                scheme = ?self.scheme,
-                "Lossless FEC sender could not generate requested repair symbol"
-            );
             self.protocol_error = true;
             return false;
         };
@@ -300,7 +285,7 @@ impl FecSender {
         for offset in 0..tree_count {
             let idx = (start_idx + offset) % tree_count;
             let tree_id = self.tree_ids[idx];
-            if self.paused_trees.contains(&tree_id) {
+            if self.tree_is_paused(tree_id) {
                 continue;
             }
             if offset > 0 {
@@ -336,6 +321,12 @@ impl FecSender {
         }
 
         false
+    }
+
+    fn tree_is_paused(&self, tree_id: u16) -> bool {
+        self.paused_tree_peers
+            .get(&tree_id)
+            .is_some_and(|peers| !peers.is_empty())
     }
 
     /// Return the cached source symbol payload for one block and symbol index.
@@ -429,14 +420,7 @@ impl FecSender {
         self.phase = RoundPhase::SendingData;
         self.current_round_id = self.current_round_id.saturating_add(1);
         self.round_source_done_sent = false;
-        let mettle = self.scheme == FecScheme::Mettle;
         for block in &mut self.blocks {
-            if mettle {
-                block.repair_prefix_symbols = block
-                    .repair_prefix_symbols
-                    .max(block.required_extra_symbols);
-                block.next_fountain_symbol = u32::from(self.symbols_per_block);
-            }
             block.required_extra_symbols = 0;
             block.emitted_extra_symbols = 0;
         }
@@ -447,6 +431,7 @@ impl super::ModeHooks for FecSender {
     fn on_tree_backpressure(
         &mut self,
         _shared: &mut super::SenderShared,
+        peer_id: usize,
         tree_id: u16,
         blocked: bool,
     ) {
@@ -455,9 +440,20 @@ impl super::ModeHooks for FecSender {
         }
 
         if blocked {
-            self.paused_trees.insert(tree_id);
+            self.paused_tree_peers
+                .entry(tree_id)
+                .or_default()
+                .insert(peer_id);
         } else {
-            self.paused_trees.remove(&tree_id);
+            let should_remove = if let Some(peers) = self.paused_tree_peers.get_mut(&tree_id) {
+                peers.remove(&peer_id);
+                peers.is_empty()
+            } else {
+                false
+            };
+            if should_remove {
+                self.paused_tree_peers.remove(&tree_id);
+            }
         }
     }
 
@@ -511,14 +507,8 @@ impl super::ModeHooks for FecSender {
                         .blocks
                         .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
                     {
-                        let required = if self.scheme == FecScheme::Mettle {
-                            entry
-                                .repair_prefix_symbols
-                                .saturating_add(block.deficit_symbols)
-                        } else {
-                            block.deficit_symbols
-                        };
-                        entry.required_extra_symbols = entry.required_extra_symbols.max(required);
+                        entry.required_extra_symbols =
+                            entry.required_extra_symbols.max(block.deficit_symbols);
                     }
                 }
                 if !had_pending_repair && self.has_pending_repair_work() {
@@ -767,66 +757,6 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn mettle_sender_replays_cumulative_repair_prefix_across_rounds() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(16, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
-        sender.phase = RoundPhase::WaitingForReports;
-        sender.current_round_id = 0;
-        let mut shared = test_sender_shared(manifest.clone());
-        shared.active_quorum = ActiveSessionQuorum::new([22]);
-        shared.active_quorum.record_ready(22);
-        shared.active_quorum.freeze();
-
-        sender.on_need(
-            &mut shared,
-            22,
-            0,
-            NeedReport::Fec {
-                blocks: vec![NeedBlock {
-                    block_id: 0,
-                    deficit_symbols: 3,
-                }],
-            },
-        );
-        assert_eq!(
-            sender.next_extra_symbol(&shared),
-            Some((0, u32::from(sender.symbols_per_block)))
-        );
-
-        let block = sender.blocks.first_mut().expect("block");
-        block.emitted_extra_symbols = 3;
-        sender.finish_report_round(&mut shared);
-        assert_eq!(sender.current_round_id, 1);
-        assert_eq!(sender.blocks[0].repair_prefix_symbols, 3);
-
-        sender.phase = RoundPhase::WaitingForReports;
-        sender.on_need(
-            &mut shared,
-            22,
-            1,
-            NeedReport::Fec {
-                blocks: vec![NeedBlock {
-                    block_id: 0,
-                    deficit_symbols: 2,
-                }],
-            },
-        );
-
-        assert_eq!(sender.blocks[0].required_extra_symbols, 5);
-        assert_eq!(
-            sender.next_extra_symbol(&shared),
-            Some((0, u32::from(sender.symbols_per_block))),
-            "METTLE repairs replay the cumulative prefix so receivers can recover missed repair symbols"
-        );
-    }
-
     #[test]
     fn mettle_sender_accepts_small_experimental_k() {
         let manifest = LosslessSessionManifest {
@@ -895,11 +825,19 @@ mod tests {
         let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
         let mut shared = test_sender_shared(manifest);
 
-        sender.on_tree_backpressure(&mut shared, 7, true);
-        sender.on_tree_backpressure(&mut shared, 99, true);
-        assert_eq!(sender.paused_trees, BTreeSet::from([7]));
+        sender.on_tree_backpressure(&mut shared, 2, 7, true);
+        sender.on_tree_backpressure(&mut shared, 3, 7, true);
+        sender.on_tree_backpressure(&mut shared, 2, 99, true);
+        assert!(sender.tree_is_paused(7));
+        assert_eq!(
+            sender.paused_tree_peers.get(&7),
+            Some(&BTreeSet::from([2, 3]))
+        );
 
-        sender.on_tree_backpressure(&mut shared, 7, false);
-        assert!(sender.paused_trees.is_empty());
+        sender.on_tree_backpressure(&mut shared, 2, 7, false);
+        assert!(sender.tree_is_paused(7));
+
+        sender.on_tree_backpressure(&mut shared, 3, 7, false);
+        assert!(!sender.tree_is_paused(7));
     }
 }

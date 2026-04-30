@@ -206,7 +206,7 @@ mod tests {
             Ok(())
         }
 
-        fn collect_packets(&self, _batch: &mut Vec<Packet>) {
+        fn collect_packets(&self, _batch: &mut Vec<Packet>, _max_packets: usize) {
             self.queue_len_value.store(0, Ordering::SeqCst);
         }
 

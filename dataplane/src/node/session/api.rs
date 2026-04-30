@@ -41,18 +41,25 @@ pub(crate) enum SessionState {
 /// Here we simply wrap the abort sender.
 #[derive(Debug)]
 struct SessionAbortHandle {
-    sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
+    sender: mpsc::Sender<LosslessRuntimeMessage>,
 }
 
 impl SessionAbortHandle {
-    fn new(sender: mpsc::UnboundedSender<LosslessRuntimeMessage>) -> Self {
+    fn new(sender: mpsc::Sender<LosslessRuntimeMessage>) -> Self {
         Self { sender }
     }
 
     fn abort(&self, session_id: SessionId) {
-        let _ = self
-            .sender
-            .send(LosslessRuntimeMessage::Abort { session_id });
+        let sender = self.sender.clone();
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            handle.spawn(async move {
+                let _ = sender
+                    .send(LosslessRuntimeMessage::Abort { session_id })
+                    .await;
+            });
+        } else {
+            let _ = sender.try_send(LosslessRuntimeMessage::Abort { session_id });
+        }
     }
 }
 
@@ -70,7 +77,7 @@ impl LosslessSessionHandle {
     pub(super) fn new(
         session_id: SessionId,
         state_receiver: watch::Receiver<SessionState>,
-        abort_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
+        abort_sender: mpsc::Sender<LosslessRuntimeMessage>,
     ) -> Self {
         Self {
             session_id,

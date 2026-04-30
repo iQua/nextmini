@@ -2,7 +2,6 @@
 /// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
-use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use ahash::AHashMap;
@@ -13,7 +12,6 @@ use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
 use tracing::{error, warn};
 
-use nextmini_messages::lossless_session::LosslessSessionControl;
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
     RoutingTableEntry, TokenBucketSpec,
@@ -26,20 +24,19 @@ use crate::node::controller::flowstats::FlowStatsReporterHandle;
 use crate::node::flow::UserSpaceSender;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::local::interface::LocalInterfaceHandle;
+use crate::node::network::scope::{ScopedNode, TransportScope};
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 #[cfg(feature = "python-extension")]
 use crate::node::python::interface::PythonInterfaceHandle;
 use crate::node::route::RoutingTable;
-use crate::node::scheduler::sched::{SchedulerHandle, SchedulerTrySendOutcome};
+use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::{InboundFrame as LosslessInboundFrame, LosslessRuntimeHandle};
-use crate::node::session::control;
 use crate::node::{FlowId, FlowIdExt, NodeId};
 
 // Keep tree-aware ingress hashing deterministic and aligned with FlowIdExt::hash.
 const FLOW_TREE_HASH_KEY_0: u64 = 0x1234567890ABCDEF;
 const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
-const PROCESSOR_CONTROL_BROADCAST_CAPACITY: usize = 1024;
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -85,7 +82,7 @@ pub enum ProcessorMessage {
         src_node_id: NodeId,
         routes: Vec<GroupRoutingTableEntry>,
     },
-    AddNode(NodeId, SchedulerHandle),
+    AddNode(ScopedNode, SchedulerHandle),
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectServerHandle(Box<UserSpaceServerHandle>),
     ConnectUserSpaceSender {
@@ -133,11 +130,13 @@ impl ProcessorHandle {
     pub fn add_node(
         &self,
         node_id: NodeId,
+        scope: TransportScope,
         scheduler: SchedulerHandle,
     ) -> Result<(), SendError<ProcessorMessage>> {
-        let _ = self
-            .broadcast_sender()
-            .send(ProcessorMessage::AddNode(node_id, scheduler))?;
+        let _ = self.broadcast_sender().send(ProcessorMessage::AddNode(
+            ScopedNode::new(node_id, scope),
+            scheduler,
+        ))?;
 
         Ok(())
     }
@@ -444,11 +443,7 @@ pub struct SequentialProcHandle {
 
 impl SequentialProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(
-            config
-                .channel_capacity
-                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
-        );
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
 
         for _ in 0..config.num_packet_processors {
@@ -543,11 +538,18 @@ impl SequentialProcHandle {
 
     fn select_processor_ingress_lane(&self, packet: &Packet) -> usize {
         let lane_count = self.packet_senders.len();
-        if let Some(tree_id) = packet.lossless_fec_tree_id() {
-            let hasher = JumpHasher::new_with_keys(FLOW_TREE_HASH_KEY_0, FLOW_TREE_HASH_KEY_1);
-            hasher.slot(&(packet.flow_id, tree_id), lane_count as u32) as usize
-        } else {
-            packet.flow_id.hash(lane_count)
+        let scope = TransportScope::from_packet(packet);
+        match scope {
+            TransportScope::Default => 0,
+            TransportScope::Tree(tree_id)
+                if lane_count > 1 && usize::from(tree_id) + 1 < lane_count =>
+            {
+                usize::from(tree_id) + 1
+            }
+            TransportScope::Tree(tree_id) => {
+                let hasher = JumpHasher::new_with_keys(FLOW_TREE_HASH_KEY_0, FLOW_TREE_HASH_KEY_1);
+                hasher.slot(&(packet.flow_id, tree_id), lane_count as u32) as usize
+            }
         }
     }
 
@@ -662,11 +664,7 @@ pub struct ConcurrentProcHandle {
 
 impl ConcurrentProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(
-            config
-                .channel_capacity
-                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
-        );
+        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
 
         for _ in 0..config.num_packet_processors {
@@ -913,14 +911,13 @@ struct Processor {
     // optional flow stats reporter for route telemetry
     flowstats_reporter: Option<FlowStatsReporterHandle>,
 
-    // a unified hashmap for schedulers in normal mode
-    schedulers: AHashMap<NodeId, SchedulerHandle>,
+    // schedulers keyed by remote node and transport scope
+    schedulers: AHashMap<ScopedNode, SchedulerHandle>,
 
     // optional in-process Python delivery path
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
     lossless_handle: Option<LosslessRuntimeHandle>,
-    remote_paused_trees: BTreeSet<(u64, u16)>,
 }
 
 impl Processor {
@@ -942,7 +939,6 @@ impl Processor {
             #[cfg(feature = "python-extension")]
             python_interface: None,
             lossless_handle: None,
-            remote_paused_trees: BTreeSet::new(),
         }
     }
 
@@ -978,7 +974,10 @@ impl Processor {
     }
 
     fn send_link_probe_packets(&self, node_id: NodeId, packets: Vec<Packet>) {
-        if let Some(scheduler) = self.schedulers.get(&node_id) {
+        if let Some(scheduler) = self
+            .schedulers
+            .get(&ScopedNode::new(node_id, TransportScope::Default))
+        {
             scheduler.send_link_probe_packets(packets);
         }
     }
@@ -999,8 +998,8 @@ impl Processor {
                 self.routing_table
                     .install_group_routes(group_id, src_node_id, routes);
             }
-            ProcessorMessage::AddNode(node_id, scheduler) => {
-                self.schedulers.insert(node_id, scheduler);
+            ProcessorMessage::AddNode(scoped_node, scheduler) => {
+                self.schedulers.insert(scoped_node, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
                 self.local_interface = Some(Arc::new(local_interface));
@@ -1012,8 +1011,10 @@ impl Processor {
                 self.user_space_senders.remove(&flow_id);
             }
             ProcessorMessage::RateLimit(node_id, spec) => {
-                if let Some(scheduler) = self.schedulers.get(&node_id) {
-                    scheduler.limit_rate(spec);
+                for (scoped_node, scheduler) in self.schedulers.iter() {
+                    if scoped_node.remote_node_id == node_id {
+                        scheduler.limit_rate(spec.clone());
+                    }
                 }
             }
             ProcessorMessage::ConnectServerHandle(user_space_server) => {
@@ -1132,7 +1133,7 @@ impl Processor {
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // if possible, deliver to the lossless transport subsystem
-            if self.try_deliver_lossless(&packet) {
+            if self.try_deliver_lossless(&packet).await {
                 return;
             }
 
@@ -1164,75 +1165,22 @@ impl Processor {
                     error!("Failed to send a packet in user-space flows to its local destination.");
                 }
             }
-        } else if let Some(scheduler) = self.schedulers.get(&next_hop_id).cloned() {
-            if let (Some(session_id), Some(tree_id)) =
-                (packet.lossless_session_id(), packet.lossless_fec_tree_id())
-            {
-                self.send_remote_lossless_packet(scheduler, packet, session_id, tree_id)
-                    .await;
-            } else {
+        } else {
+            let scope = TransportScope::from_packet(&packet);
+            let key = ScopedNode::new(next_hop_id, scope);
+            if let Some(scheduler) = self.schedulers.get(&key).cloned() {
                 scheduler.send(packet).await;
-            }
-        }
-    }
-
-    async fn send_remote_lossless_packet(
-        &mut self,
-        scheduler: SchedulerHandle,
-        packet: Packet,
-        session_id: u64,
-        tree_id: u16,
-    ) {
-        let flow_id = packet.flow_id;
-        match scheduler.try_send(packet) {
-            SchedulerTrySendOutcome::Queued => {}
-            SchedulerTrySendOutcome::Closed(_packet) => {
-                warn!(
-                    session_id,
-                    tree_id,
-                    "Lossless relay observed closed downstream scheduler while forwarding FEC payload"
+            } else {
+                error!(
+                    next_hop_id,
+                    ?scope,
+                    "No scheduler available for scoped remote transport"
                 );
             }
-            SchedulerTrySendOutcome::WouldBlock(packet) => {
-                let pause_key = (session_id, tree_id);
-                let inserted = self.remote_paused_trees.insert(pause_key);
-                if inserted {
-                    self.send_tree_backpressure(flow_id, session_id, tree_id, true)
-                        .await;
-                }
-
-                scheduler.send(packet).await;
-
-                if inserted && self.remote_paused_trees.remove(&pause_key) {
-                    self.send_tree_backpressure(flow_id, session_id, tree_id, false)
-                        .await;
-                }
-            }
         }
     }
 
-    async fn send_tree_backpressure(
-        &mut self,
-        flow_id: FlowId,
-        session_id: u64,
-        tree_id: u16,
-        blocked: bool,
-    ) {
-        let control_packet = control::build_control_packet(
-            control::FrameRoute {
-                session_id,
-                tree_id: None,
-                src_ip: self.config.local_address,
-                src_port: flow_id.src_port(),
-                dst_ip: flow_id.src_ip(),
-                dst_port: flow_id.dst_port(),
-            },
-            &LosslessSessionControl::TreeBackpressure { tree_id, blocked },
-        );
-        Box::pin(self.forward_packet(control_packet, None)).await;
-    }
-
-    fn try_deliver_lossless(&mut self, packet: &Packet) -> bool {
+    async fn try_deliver_lossless(&mut self, packet: &Packet) -> bool {
         let Some(handle) = self.lossless_handle.clone() else {
             return false;
         };
@@ -1252,13 +1200,15 @@ impl Processor {
 
         let payload_vec = payload.to_vec();
 
-        handle.deliver(
-            session_id,
-            LosslessInboundFrame {
-                bytes: payload_vec,
-                peer_id,
-            },
-        );
+        handle
+            .deliver(
+                session_id,
+                LosslessInboundFrame {
+                    bytes: payload_vec,
+                    peer_id,
+                },
+            )
+            .await;
         true
     }
 }

@@ -155,7 +155,7 @@ pub struct ReceiverConfig {
 /// Handle for interacting with the background lossless runtime actor.
 #[derive(Clone, Debug)]
 pub struct LosslessRuntimeHandle {
-    message_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
+    message_sender: mpsc::Sender<LosslessRuntimeMessage>,
 }
 
 struct SessionEntry {
@@ -167,7 +167,7 @@ struct SessionEntry {
 impl LosslessRuntimeHandle {
     /// Spawn a new runtime actor bound to the provided processor handle.
     pub fn new(processors: ProcessorHandle, config: LosslessConfig) -> Self {
-        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+        let (message_sender, message_receiver) = mpsc::channel(config.runtime_message_capacity);
         let runtime =
             LosslessRuntime::new(processors, config, message_sender.clone(), message_receiver);
 
@@ -192,6 +192,7 @@ impl LosslessRuntimeHandle {
                 cfg,
                 reply: reply_tx,
             })
+            .await
             .is_err()
         {
             return Err(StartError::RuntimeChannelClosed);
@@ -208,29 +209,36 @@ impl LosslessRuntimeHandle {
         cfg: ReceiverRequest,
     ) -> Result<LosslessSessionHandle, StartError> {
         let (reply_tx, reply_rx) = oneshot::channel();
-        let _ = self
+        if self
             .message_sender
             .send(LosslessRuntimeMessage::StartReceiver {
                 cfg,
                 reply: reply_tx,
-            });
+            })
+            .await
+            .is_err()
+        {
+            return Err(StartError::RuntimeChannelClosed);
+        }
         reply_rx
             .await
             .unwrap_or(Err(StartError::RuntimeChannelClosed))
     }
 
     /// Deliver one already-decoded frame to a running session task.
-    pub fn deliver(&self, session: SessionId, frame: InboundFrame) {
+    pub async fn deliver(&self, session: SessionId, frame: InboundFrame) {
         let _ = self
             .message_sender
-            .send(LosslessRuntimeMessage::Deliver { session, frame });
+            .send(LosslessRuntimeMessage::Deliver { session, frame })
+            .await;
     }
 
     /// Update the topology-ready gate shared by newly spawned senders.
-    pub fn set_topology_ready(&self, ready: bool) {
+    pub async fn set_topology_ready(&self, ready: bool) {
         let _ = self
             .message_sender
-            .send(LosslessRuntimeMessage::SetTopologyReady { ready });
+            .send(LosslessRuntimeMessage::SetTopologyReady { ready })
+            .await;
     }
 }
 
@@ -242,8 +250,8 @@ struct LosslessRuntime {
     completed_receivers: AHashMap<SessionId, CompletedReceiverReplay>,
     topology_ready_sender: watch::Sender<bool>,
     topology_ready: bool,
-    message_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
-    message_receiver: mpsc::UnboundedReceiver<LosslessRuntimeMessage>,
+    message_sender: mpsc::Sender<LosslessRuntimeMessage>,
+    message_receiver: mpsc::Receiver<LosslessRuntimeMessage>,
 }
 
 impl LosslessRuntime {
@@ -251,8 +259,8 @@ impl LosslessRuntime {
     fn new(
         processors: ProcessorHandle,
         config: LosslessConfig,
-        message_sender: mpsc::UnboundedSender<LosslessRuntimeMessage>,
-        message_receiver: mpsc::UnboundedReceiver<LosslessRuntimeMessage>,
+        message_sender: mpsc::Sender<LosslessRuntimeMessage>,
+        message_receiver: mpsc::Receiver<LosslessRuntimeMessage>,
     ) -> Self {
         let (topology_ready_sender, _) = watch::channel(false);
 
@@ -407,7 +415,7 @@ impl LosslessRuntime {
         }
 
         let processors = self.processors.clone();
-        let (inbox, inbox_receiver) = mpsc::channel(1024);
+        let (inbox, inbox_receiver) = mpsc::channel(self.config.session_inbox_capacity);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
         let task = tokio::spawn(sender::run(cfg, inbox_receiver, processors));
@@ -418,10 +426,12 @@ impl LosslessRuntime {
                 Ok(outcome) => outcome,
                 Err(_) => SessionOutcome::Aborted,
             };
-            let _ = message_sender.send(LosslessRuntimeMessage::SessionExited {
-                session_id: sid,
-                outcome,
-            });
+            let _ = message_sender
+                .send(LosslessRuntimeMessage::SessionExited {
+                    session_id: sid,
+                    outcome,
+                })
+                .await;
         });
 
         self.sessions.insert(
@@ -462,7 +472,7 @@ impl LosslessRuntime {
         };
         let processors = self.processors.clone();
 
-        let (inbox, inbox_receiver) = mpsc::channel(1024);
+        let (inbox, inbox_receiver) = mpsc::channel(self.config.session_inbox_capacity);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
         let message_sender = self.message_sender.clone();
@@ -478,10 +488,12 @@ impl LosslessRuntime {
                 Ok(()) => SessionOutcome::Completed,
                 Err(_) => SessionOutcome::Aborted,
             };
-            let _ = message_sender.send(LosslessRuntimeMessage::SessionExited {
-                session_id: sid,
-                outcome,
-            });
+            let _ = message_sender
+                .send(LosslessRuntimeMessage::SessionExited {
+                    session_id: sid,
+                    outcome,
+                })
+                .await;
         });
 
         self.sessions.insert(
@@ -970,7 +982,8 @@ mod tests {
         processors.connect_user_space_sender(flow_id, packet_tx);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let (message_sender, message_receiver) = mpsc::unbounded_channel();
+        let (message_sender, message_receiver) =
+            mpsc::channel(cfg.lossless_runtime_config.runtime_message_capacity);
         (
             LosslessRuntime::new(
                 processors,

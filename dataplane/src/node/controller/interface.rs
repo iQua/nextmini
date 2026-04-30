@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::net::Ipv4Addr;
 #[cfg(feature = "python-extension")]
 use std::sync::Arc;
@@ -17,6 +17,7 @@ use tracing::{error, info, warn};
 
 use nextmini_messages::{
     ControllerToDataplane, DataplaneToController, Flow, FlowTransport, GroupId,
+    GroupRoutingTableEntry, MULTITREE_STRIDE,
 };
 
 use crate::node::config::LocalConfig;
@@ -26,6 +27,7 @@ use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::client::UserSpaceClientHandle;
 use crate::node::flow::server::UserSpaceServerHandle;
 use crate::node::network::interface::NetworkInterfaceHandle;
+use crate::node::network::scope::TransportScope;
 use crate::node::network::tcp_max::TcpMaxClient;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
@@ -138,6 +140,8 @@ impl ControllerInterfaceHandle {
             pending_lossless_flows: Vec::new(),
             expected_neighbor_count: 0,
             connected_neighbor_count: 0,
+            neighbor_addrs: HashMap::new(),
+            connected_scopes: HashSet::new(),
             routes_installed: false,
             group_directory_installed: false,
             local_topology_ready_sent: false,
@@ -262,11 +266,8 @@ impl DataplaneToControllerSender {
                         .send(Message::binary(rmp_serde::to_vec(&msg).unwrap()))
                         .await
                     {
-                        error!(
-                            "Fatal controller connection failure while sending message: {}. Terminating node.",
-                            e
-                        );
-                        std::process::exit(70);
+                        error!("Failed to send message to controller: {}. Closing sender.", e);
+                        break;
                     }
                 }
                 _ = ping_interval.tick() => {
@@ -275,15 +276,14 @@ impl DataplaneToControllerSender {
                         .send(Message::Ping(Vec::new().into()))
                         .await
                     {
-                        error!(
-                            "Fatal controller connection failure while sending ping: {}. Terminating node.",
-                            e
-                        );
-                        std::process::exit(70);
+                        warn!("Failed to send ping to controller: {}. Closing sender.", e);
+                        break;
                     }
                 }
             }
         }
+
+        info!("DataplaneToController sender stopped.");
     }
 }
 
@@ -312,6 +312,8 @@ pub struct ControllerToDataplaneReceiver {
     pending_lossless_flows: Vec<Flow>,
     expected_neighbor_count: usize,
     connected_neighbor_count: usize,
+    neighbor_addrs: HashMap<usize, String>,
+    connected_scopes: HashSet<(usize, TransportScope)>,
     routes_installed: bool,
     group_directory_installed: bool,
     local_topology_ready_sent: bool,
@@ -320,18 +322,13 @@ pub struct ControllerToDataplaneReceiver {
 impl ControllerToDataplaneReceiver {
     pub async fn run(&mut self) {
         loop {
-            let msg = match self.receiver_stream.next().await {
-                Some(Ok(msg)) => msg,
-                Some(Err(e)) => {
-                    error!(
-                        "Fatal controller connection failure while receiving. Terminating node."
-                    );
+            let msg = match self.receiver_stream.next().await.unwrap() {
+                Ok(msg) => msg,
+                Err(e) => {
+                    error!("Disconnected from the controller. Restarting the node...");
                     error!("{:?}", e);
-                    std::process::exit(70);
-                }
-                None => {
-                    error!("Fatal controller connection failure: stream closed. Terminating node.");
-                    std::process::exit(70);
+
+                    break;
                 }
             };
 
@@ -358,23 +355,16 @@ impl ControllerToDataplaneReceiver {
                 remote_node_id,
                 remote_addr,
             } => {
-                // creates a new persistent TCP connection to the remote node
                 self.expected_neighbor_count += 1;
-
-                let network_interface = NetworkInterfaceHandle::new_as_client(
-                    self.config.clone(),
+                self.neighbor_addrs
+                    .insert(remote_node_id, remote_addr.clone());
+                self.ensure_scope_connection(
                     remote_node_id,
-                    remote_addr.clone(),
-                    self.processors.clone(),
-                    self.reporter.clone(),
+                    remote_addr,
+                    TransportScope::Default,
+                    true,
                 )
                 .await;
-
-                let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
-
-                let _ = self.processors.add_node(remote_node_id, scheduler);
-
-                self.record_neighbor_connected(remote_node_id).await;
             }
 
             ControllerToDataplane::AddNodeAddress {
@@ -472,7 +462,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.topology_ready = true;
-                self.lossless_runtime.set_topology_ready(true);
+                self.lossless_runtime.set_topology_ready(true).await;
 
                 // Emit Python event so Python code can wait for topology ready
                 #[cfg(feature = "python-extension")]
@@ -544,6 +534,8 @@ impl ControllerToDataplaneReceiver {
                 #[cfg(feature = "python-extension")]
                 let cloned_routes = routes.clone();
 
+                self.ensure_tree_scope_connections(&routes).await;
+
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
@@ -592,6 +584,66 @@ impl ControllerToDataplaneReceiver {
             self.expected_neighbor_count
         );
         self.maybe_send_local_topology_ready().await;
+    }
+
+    async fn ensure_scope_connection(
+        &mut self,
+        remote_node_id: usize,
+        remote_addr: String,
+        scope: TransportScope,
+        count_toward_topology: bool,
+    ) {
+        if !self.connected_scopes.insert((remote_node_id, scope)) {
+            return;
+        }
+
+        let network_interface = NetworkInterfaceHandle::new_as_client(
+            self.config.clone(),
+            remote_node_id,
+            remote_addr,
+            scope,
+            self.processors.clone(),
+            self.reporter.clone(),
+        )
+        .await;
+
+        let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
+        let _ = self.processors.add_node(remote_node_id, scope, scheduler);
+
+        if count_toward_topology {
+            self.record_neighbor_connected(remote_node_id).await;
+        }
+    }
+
+    async fn ensure_tree_scope_connections(&mut self, routes: &[GroupRoutingTableEntry]) {
+        let mut pending = Vec::new();
+        let mut seen = HashSet::new();
+
+        for route in routes {
+            let tree_id = (route.route_id % MULTITREE_STRIDE) as u16;
+            let scope = TransportScope::Tree(tree_id);
+            for &next_hop_id in &route.next_hops {
+                if next_hop_id == self.config.node_id {
+                    continue;
+                }
+                if seen.insert((next_hop_id, scope)) {
+                    if let Some(remote_addr) = self.neighbor_addrs.get(&next_hop_id).cloned() {
+                        pending.push((next_hop_id, remote_addr, scope));
+                    } else {
+                        warn!(
+                            next_hop_id,
+                            ?scope,
+                            "Missing remote address while preparing scoped transport"
+                        );
+                    }
+                }
+            }
+        }
+
+        for (next_hop_id, remote_addr, scope) in pending {
+            self.ensure_scope_connection(next_hop_id, remote_addr, scope, false)
+                .await;
+        }
     }
 
     /// Probe payload:  [flags:1][probe_id:8][sender_node_id:8][padding]

@@ -602,6 +602,9 @@ impl LocalConfig {
 
         self.lossless_runtime_config.ingress_feature = self.feature.clone();
         self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
+        let lossless_capacity = self.channel_capacity.max(1);
+        self.lossless_runtime_config.runtime_message_capacity = lossless_capacity;
+        self.lossless_runtime_config.session_inbox_capacity = lossless_capacity;
     }
 
     pub fn update(&mut self, response: Result<Message, Error>) {
@@ -708,6 +711,16 @@ pub struct LosslessConfig {
     /// Runtime preflight uses this to reject FEC modes that can silently drop on full queues.
     #[serde(skip)]
     pub ingress_channel_backpressure: bool,
+
+    /// Capacity of the runtime actor mailbox that forwards inbound lossless
+    /// frames and lifecycle commands to the background session runtime.
+    #[serde(skip)]
+    pub runtime_message_capacity: usize,
+
+    /// Capacity of each per-session inbox between the runtime actor and the
+    /// spawned sender/receiver task.
+    #[serde(skip)]
+    pub session_inbox_capacity: usize,
 }
 
 impl Default for LosslessConfig {
@@ -723,6 +736,8 @@ impl Default for LosslessConfig {
             fec_default_tree_ids: vec![0],
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
+            runtime_message_capacity: 1024,
+            session_inbox_capacity: 1024,
         }
     }
 }

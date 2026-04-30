@@ -45,7 +45,7 @@ pub(super) async fn run_with_runtime(
     cfg: ReceiverConfig,
     mut rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
-    runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+    runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
 ) {
     let mut receiver = SessionReceiver::new(cfg, processors);
     receiver.run(&mut rx, runtime_sender).await;
@@ -56,7 +56,6 @@ struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
     lifecycle: ReceiverLifecycle,
-    passive_complete_deadline: Option<tokio::time::Instant>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -100,7 +99,6 @@ impl SessionReceiver {
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
-            passive_complete_deadline: None,
         }
     }
 
@@ -108,7 +106,7 @@ impl SessionReceiver {
     async fn run(
         &mut self,
         rx: &mut mpsc::Receiver<InboundFrame>,
-        runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+        runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
     ) {
         info!(
             session_id = self.shared.session_id,
@@ -117,17 +115,12 @@ impl SessionReceiver {
 
         loop {
             let frame = if self.is_passive_complete() {
-                let Some(deadline) = self.passive_complete_deadline else {
-                    self.finish_session("missing_passive_complete_deadline");
-                    break;
-                };
-                if deadline <= tokio::time::Instant::now() {
-                    self.finish_session("session_finish_timeout");
-                    break;
-                }
+                let passive_timeout = timing::session_finish_timeout_for(
+                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
+                );
                 tokio::select! {
                     maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep_until(deadline) => {
+                    _ = tokio::time::sleep(passive_timeout) => {
                         self.finish_session("session_finish_timeout");
                         break;
                     }
@@ -204,12 +197,6 @@ impl SessionReceiver {
         }
         self.shared.mark_object_complete();
         self.lifecycle = ReceiverLifecycle::PassiveComplete;
-        self.passive_complete_deadline = Some(
-            tokio::time::Instant::now()
-                + timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
-                    self.shared.cfg.peer_report_timeout_ms,
-                )),
-        );
         debug!(
             session_id = self.shared.session_id,
             object_complete = self.object_complete(),
@@ -324,7 +311,7 @@ impl SessionReceiver {
 
     async fn register_completed_replay(
         &self,
-        runtime_sender: Option<mpsc::UnboundedSender<LosslessRuntimeMessage>>,
+        runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
     ) {
         let Some(runtime_sender) = runtime_sender else {
             return;
@@ -340,6 +327,7 @@ impl SessionReceiver {
                 replay,
                 ack: ack_tx,
             })
+            .await
             .is_ok()
         {
             let _ = ack_rx.await;
@@ -789,7 +777,6 @@ mod tests {
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
-            passive_complete_deadline: None,
         };
 
         assert!(!receiver.is_complete());
@@ -1257,7 +1244,6 @@ mod tests {
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
             lifecycle: ReceiverLifecycle::Active,
-            passive_complete_deadline: None,
         };
 
         receiver
@@ -1276,7 +1262,7 @@ mod tests {
         );
         assert!(receiver.is_complete());
 
-        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
         let register_task = tokio::spawn(async move {
             receiver.register_completed_replay(Some(runtime_tx)).await;
         });
@@ -1343,7 +1329,7 @@ mod tests {
         processors.connect_user_space_sender(flow_id, packet_tx);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
         let (tx, rx) = mpsc::channel(8);
         let receiver_task = tokio::spawn(run_with_runtime(
             ReceiverConfig {
@@ -1487,7 +1473,7 @@ mod tests {
         processors.connect_user_space_sender(flow_id, packet_tx);
         tokio::time::sleep(Duration::from_millis(50)).await;
 
-        let (runtime_tx, mut runtime_rx) = mpsc::unbounded_channel();
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
         let (tx, rx) = mpsc::channel(8);
         let receiver_task = tokio::spawn(run_with_runtime(
             ReceiverConfig {
@@ -1658,7 +1644,6 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
-                passive_complete_deadline: None,
             },
             packet_rx,
         )
@@ -1742,7 +1727,6 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,
-                passive_complete_deadline: None,
             },
             packet_rx,
         )
