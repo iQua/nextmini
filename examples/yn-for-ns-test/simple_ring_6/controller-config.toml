@@ -5,12 +5,13 @@ scheduler_type = "wrr"
 [db]
 user = "pgusr"
 password = "pgpwrd"
-host = "172.16.8.2"
+host = "170.16.8.2"
 database = "nextmini"
 port = "5432"
 
 [topology]
-n_nodes = 6
+type = "full_mesh"
+full_mesh_config = { n_nodes = 6 }
 
 [[link_rates]]
 src_node_id = 1
