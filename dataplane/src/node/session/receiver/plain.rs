@@ -44,7 +44,6 @@ impl PlainReceiver {
             return;
         }
 
-        shared.observe_payload_frame("plain", data.block_id, payload.len());
         shared.mark_first_payload_unit();
         shared.write_block(data.block_id, payload).await;
         shared.complete_blocks.insert(data.block_id);

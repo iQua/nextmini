@@ -16,7 +16,6 @@ use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
 use nextmini_messages::{
-    lossless_session,
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
     RoutingTableEntry, TokenBucketSpec,
 };
@@ -1064,15 +1063,6 @@ struct Processor {
 }
 
 impl Processor {
-    fn source_done_round(packet: &Packet) -> Option<u32> {
-        let payload = packet.tcp_payload()?;
-        let (_, control) = lossless_session::decode_control(payload)?;
-        match control {
-            lossless_session::LosslessSessionControl::SourceDone { round_id } => Some(round_id),
-            _ => None,
-        }
-    }
-
     pub fn new(
         packet_receiver: PacketReceiver,
         broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
@@ -1292,19 +1282,9 @@ impl Processor {
     async fn send_packet(&mut self, packet: Packet, next_hop_id: NodeId) {
         #[allow(unused_mut)]
         let mut packet = packet;
-        let source_done_round = Self::source_done_round(&packet);
 
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
-            if let Some(round_id) = source_done_round {
-                info!(
-                    session_id = packet.lossless_session_id(),
-                    local_node_id = self.routing_table.local_id,
-                    next_hop_id,
-                    round_id,
-                    "Processor is delivering SourceDone locally"
-                );
-            }
             // if possible, deliver to the lossless transport subsystem
             if self.try_deliver_lossless(&packet).await {
                 return;
@@ -1339,15 +1319,6 @@ impl Processor {
                 }
             }
         } else {
-            if let Some(round_id) = source_done_round {
-                info!(
-                    session_id = packet.lossless_session_id(),
-                    local_node_id = self.routing_table.local_id,
-                    next_hop_id,
-                    round_id,
-                    "Processor is forwarding SourceDone remotely"
-                );
-            }
             let scope = TransportScope::from_packet(&packet);
             let key = ScopedNode::new(next_hop_id, scope);
             if let Some(scheduler) = self.schedulers.get(&key).cloned() {

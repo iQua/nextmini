@@ -563,7 +563,7 @@ impl SenderShared {
 
     /// Emit the burst-boundary marker for the current sender round.
     pub(super) async fn send_source_done(&mut self, round_id: u32) {
-        info!(
+        debug!(
             session_id = self.session.session_id,
             round_id, "Lossless sender emitted SourceDone"
         );

@@ -445,7 +445,6 @@ impl LosslessRuntime {
         info!(
             session_id = sid,
             topology_ready = self.topology_ready,
-            session_control_inbox_capacity = self.config.session_control_inbox_capacity,
             "Lossless runtime started sender session task"
         );
         tokio::spawn(async move {
@@ -518,8 +517,6 @@ impl LosslessRuntime {
         info!(
             session_id = sid,
             local_node_id,
-            session_control_inbox_capacity = self.config.session_control_inbox_capacity,
-            session_inbox_capacity = self.config.session_inbox_capacity,
             "Lossless runtime started receiver session task"
         );
         tokio::spawn(async move {
@@ -645,9 +642,7 @@ impl LosslessRuntime {
             return LiveDeliveryOutcome::Missing;
         };
 
-        let control_kind = lossless_session::decode_control(&frame.bytes)
-            .map(|(_, control)| control_kind_name(&control));
-        let inbox = if control_kind.is_some() {
+        let inbox = if lossless_session::decode_control(&frame.bytes).is_some() {
             entry.control_inbox.clone()
         } else if let Some(data_inbox) = &entry.data_inbox {
             data_inbox.clone()
@@ -659,12 +654,6 @@ impl LosslessRuntime {
             return LiveDeliveryOutcome::Delivered;
         };
         if inbox.send(frame).await.is_ok() {
-            if let Some(control_kind) = control_kind {
-                info!(
-                    session_id = session,
-                    control_kind, "Lossless runtime delivered control frame to live session inbox"
-                );
-            }
             return LiveDeliveryOutcome::Delivered;
         }
 

@@ -81,8 +81,6 @@ pub(super) struct ReceiverShared {
     pub(super) manifest: Option<LosslessSessionManifest>,
     pub(super) plan: Option<BlockPlan>,
     pub(super) complete_blocks: BTreeSet<u64>,
-    payload_frames_received: u64,
-    payload_bytes_received: u64,
 }
 
 /// Concrete receiver mode selected after the manifest is installed.
@@ -104,8 +102,6 @@ impl SessionReceiver {
                 manifest: None,
                 plan: None,
                 complete_blocks: BTreeSet::new(),
-                payload_frames_received: 0,
-                payload_bytes_received: 0,
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
@@ -144,7 +140,6 @@ impl SessionReceiver {
         }
 
         if self.reported_complete() {
-            self.shared.log_payload_phase_throughput();
             self.register_completed_replay(runtime_sender).await;
         }
 
@@ -154,7 +149,6 @@ impl SessionReceiver {
             lifecycle = ?self.lifecycle,
             "Lossless receiver finished"
         );
-        self.shared.log_payload_summary(self.lifecycle);
     }
 
     async fn next_frame(
@@ -207,23 +201,8 @@ impl SessionReceiver {
             match (newest_round, source_done_round(&next)) {
                 (Some(current_round), Some(next_round)) => {
                     if next_round >= current_round {
-                        info!(
-                            session_id = self.shared.session_id,
-                            local_node_id = self.shared.local_node_id,
-                            dropped_round_id = current_round,
-                            kept_round_id = next_round,
-                            "Lossless receiver dropped superseded SourceDone before handling control"
-                        );
                         frame = next;
                         newest_round = Some(next_round);
-                    } else {
-                        info!(
-                            session_id = self.shared.session_id,
-                            local_node_id = self.shared.local_node_id,
-                            dropped_round_id = next_round,
-                            kept_round_id = current_round,
-                            "Lossless receiver dropped stale queued SourceDone before handling control"
-                        );
                     }
                 }
                 _ => self.pending_control_frames.push_back(next),
@@ -298,14 +277,6 @@ impl SessionReceiver {
             | LosslessSessionControl::Need { .. }
             | LosslessSessionControl::TreeBackpressure { .. } => {}
             LosslessSessionControl::SourceDone { round_id } => {
-                info!(
-                    session_id = self.shared.session_id,
-                    local_node_id = self.shared.local_node_id,
-                    round_id,
-                    mode_installed = self.mode.is_some(),
-                    object_complete = self.object_complete(),
-                    "Lossless receiver received SourceDone control frame"
-                );
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
@@ -484,40 +455,6 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
 }
 
 impl ReceiverShared {
-    pub(super) fn observe_payload_frame(
-        &mut self,
-        kind: &'static str,
-        block_id: u64,
-        payload_len: usize,
-    ) {
-        self.payload_frames_received = self.payload_frames_received.saturating_add(1);
-        self.payload_bytes_received = self
-            .payload_bytes_received
-            .saturating_add(payload_len as u64);
-
-        if self.payload_frames_received == 1 {
-            info!(
-                session_id = self.session_id,
-                local_node_id = self.local_node_id,
-                kind,
-                block_id,
-                payload_len,
-                "Lossless receiver observed first payload frame"
-            );
-        } else if self.payload_frames_received.is_multiple_of(256) {
-            info!(
-                session_id = self.session_id,
-                local_node_id = self.local_node_id,
-                kind,
-                block_id,
-                payload_frames_received = self.payload_frames_received,
-                payload_bytes_received = self.payload_bytes_received,
-                complete_blocks = self.complete_blocks.len(),
-                "Lossless receiver payload progress"
-            );
-        }
-    }
-
     /// Return whether the receiver has completed every planned block.
     fn has_all_blocks(&self) -> bool {
         let Some(plan) = self.plan else {
@@ -538,50 +475,6 @@ impl ReceiverShared {
         if let Some(progress) = &self.cfg.progress {
             progress.mark_object_complete();
         }
-    }
-
-    /// Log payload-phase receiver throughput when first-payload timing is available.
-    fn log_payload_phase_throughput(&self) {
-        let Some(progress) = &self.cfg.progress else {
-            return;
-        };
-        let Some(first_payload_at) = progress.first_payload_unit_at() else {
-            return;
-        };
-        let Some(object_complete_at) = progress.object_complete_at() else {
-            return;
-        };
-        let Some(manifest) = &self.manifest else {
-            return;
-        };
-        let payload_phase = object_complete_at.saturating_duration_since(first_payload_at);
-        if payload_phase.is_zero() {
-            return;
-        }
-        let receiver_mbps =
-            manifest.total_bytes as f64 * 8.0 / payload_phase.as_secs_f64() / 1_000_000.0;
-        info!(
-            session_id = self.session_id,
-            local_node_id = self.local_node_id,
-            total_bytes = manifest.total_bytes,
-            payload_phase_ms = payload_phase.as_millis() as u64,
-            receiver_mbps,
-            "Lossless receiver payload-phase throughput"
-        );
-    }
-
-    fn log_payload_summary(&self, lifecycle: ReceiverLifecycle) {
-        info!(
-            session_id = self.session_id,
-            local_node_id = self.local_node_id,
-            payload_frames_received = self.payload_frames_received,
-            payload_bytes_received = self.payload_bytes_received,
-            complete_blocks = self.complete_blocks.len(),
-            manifest_installed = self.manifest.is_some(),
-            plan_installed = self.plan.is_some(),
-            lifecycle = ?lifecycle,
-            "Lossless receiver payload summary"
-        );
     }
 
     /// Copy one completed block payload into the optional sink buffer.
@@ -633,11 +526,6 @@ impl ReceiverShared {
 
     /// Send a READY control frame back to the sender.
     async fn send_ready(&self) {
-        info!(
-            session_id = self.session_id,
-            local_node_id = self.local_node_id,
-            "Lossless receiver sent Ready"
-        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -654,14 +542,6 @@ impl ReceiverShared {
     }
 
     async fn send_fec_need(&self, round_id: u32, report: &NeedReport) {
-        let report_summary = summarize_need_report(report);
-        info!(
-            session_id = self.session_id,
-            local_node_id = self.local_node_id,
-            round_id,
-            report_summary = %report_summary,
-            "Lossless receiver sent FEC Need"
-        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -715,14 +595,6 @@ impl ReceiverShared {
     }
 
     async fn send_plain_need(&self, round_id: u32, report: &NeedReport) {
-        let report_summary = summarize_need_report(report);
-        info!(
-            session_id = self.session_id,
-            local_node_id = self.local_node_id,
-            round_id,
-            report_summary = %report_summary,
-            "Lossless receiver sent plain Need"
-        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -739,45 +611,6 @@ impl ReceiverShared {
             },
         )
         .await;
-    }
-}
-
-fn summarize_need_report(report: &NeedReport) -> String {
-    match report {
-        NeedReport::Complete => "complete".to_string(),
-        NeedReport::Plain { ranges } => {
-            let sample = ranges
-                .iter()
-                .take(3)
-                .map(|range| format!("{}..{}", range.start_block_id, range.end_block_id))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!("plain ranges={} sample=[{}]", ranges.len(), sample)
-        }
-        NeedReport::Fec { blocks } => {
-            let total_deficit: u64 = blocks
-                .iter()
-                .map(|block| u64::from(block.deficit_symbols))
-                .sum();
-            let max_deficit = blocks
-                .iter()
-                .map(|block| block.deficit_symbols)
-                .max()
-                .unwrap_or(0);
-            let sample = blocks
-                .iter()
-                .take(3)
-                .map(|block| format!("{}:+{}", block.block_id, block.deficit_symbols))
-                .collect::<Vec<_>>()
-                .join(",");
-            format!(
-                "fec blocks={} total_deficit={} max_deficit={} sample=[{}]",
-                blocks.len(),
-                total_deficit,
-                max_deficit,
-                sample
-            )
-        }
     }
 }
 
