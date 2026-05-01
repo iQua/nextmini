@@ -48,7 +48,7 @@ impl SchedulerWriter {
                     SchedulerWriterMessage::SetFlowWeight(flow_id, weight) => {
                         self.queue.set_flow_weight(flow_id, weight);
                     }
-                    SchedulerWriterMessage::ProbePackets(packets) => {
+                    SchedulerWriterMessage::LinkProbePackets(packets) => {
                         probe_packets.extend(packets);
                     }
                 }
@@ -66,7 +66,7 @@ impl SchedulerWriter {
                     _ = self.queues_not_empty.notified() => {},
                     msg = self.receiver.recv() => {
                         match msg {
-                            Some(SchedulerWriterMessage::ProbePackets(packets)) => {
+                            Some(SchedulerWriterMessage::LinkProbePackets(packets)) => {
                                 if let Err(e) = self.net_interface.send(packets).await {
                                     error!("SchedulerWriter: Error sending probe packets: {}", e);
                                 }
