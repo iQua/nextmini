@@ -159,7 +159,8 @@ pub struct LosslessRuntimeHandle {
 }
 
 struct SessionEntry {
-    inbox: mpsc::Sender<InboundFrame>,
+    control_inbox: mpsc::Sender<InboundFrame>,
+    data_inbox: Option<mpsc::Sender<InboundFrame>>,
     state_sender: watch::Sender<SessionState>,
     abort_handle: tokio::task::AbortHandle,
 }
@@ -434,16 +435,17 @@ impl LosslessRuntime {
         }
 
         let processors = self.processors.clone();
-        let (inbox, inbox_receiver) = mpsc::channel(self.config.session_inbox_capacity);
+        let (control_inbox, control_inbox_receiver) =
+            mpsc::channel(self.config.session_control_inbox_capacity);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
-        let task = tokio::spawn(sender::run(cfg, inbox_receiver, processors));
+        let task = tokio::spawn(sender::run(cfg, control_inbox_receiver, processors));
         let abort_handle = task.abort_handle();
         let message_sender = self.message_sender.clone();
         info!(
             session_id = sid,
             topology_ready = self.topology_ready,
-            session_inbox_capacity = self.config.session_inbox_capacity,
+            session_control_inbox_capacity = self.config.session_control_inbox_capacity,
             "Lossless runtime started sender session task"
         );
         tokio::spawn(async move {
@@ -462,7 +464,8 @@ impl LosslessRuntime {
         self.sessions.insert(
             sid,
             SessionEntry {
-                inbox,
+                control_inbox,
+                data_inbox: None,
                 state_sender,
                 abort_handle,
             },
@@ -498,13 +501,16 @@ impl LosslessRuntime {
         };
         let processors = self.processors.clone();
 
-        let (inbox, inbox_receiver) = mpsc::channel(self.config.session_inbox_capacity);
+        let (control_inbox, control_inbox_receiver) =
+            mpsc::channel(self.config.session_control_inbox_capacity);
+        let (data_inbox, data_inbox_receiver) = mpsc::channel(self.config.session_inbox_capacity);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
         let message_sender = self.message_sender.clone();
         let task = tokio::spawn(receiver::run_with_runtime(
             cfg,
-            inbox_receiver,
+            control_inbox_receiver,
+            data_inbox_receiver,
             processors,
             Some(message_sender.clone()),
         ));
@@ -512,6 +518,7 @@ impl LosslessRuntime {
         info!(
             session_id = sid,
             local_node_id,
+            session_control_inbox_capacity = self.config.session_control_inbox_capacity,
             session_inbox_capacity = self.config.session_inbox_capacity,
             "Lossless runtime started receiver session task"
         );
@@ -531,7 +538,8 @@ impl LosslessRuntime {
         self.sessions.insert(
             sid,
             SessionEntry {
-                inbox,
+                control_inbox,
+                data_inbox: Some(data_inbox),
                 state_sender,
                 abort_handle,
             },
@@ -633,18 +641,28 @@ impl LosslessRuntime {
         session: SessionId,
         frame: InboundFrame,
     ) -> LiveDeliveryOutcome {
-        let Some(inbox) = self.sessions.get(&session).map(|entry| entry.inbox.clone()) else {
+        let Some(entry) = self.sessions.get(&session) else {
             return LiveDeliveryOutcome::Missing;
         };
 
         let control_kind = lossless_session::decode_control(&frame.bytes)
             .map(|(_, control)| control_kind_name(&control));
+        let inbox = if control_kind.is_some() {
+            entry.control_inbox.clone()
+        } else if let Some(data_inbox) = &entry.data_inbox {
+            data_inbox.clone()
+        } else {
+            warn!(
+                session_id = session,
+                "Lossless runtime: dropping unexpected data frame for sender session."
+            );
+            return LiveDeliveryOutcome::Delivered;
+        };
         if inbox.send(frame).await.is_ok() {
             if let Some(control_kind) = control_kind {
                 info!(
                     session_id = session,
-                    control_kind,
-                    "Lossless runtime delivered control frame to live session inbox"
+                    control_kind, "Lossless runtime delivered control frame to live session inbox"
                 );
             }
             return LiveDeliveryOutcome::Delivered;

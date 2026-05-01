@@ -612,9 +612,7 @@ impl ControllerToDataplaneReceiver {
                 self.processors.sync_workers().await;
                 info!(
                     node_id = self.config.node_id,
-                    group_id,
-                    src_node_id,
-                    "Processor workers synced before multicast route update"
+                    group_id, src_node_id, "Processor workers synced before multicast route update"
                 );
 
                 info!(
@@ -641,9 +639,7 @@ impl ControllerToDataplaneReceiver {
                 self.processors.sync_workers().await;
                 info!(
                     node_id = self.config.node_id,
-                    group_id,
-                    src_node_id,
-                    "Processor workers synced after multicast route update"
+                    group_id, src_node_id, "Processor workers synced after multicast route update"
                 );
                 self.installed_group_route_ids.insert(group_id);
                 self.last_group_route_update_at = Some(Instant::now());
@@ -698,8 +694,7 @@ impl ControllerToDataplaneReceiver {
                 if nonce == self.latest_group_route_nonce {
                     info!(
                         node_id = self.config.node_id,
-                        nonce,
-                        "Re-checking lossless topology activation after route quiet period"
+                        nonce, "Re-checking lossless topology activation after route quiet period"
                     );
                     self.maybe_activate_lossless_topology().await;
                 } else {
@@ -727,8 +722,7 @@ impl ControllerToDataplaneReceiver {
             tokio::time::sleep(LOSSLESS_GROUP_ROUTE_QUIET_PERIOD).await;
             info!(
                 node_id,
-                nonce,
-                "Deferred lossless topology activation timer fired"
+                nonce, "Deferred lossless topology activation timer fired"
             );
             if sender
                 .send(ControllerLocalEvent::AttemptActivateLossless { nonce })
@@ -736,14 +730,12 @@ impl ControllerToDataplaneReceiver {
             {
                 warn!(
                     node_id,
-                    nonce,
-                    "Failed to enqueue deferred lossless topology activation event"
+                    nonce, "Failed to enqueue deferred lossless topology activation event"
                 );
             } else {
                 info!(
                     node_id,
-                    nonce,
-                    "Enqueued deferred lossless topology activation event"
+                    nonce, "Enqueued deferred lossless topology activation event"
                 );
             }
         });

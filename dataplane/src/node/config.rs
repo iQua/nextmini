@@ -602,9 +602,11 @@ impl LocalConfig {
 
         self.lossless_runtime_config.ingress_feature = self.feature.clone();
         self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
-        let lossless_capacity = self.channel_capacity.max(1);
-        self.lossless_runtime_config.runtime_message_capacity = lossless_capacity;
-        self.lossless_runtime_config.session_inbox_capacity = lossless_capacity;
+        let lossless_control_capacity = self.channel_capacity.max(1024);
+        self.lossless_runtime_config.runtime_message_capacity = lossless_control_capacity;
+        self.lossless_runtime_config.session_control_inbox_capacity =
+            lossless_control_capacity;
+        self.lossless_runtime_config.session_inbox_capacity = self.channel_capacity.max(1);
     }
 
     pub fn update(&mut self, response: Result<Message, Error>) {
@@ -717,8 +719,13 @@ pub struct LosslessConfig {
     #[serde(skip)]
     pub runtime_message_capacity: usize,
 
-    /// Capacity of each per-session inbox between the runtime actor and the
-    /// spawned sender/receiver task.
+    /// Capacity of each per-session control inbox between the runtime actor and
+    /// the spawned sender/receiver task.
+    #[serde(skip)]
+    pub session_control_inbox_capacity: usize,
+
+    /// Capacity of each per-session data inbox between the runtime actor and
+    /// the spawned receiver task.
     #[serde(skip)]
     pub session_inbox_capacity: usize,
 }
@@ -729,7 +736,7 @@ impl Default for LosslessConfig {
             default_block_size: 8500,
             data_bucket: None,
             ready_grace_ms: 1500,
-            peer_report_timeout_ms: 1500,
+            peer_report_timeout_ms: 15_000,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_scheme: LosslessFecScheme::RaptorQ,
@@ -737,6 +744,7 @@ impl Default for LosslessConfig {
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
             runtime_message_capacity: 1024,
+            session_control_inbox_capacity: 1024,
             session_inbox_capacity: 1024,
         }
     }
@@ -747,7 +755,7 @@ const fn default_ready_grace_ms() -> u64 {
 }
 
 const fn default_peer_report_timeout_ms() -> u64 {
-    1500
+    15_000
 }
 
 const fn default_fec_enabled() -> bool {
@@ -836,11 +844,11 @@ pub enum IntegrationNodeRole {
 }
 
 fn default_integration_group_timeout_ms() -> u64 {
-    60_000
+    120_000
 }
 
 fn default_integration_receive_timeout_ms() -> u64 {
-    60_000
+    600_000
 }
 
 fn default_integration_poll_interval_ms() -> u64 {

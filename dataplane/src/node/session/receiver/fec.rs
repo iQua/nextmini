@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
 };
-use tracing::{debug, warn};
+use tracing::{info, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
@@ -240,19 +240,33 @@ impl FecReceiver {
         shared: &super::ReceiverShared,
         round_id: u32,
     ) {
+        info!(
+            session_id = shared.session_id,
+            local_node_id = shared.local_node_id,
+            round_id,
+            last_round_id = self.last_source_done_round_id,
+            complete_blocks = shared.complete_blocks.len(),
+            has_all_blocks = shared.has_all_blocks(),
+            "Lossless FEC receiver is evaluating SourceDone"
+        );
         if let Some(last_round_id) = self.last_source_done_round_id {
             if round_id < last_round_id {
-                debug!(
+                info!(
                     session_id = shared.session_id,
-                    round_id, last_round_id, "Lossless FEC receiver dropped stale SourceDone"
+                    local_node_id = shared.local_node_id,
+                    round_id,
+                    last_round_id,
+                    "Lossless FEC receiver dropped stale SourceDone"
                 );
                 return;
             }
             if round_id == last_round_id {
                 if let Some(report) = self.last_round_need.clone() {
-                    debug!(
+                    info!(
                         session_id = shared.session_id,
+                        local_node_id = shared.local_node_id,
                         round_id,
+                        report_summary = %summarize_need_report(&report),
                         "Lossless FEC receiver replayed cached Need for duplicate SourceDone"
                     );
                     shared.send_fec_need(last_round_id, &report).await;
@@ -263,8 +277,21 @@ impl FecReceiver {
         }
 
         let Some(report) = self.need_report(shared) else {
+            info!(
+                session_id = shared.session_id,
+                local_node_id = shared.local_node_id,
+                round_id,
+                "Lossless FEC receiver ignored SourceDone because no report was available"
+            );
             return;
         };
+        info!(
+            session_id = shared.session_id,
+            local_node_id = shared.local_node_id,
+            round_id,
+            report_summary = %summarize_need_report(&report),
+            "Lossless FEC receiver computed Need report for SourceDone"
+        );
         self.last_source_done_round_id = Some(round_id);
         self.last_round_need = Some(report.clone());
         shared.send_fec_need(round_id, &report).await;
@@ -296,4 +323,43 @@ fn systematic_block_payload(
 
     block.truncate(block_len);
     Some(block)
+}
+
+fn summarize_need_report(report: &NeedReport) -> String {
+    match report {
+        NeedReport::Complete => "complete".to_string(),
+        NeedReport::Plain { ranges } => {
+            let sample = ranges
+                .iter()
+                .take(3)
+                .map(|range| format!("{}..{}", range.start_block_id, range.end_block_id))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("plain ranges={} sample=[{}]", ranges.len(), sample)
+        }
+        NeedReport::Fec { blocks } => {
+            let total_deficit: u64 = blocks
+                .iter()
+                .map(|block| u64::from(block.deficit_symbols))
+                .sum();
+            let max_deficit = blocks
+                .iter()
+                .map(|block| block.deficit_symbols)
+                .max()
+                .unwrap_or(0);
+            let sample = blocks
+                .iter()
+                .take(3)
+                .map(|block| format!("{}:+{}", block.block_id, block.deficit_symbols))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "fec blocks={} total_deficit={} max_deficit={} sample=[{}]",
+                blocks.len(),
+                total_deficit,
+                max_deficit,
+                sample
+            )
+        }
+    }
 }

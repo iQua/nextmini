@@ -432,6 +432,14 @@ impl FecSender {
 
     fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
         let mut all_complete = true;
+        let quorum_size = shared.active_quorum.active_members().len();
+        let report_count = self.round_reports.len();
+        let peer_reports = self
+            .round_reports
+            .iter()
+            .map(|(peer_id, report)| format!("{peer_id}:{}", summarize_need_report(report)))
+            .collect::<Vec<_>>()
+            .join(" | ");
 
         for status in self.round_reports.values() {
             match status {
@@ -455,15 +463,48 @@ impl FecSender {
             }
         }
 
+        let total_required_extra_symbols = self.total_required_extra_symbols();
+        let total_emitted_extra_symbols = self.total_emitted_extra_symbols();
         if all_complete {
+            info!(
+                session_id = shared.session.session_id,
+                round_id = self.current_round_id,
+                quorum_size,
+                report_count,
+                total_required_extra_symbols,
+                total_emitted_extra_symbols,
+                peer_reports = %peer_reports,
+                "Lossless FEC sender finished report round with all peers complete"
+            );
             self.round_complete = true;
             return;
         }
 
         if self.has_pending_repair_work() {
+            info!(
+                session_id = shared.session.session_id,
+                round_id = self.current_round_id,
+                quorum_size,
+                report_count,
+                total_required_extra_symbols,
+                total_emitted_extra_symbols,
+                peer_reports = %peer_reports,
+                "Lossless FEC sender will continue repair after report round"
+            );
             return;
         }
 
+        info!(
+            session_id = shared.session.session_id,
+            round_id = self.current_round_id,
+            quorum_size,
+            report_count,
+            total_required_extra_symbols,
+            total_emitted_extra_symbols,
+            peer_reports = %peer_reports,
+            next_round_id = self.current_round_id.saturating_add(1),
+            "Lossless FEC sender advanced to the next report round"
+        );
         self.round_reports.clear();
         self.repair_window_symbols = 0;
         shared.clear_quorum_feedback_wait();
@@ -548,7 +589,19 @@ impl super::ModeHooks for FecSender {
             return;
         }
         let had_pending_repair = self.has_pending_repair_work();
+        let report_summary = summarize_need_report(&report);
         self.round_reports.insert(peer_id, report.clone());
+        shared
+            .quorum_liveness
+            .note_feedback_progress(tokio::time::Instant::now());
+        info!(
+            session_id = shared.session.session_id,
+            peer_id,
+            round_id,
+            current_round_id = self.current_round_id,
+            report_summary = %report_summary,
+            "Lossless FEC sender accepted Need from quorum peer"
+        );
         match report {
             NeedReport::Complete => {}
             NeedReport::Fec { blocks } => {
@@ -654,6 +707,45 @@ impl FecSender {
             .div_ceil(quorum_size)
             .max(1);
         self.repair_window_symbols = speculative_window.min(total_required);
+    }
+}
+
+fn summarize_need_report(report: &NeedReport) -> String {
+    match report {
+        NeedReport::Complete => "complete".to_string(),
+        NeedReport::Plain { ranges } => {
+            let sample = ranges
+                .iter()
+                .take(3)
+                .map(|range| format!("{}..{}", range.start_block_id, range.end_block_id))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("plain ranges={} sample=[{}]", ranges.len(), sample)
+        }
+        NeedReport::Fec { blocks } => {
+            let total_deficit: u64 = blocks
+                .iter()
+                .map(|block| u64::from(block.deficit_symbols))
+                .sum();
+            let max_deficit = blocks
+                .iter()
+                .map(|block| block.deficit_symbols)
+                .max()
+                .unwrap_or(0);
+            let sample = blocks
+                .iter()
+                .take(3)
+                .map(|block| format!("{}:+{}", block.block_id, block.deficit_symbols))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "fec blocks={} total_deficit={} max_deficit={} sample=[{}]",
+                blocks.len(),
+                total_deficit,
+                max_deficit,
+                sample
+            )
+        }
     }
 }
 

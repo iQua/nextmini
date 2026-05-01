@@ -68,6 +68,9 @@ impl super::ModeHooks for PlainSender {
             return;
         }
         self.round_reports.insert(peer_id, report);
+        shared
+            .quorum_liveness
+            .note_feedback_progress(tokio::time::Instant::now());
         match self.round_reports.get(&peer_id) {
             Some(NeedReport::Complete) => {}
             Some(NeedReport::Plain { ranges }) => {

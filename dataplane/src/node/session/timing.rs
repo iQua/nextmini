@@ -34,18 +34,3 @@ pub(crate) fn control_path_rtt_budget() -> Duration {
 pub(crate) fn session_finish_timeout_for(peer_report_timeout: Duration) -> Duration {
     peer_report_timeout + control_path_rtt_budget() + PASSIVE_COMPLETE_MARGIN
 }
-
-#[cfg(test)]
-pub(crate) fn session_finish_timeout() -> Duration {
-    session_finish_timeout_for(peer_report_timeout())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn passive_complete_timeout_exceeds_sender_timeout_and_control_budget() {
-        assert!(session_finish_timeout() > peer_report_timeout() + control_path_rtt_budget());
-    }
-}

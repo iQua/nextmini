@@ -10,6 +10,7 @@ mod fec;
 mod plain;
 
 use std::collections::BTreeSet;
+use std::collections::VecDeque;
 use std::ops::Bound::{Excluded, Unbounded};
 
 use tokio::sync::{mpsc, oneshot};
@@ -35,20 +36,24 @@ use self::plain::PlainReceiver;
 #[allow(dead_code)]
 pub async fn run(
     cfg: ReceiverConfig,
-    rx: mpsc::Receiver<InboundFrame>,
+    data_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
 ) {
-    run_with_runtime(cfg, rx, processors, None).await;
+    let (_control_tx, control_rx) = mpsc::channel(1);
+    run_with_runtime(cfg, control_rx, data_rx, processors, None).await;
 }
 
 pub(super) async fn run_with_runtime(
     cfg: ReceiverConfig,
-    mut rx: mpsc::Receiver<InboundFrame>,
+    mut control_rx: mpsc::Receiver<InboundFrame>,
+    mut data_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
     runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
 ) {
     let mut receiver = SessionReceiver::new(cfg, processors);
-    receiver.run(&mut rx, runtime_sender).await;
+    receiver
+        .run(&mut control_rx, &mut data_rx, runtime_sender)
+        .await;
 }
 
 /// Stateful receiver loop shared by plain and FEC transfer modes.
@@ -56,6 +61,7 @@ struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
     lifecycle: ReceiverLifecycle,
+    pending_control_frames: VecDeque<InboundFrame>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -103,13 +109,15 @@ impl SessionReceiver {
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
+            pending_control_frames: VecDeque::new(),
         }
     }
 
     /// Execute the receiver loop until the object is complete.
     async fn run(
         &mut self,
-        rx: &mut mpsc::Receiver<InboundFrame>,
+        control_rx: &mut mpsc::Receiver<InboundFrame>,
+        data_rx: &mut mpsc::Receiver<InboundFrame>,
         runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
     ) {
         info!(
@@ -118,23 +126,7 @@ impl SessionReceiver {
         );
 
         loop {
-            let frame = if self.is_passive_complete() {
-                let passive_timeout = timing::session_finish_timeout_for(
-                    tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
-                );
-                tokio::select! {
-                    maybe_frame = rx.recv() => maybe_frame,
-                    _ = tokio::time::sleep(passive_timeout) => {
-                        self.finish_session("session_finish_timeout");
-                        break;
-                    }
-                }
-            } else {
-                rx.recv().await
-            };
-
-            let Some(frame) = frame else {
-                self.finish_session("receiver_channel_closed");
+            let Some(frame) = self.next_frame(control_rx, data_rx).await else {
                 break;
             };
 
@@ -163,6 +155,81 @@ impl SessionReceiver {
             "Lossless receiver finished"
         );
         self.shared.log_payload_summary(self.lifecycle);
+    }
+
+    async fn next_frame(
+        &mut self,
+        control_rx: &mut mpsc::Receiver<InboundFrame>,
+        data_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> Option<InboundFrame> {
+        if let Some(frame) = self.pending_control_frames.pop_front() {
+            return Some(frame);
+        }
+
+        if let Ok(frame) = control_rx.try_recv() {
+            return Some(self.coalesce_control_frame(frame, control_rx));
+        }
+
+        let maybe_frame = if self.is_passive_complete() {
+            let passive_timeout = timing::session_finish_timeout_for(
+                tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
+            );
+            tokio::select! {
+                biased;
+                maybe_frame = control_rx.recv() => maybe_frame.map(|frame| self.coalesce_control_frame(frame, control_rx)),
+                maybe_frame = data_rx.recv() => maybe_frame,
+                _ = tokio::time::sleep(passive_timeout) => {
+                    self.finish_session("session_finish_timeout");
+                    return None;
+                }
+            }
+        } else {
+            tokio::select! {
+                biased;
+                maybe_frame = control_rx.recv() => maybe_frame.map(|frame| self.coalesce_control_frame(frame, control_rx)),
+                maybe_frame = data_rx.recv() => maybe_frame,
+            }
+        };
+
+        if maybe_frame.is_none() {
+            self.finish_session("receiver_channel_closed");
+        }
+        maybe_frame
+    }
+
+    fn coalesce_control_frame(
+        &mut self,
+        mut frame: InboundFrame,
+        control_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> InboundFrame {
+        let mut newest_round = source_done_round(&frame);
+        while let Ok(next) = control_rx.try_recv() {
+            match (newest_round, source_done_round(&next)) {
+                (Some(current_round), Some(next_round)) => {
+                    if next_round >= current_round {
+                        info!(
+                            session_id = self.shared.session_id,
+                            local_node_id = self.shared.local_node_id,
+                            dropped_round_id = current_round,
+                            kept_round_id = next_round,
+                            "Lossless receiver dropped superseded SourceDone before handling control"
+                        );
+                        frame = next;
+                        newest_round = Some(next_round);
+                    } else {
+                        info!(
+                            session_id = self.shared.session_id,
+                            local_node_id = self.shared.local_node_id,
+                            dropped_round_id = next_round,
+                            kept_round_id = current_round,
+                            "Lossless receiver dropped stale queued SourceDone before handling control"
+                        );
+                    }
+                }
+                _ => self.pending_control_frames.push_back(next),
+            }
+        }
+        frame
     }
 
     fn reported_complete(&self) -> bool {
@@ -231,6 +298,14 @@ impl SessionReceiver {
             | LosslessSessionControl::Need { .. }
             | LosslessSessionControl::TreeBackpressure { .. } => {}
             LosslessSessionControl::SourceDone { round_id } => {
+                info!(
+                    session_id = self.shared.session_id,
+                    local_node_id = self.shared.local_node_id,
+                    round_id,
+                    mode_installed = self.mode.is_some(),
+                    object_complete = self.object_complete(),
+                    "Lossless receiver received SourceDone control frame"
+                );
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
@@ -389,6 +464,14 @@ impl SessionReceiver {
             }
             _ => None,
         }
+    }
+}
+
+fn source_done_round(frame: &InboundFrame) -> Option<u32> {
+    let (_, control) = lossless_session::decode_control(&frame.bytes)?;
+    match control {
+        LosslessSessionControl::SourceDone { round_id } => Some(round_id),
+        _ => None,
     }
 }
 
@@ -571,6 +654,14 @@ impl ReceiverShared {
     }
 
     async fn send_fec_need(&self, round_id: u32, report: &NeedReport) {
+        let report_summary = summarize_need_report(report);
+        info!(
+            session_id = self.session_id,
+            local_node_id = self.local_node_id,
+            round_id,
+            report_summary = %report_summary,
+            "Lossless receiver sent FEC Need"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -624,6 +715,14 @@ impl ReceiverShared {
     }
 
     async fn send_plain_need(&self, round_id: u32, report: &NeedReport) {
+        let report_summary = summarize_need_report(report);
+        info!(
+            session_id = self.session_id,
+            local_node_id = self.local_node_id,
+            round_id,
+            report_summary = %report_summary,
+            "Lossless receiver sent plain Need"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -640,6 +739,45 @@ impl ReceiverShared {
             },
         )
         .await;
+    }
+}
+
+fn summarize_need_report(report: &NeedReport) -> String {
+    match report {
+        NeedReport::Complete => "complete".to_string(),
+        NeedReport::Plain { ranges } => {
+            let sample = ranges
+                .iter()
+                .take(3)
+                .map(|range| format!("{}..{}", range.start_block_id, range.end_block_id))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("plain ranges={} sample=[{}]", ranges.len(), sample)
+        }
+        NeedReport::Fec { blocks } => {
+            let total_deficit: u64 = blocks
+                .iter()
+                .map(|block| u64::from(block.deficit_symbols))
+                .sum();
+            let max_deficit = blocks
+                .iter()
+                .map(|block| block.deficit_symbols)
+                .max()
+                .unwrap_or(0);
+            let sample = blocks
+                .iter()
+                .take(3)
+                .map(|block| format!("{}:+{}", block.block_id, block.deficit_symbols))
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "fec blocks={} total_deficit={} max_deficit={} sample=[{}]",
+                blocks.len(),
+                total_deficit,
+                max_deficit,
+                sample
+            )
+        }
     }
 }
 
@@ -1418,7 +1556,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
-        let (tx, rx) = mpsc::channel(8);
+        let (control_tx, control_rx) = mpsc::channel(8);
+        let (data_tx, data_rx) = mpsc::channel(8);
         let receiver_task = tokio::spawn(run_with_runtime(
             ReceiverConfig {
                 session_id: 11,
@@ -1429,12 +1568,13 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
-            rx,
+            control_rx,
+            data_rx,
             processors.clone(),
             Some(runtime_tx),
         ));
 
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 11,
                 &LosslessSessionControl::Manifest {
@@ -1456,13 +1596,13 @@ mod tests {
             .expect("timed out waiting for Ready")
             .expect("packet capture closed unexpectedly");
 
-        tx.send(InboundFrame {
+        data_tx.send(InboundFrame {
             bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
             peer_id: Some(SOURCE_NODE_ID),
         })
         .await
         .expect("block data should reach receiver");
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 11,
                 &LosslessSessionControl::SourceDone { round_id: 0 },
@@ -1562,7 +1702,8 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(50)).await;
 
         let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
-        let (tx, rx) = mpsc::channel(8);
+        let (control_tx, control_rx) = mpsc::channel(8);
+        let (data_tx, data_rx) = mpsc::channel(8);
         let receiver_task = tokio::spawn(run_with_runtime(
             ReceiverConfig {
                 session_id: 12,
@@ -1573,12 +1714,13 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
             },
-            rx,
+            control_rx,
+            data_rx,
             processors.clone(),
             Some(runtime_tx),
         ));
 
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 12,
                 &LosslessSessionControl::Manifest {
@@ -1600,13 +1742,13 @@ mod tests {
             .expect("timed out waiting for Ready")
             .expect("packet capture closed unexpectedly");
 
-        tx.send(InboundFrame {
+        data_tx.send(InboundFrame {
             bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
             peer_id: Some(SOURCE_NODE_ID),
         })
         .await
         .expect("block data should reach receiver");
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 12,
                 &LosslessSessionControl::SourceDone { round_id: 0 },

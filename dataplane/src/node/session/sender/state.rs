@@ -105,6 +105,13 @@ impl QuorumLiveness {
         self.solicitation_count += 1;
     }
 
+    pub(super) fn note_feedback_progress(&mut self, now: Instant) {
+        if self.started_at.is_none() {
+            return;
+        }
+        self.next_solicitation_at = Some(now + self.solicitation_interval);
+    }
+
     pub(super) fn solicitation_count(&self) -> u32 {
         self.solicitation_count
     }
@@ -157,6 +164,25 @@ mod tests {
         liveness.clear();
         assert!(liveness.started_at().is_none());
         assert!(liveness.next_solicitation_at().is_none());
+        assert_eq!(liveness.solicitation_count(), 0);
+    }
+
+    #[test]
+    fn quorum_liveness_feedback_progress_pushes_back_next_solicitation() {
+        let mut liveness =
+            QuorumLiveness::new(Duration::from_millis(10), Duration::from_millis(30));
+        let now = Instant::now();
+
+        liveness.start(now);
+        let original = liveness.next_solicitation_at().unwrap();
+        let progress_at = now + Duration::from_millis(5);
+        liveness.note_feedback_progress(progress_at);
+
+        assert_eq!(
+            liveness.next_solicitation_at(),
+            Some(progress_at + Duration::from_millis(10))
+        );
+        assert!(liveness.next_solicitation_at().unwrap() > original);
         assert_eq!(liveness.solicitation_count(), 0);
     }
 }

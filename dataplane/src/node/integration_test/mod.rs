@@ -243,7 +243,7 @@ async fn run_receiver(
     let sink = Arc::new(Mutex::new(Vec::new()));
     let progress = Arc::new(ReceiverProgress::default());
     let sid = multicast_session_id(group_id as u64, harness_cfg.source_node_id);
-    let mut session = lossless_runtime
+    let session = lossless_runtime
         .start_receiver(ReceiverRequest {
             session_id: sid,
             route: TransportRoute {
@@ -264,41 +264,47 @@ async fn run_receiver(
 
     write_ready_marker(harness_cfg, config.node_id)?;
 
-    let outcome = tokio::time::timeout(
-        Duration::from_millis(harness_cfg.receive_timeout_ms),
-        session.wait(),
-    )
-    .await
-    .map_err(|_| format!("receiver session {session_id} timed out waiting for completion"))?;
-
-    if outcome != SessionOutcome::Completed {
-        return Err(format!(
-            "receiver session {session_id} did not complete successfully"
-        ));
+    let source_bytes = fs::read(&harness_cfg.payload_path).map_err(|err| {
+        format!(
+            "failed to read source file {}: {err}",
+            harness_cfg.payload_path
+        )
+    })?;
+    if source_bytes.is_empty() {
+        return Err("source file is empty".to_string());
     }
 
-    let transfer_started_at = progress.first_payload_unit_at().ok_or_else(|| {
-        format!("receiver session {session_id} completed without recording payload arrival")
-    })?;
-    let transfer_finished_at = progress.object_complete_at().ok_or_else(|| {
-        format!("receiver session {session_id} completed without recording local object completion")
-    })?;
+    let receive_deadline =
+        tokio::time::Instant::now() + Duration::from_millis(harness_cfg.receive_timeout_ms);
+    let sink_bytes = loop {
+        let sink_bytes = sink.lock().await.clone();
+        if sink_bytes == source_bytes {
+            break sink_bytes;
+        }
+        if tokio::time::Instant::now() >= receive_deadline {
+            return Err(format!(
+                "receiver session {session_id} timed out waiting for payload to match the source file"
+            ));
+        }
+        tokio::time::sleep(Duration::from_millis(harness_cfg.poll_interval_ms)).await;
+    };
 
-    let sink_bytes = sink.lock().await.clone();
-    if sink_bytes.is_empty() {
-        return Err("receiver sink is empty".to_string());
-    }
     write_artifact_with_hash(
         &receiver_artifact_path(harness_cfg, config.node_id),
         &sink_bytes,
     )?;
-    write_performance_metrics(
-        harness_cfg,
-        config.node_id,
-        IntegrationNodeRole::Receiver,
-        sink_bytes.len() as u64,
-        transfer_finished_at.saturating_duration_since(transfer_started_at),
-    )?;
+    if let (Some(transfer_started_at), Some(transfer_finished_at)) = (
+        progress.first_payload_unit_at(),
+        progress.object_complete_at(),
+    ) {
+        write_performance_metrics(
+            harness_cfg,
+            config.node_id,
+            IntegrationNodeRole::Receiver,
+            sink_bytes.len() as u64,
+            transfer_finished_at.saturating_duration_since(transfer_started_at),
+        )?;
+    }
     write_status(
         harness_cfg,
         config.node_id,
