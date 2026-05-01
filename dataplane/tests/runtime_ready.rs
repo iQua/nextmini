@@ -57,7 +57,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
         "sender should stay completely quiet while topology is not ready"
     );
 
-    runtime.set_topology_ready(true);
+    runtime.set_topology_ready(true).await;
 
     let manifest_packet = common::recv_packet(&mut capture.packet_rx).await;
     let manifest_payload = manifest_packet
@@ -71,7 +71,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
     runtime.deliver(
         session_id,
         common::ready_frame(session_id, RECEIVER_NODE_ID),
-    );
+    ).await;
 
     let mut saw_block_data = false;
     let mut saw_source_done = false;
@@ -94,7 +94,7 @@ async fn sender_waits_for_topology_ready_before_starting_handshake() {
     runtime.deliver(
         session_id,
         common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
-    );
+    ).await;
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
             .await
@@ -120,7 +120,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
     runtime_cfg.ready_grace_ms = 120;
     let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
-    runtime.set_topology_ready(true);
+    runtime.set_topology_ready(true).await;
 
     let session_id = 0xA11C_E302;
     let mut session = runtime
@@ -181,7 +181,7 @@ async fn sender_opens_data_gate_after_ready_grace_without_ready() {
     runtime.deliver(
         session_id,
         common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
-    );
+    ).await;
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
             .await
@@ -274,24 +274,24 @@ async fn completed_receiver_replays_complete_on_late_eot() {
     runtime.deliver(
         session_id,
         common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
-    );
+    ).await;
     assert_ready(&mut capture).await;
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_plain_complete(&mut capture).await;
     assert_eq!(session.wait().await, SessionOutcome::Completed);
 
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_plain_complete(&mut capture).await;
 }
 
@@ -327,17 +327,17 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
     runtime.deliver(
         session_id,
         common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
-    );
+    ).await;
     assert_ready(&mut capture).await;
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_plain_complete_round(&mut capture, 0).await;
 
     assert!(
@@ -350,7 +350,7 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
-    );
+    ).await;
     assert_plain_complete_round(&mut capture, 1).await;
 
     assert_eq!(
@@ -363,13 +363,13 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
-    );
+    ).await;
     assert_plain_complete_round(&mut capture, 1).await;
 
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -380,7 +380,7 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 2),
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -420,24 +420,24 @@ async fn completed_receiver_does_not_replay_complete_on_late_duplicate_block_dat
     runtime.deliver(
         session_id,
         common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
-    );
+    ).await;
     assert_ready(&mut capture).await;
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_plain_complete(&mut capture).await;
     assert_eq!(session.wait().await, SessionOutcome::Completed);
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -477,29 +477,29 @@ async fn passive_complete_receiver_ignores_duplicate_payload_after_later_round_b
     runtime.deliver(
         session_id,
         common::manifest_frame(session_id, SOURCE_NODE_ID, 16, 16, 1),
-    );
+    ).await;
     assert_ready(&mut capture).await;
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_plain_complete_round(&mut capture, 0).await;
 
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 1),
-    );
+    ).await;
     assert_plain_complete_round(&mut capture, 1).await;
 
     runtime.deliver(
         session_id,
         common::block_data_frame(session_id, SOURCE_NODE_ID, 0, b"abcdefghijklmnop"),
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -532,7 +532,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     runtime_cfg.ready_grace_ms = 300;
     let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
-    runtime.set_topology_ready(true);
+    runtime.set_topology_ready(true).await;
 
     let session_id = 0xA11C_E306;
     let mut session = runtime
@@ -561,11 +561,11 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     runtime.deliver(
         session_id,
         common::ready_frame(session_id, RECEIVER_NODE_ID),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::ready_frame(session_id, RECEIVER_B_NODE_ID),
-    );
+    ).await;
 
     let mut saw_first_round_blocks = 0;
     let mut saw_first_round_source_done = false;
@@ -588,7 +588,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     runtime.deliver(
         session_id,
         common::plain_status_frame(session_id, RECEIVER_NODE_ID, 0, NeedReport::Complete),
-    );
+    ).await;
     runtime.deliver(
         session_id,
         common::plain_status_frame(
@@ -602,7 +602,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
                 }],
             },
         ),
-    );
+    ).await;
 
     let mut saw_retransmit_block = false;
     let mut saw_second_source_done = false;
@@ -637,7 +637,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     runtime.deliver(
         session_id,
         common::plain_status_frame(session_id, RECEIVER_NODE_ID, 1, NeedReport::Complete),
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(100), session.wait())
             .await
@@ -648,7 +648,7 @@ async fn sender_converges_across_plain_multireceiver_retransmit_round() {
     runtime.deliver(
         session_id,
         common::plain_status_frame(session_id, RECEIVER_B_NODE_ID, 1, NeedReport::Complete),
-    );
+    ).await;
     assert_eq!(
         timeout(Duration::from_secs(5), session.wait())
             .await

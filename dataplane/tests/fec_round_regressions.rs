@@ -250,7 +250,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             ),
             peer_id: Some(SOURCE_NODE_ID),
         },
-    );
+    ).await;
     assert!(matches!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Ready
@@ -269,12 +269,12 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
             },
-        );
+        ).await;
     }
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Need {
@@ -295,7 +295,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]),
             peer_id: Some(SOURCE_NODE_ID),
         },
-    );
+    ).await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -306,7 +306,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     runtime.deliver(
         session_id,
         common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    );
+    ).await;
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Need {
