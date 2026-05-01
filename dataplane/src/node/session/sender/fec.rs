@@ -42,6 +42,9 @@ pub(super) struct FecSender {
     repair_window_symbols: u32,
     protocol_error: bool,
     paused_tree_peers: BTreeMap<u16, BTreeSet<usize>>,
+    queued_symbols: u64,
+    wouldblock_symbols: u64,
+    closed_symbols: u64,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -96,6 +99,9 @@ impl FecSender {
             repair_window_symbols: 0,
             protocol_error: false,
             paused_tree_peers: BTreeMap::new(),
+            queued_symbols: 0,
+            wouldblock_symbols: 0,
+            closed_symbols: 0,
         })
     }
 
@@ -113,6 +119,7 @@ impl FecSender {
         while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
             if self.protocol_error {
+                self.log_submit_summary(shared, SessionOutcome::Aborted);
                 return SessionOutcome::Aborted;
             }
 
@@ -122,6 +129,7 @@ impl FecSender {
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
+                    self.log_submit_summary(shared, SessionOutcome::Aborted);
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -132,6 +140,7 @@ impl FecSender {
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
+                    self.log_submit_summary(shared, SessionOutcome::Aborted);
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -144,6 +153,7 @@ impl FecSender {
                     continue;
                 }
                 if !shared.wait_for_signal(ctrl_rx, self).await {
+                    self.log_submit_summary(shared, SessionOutcome::Aborted);
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -173,11 +183,13 @@ impl FecSender {
             {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
+                    self.log_submit_summary(shared, SessionOutcome::Aborted);
                     return SessionOutcome::Aborted;
                 }
             }
         }
 
+        self.log_submit_summary(shared, SessionOutcome::Completed);
         SessionOutcome::Completed
     }
 
@@ -306,11 +318,35 @@ impl FecSender {
             );
             match submission.outcome {
                 SendOutcome::Queued => {
+                    self.queued_symbols = self.queued_symbols.saturating_add(1);
+                    if self.queued_symbols == 1 {
+                        info!(
+                            session_id = shared.session.session_id,
+                            tree_id,
+                            block_id,
+                            symbol_id,
+                            "Lossless sender queued first FEC payload symbol"
+                        );
+                    }
                     self.next_tree_rr = (idx + 1) % tree_count;
                     return true;
                 }
-                SendOutcome::WouldBlock => {}
+                SendOutcome::WouldBlock => {
+                    self.wouldblock_symbols = self.wouldblock_symbols.saturating_add(1);
+                    if self.wouldblock_symbols == 1 || self.wouldblock_symbols % 1024 == 0 {
+                        info!(
+                            session_id = shared.session.session_id,
+                            tree_id,
+                            block_id,
+                            symbol_id,
+                            queued_symbols = self.queued_symbols,
+                            wouldblock_symbols = self.wouldblock_symbols,
+                            "Lossless sender observed FEC ingress WouldBlock"
+                        );
+                    }
+                }
                 SendOutcome::Closed => {
+                    self.closed_symbols = self.closed_symbols.saturating_add(1);
                     warn!(
                         session_id = shared.session.session_id,
                         tree_id,
@@ -321,6 +357,20 @@ impl FecSender {
         }
 
         false
+    }
+
+    fn log_submit_summary(&self, shared: &super::SenderShared, outcome: SessionOutcome) {
+        info!(
+            session_id = shared.session.session_id,
+            complete = outcome == SessionOutcome::Completed,
+            queued_symbols = self.queued_symbols,
+            wouldblock_symbols = self.wouldblock_symbols,
+            closed_symbols = self.closed_symbols,
+            paused_trees = self.paused_tree_peers.len(),
+            current_round_id = self.current_round_id,
+            round_complete = self.round_complete,
+            "Lossless sender FEC submit summary"
+        );
     }
 
     fn tree_is_paused(&self, tree_id: u16) -> bool {

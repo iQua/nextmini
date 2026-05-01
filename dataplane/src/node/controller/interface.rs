@@ -9,7 +9,7 @@ use tokio::net::TcpStream;
 #[cfg(feature = "python-extension")]
 use tokio::sync::Mutex;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, interval, timeout};
+use tokio::time::{Duration, Instant, interval, timeout};
 use tokio_tungstenite::{
     MaybeTlsStream, WebSocketStream, connect_async, tungstenite::protocol::Message,
 };
@@ -35,6 +35,8 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::python::interface::{PythonEvent, PythonInterfaceHandle};
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::session::api::LosslessRuntimeHandle;
+
+const LOSSLESS_GROUP_ROUTE_QUIET_PERIOD: Duration = Duration::from_millis(500);
 
 #[derive(Clone)]
 pub struct ControllerInterfaceHandle {
@@ -122,6 +124,8 @@ impl ControllerInterfaceHandle {
             lossless_runtime.clone(),
         );
 
+        let (local_event_sender, local_event_receiver) = mpsc::unbounded_channel();
+
         let mut controller_receiver = ControllerToDataplaneReceiver {
             controller: controller_interface.clone(),
             config: config.clone(),
@@ -136,6 +140,7 @@ impl ControllerInterfaceHandle {
             group_ip_by_id: HashMap::new(),
             lossless_unicast,
             topology_ready: false,
+            lossless_topology_ready: false,
             pending_tcp_flows: Vec::new(),
             pending_lossless_flows: Vec::new(),
             expected_neighbor_count: 0,
@@ -144,7 +149,12 @@ impl ControllerInterfaceHandle {
             connected_scopes: HashSet::new(),
             routes_installed: false,
             group_directory_installed: false,
+            installed_group_route_ids: HashSet::new(),
             local_topology_ready_sent: false,
+            local_event_sender,
+            local_event_receiver,
+            last_group_route_update_at: None,
+            latest_group_route_nonce: 0,
         };
 
         tokio::spawn(async move {
@@ -308,6 +318,7 @@ pub struct ControllerToDataplaneReceiver {
     lossless_runtime: LosslessRuntimeHandle,
     lossless_unicast: LosslessUnicastFlowManager,
     topology_ready: bool,
+    lossless_topology_ready: bool,
     pending_tcp_flows: Vec<Flow>,
     pending_lossless_flows: Vec<Flow>,
     expected_neighbor_count: usize,
@@ -316,36 +327,69 @@ pub struct ControllerToDataplaneReceiver {
     connected_scopes: HashSet<(usize, TransportScope)>,
     routes_installed: bool,
     group_directory_installed: bool,
+    installed_group_route_ids: HashSet<GroupId>,
     local_topology_ready_sent: bool,
+    local_event_sender: mpsc::UnboundedSender<ControllerLocalEvent>,
+    local_event_receiver: mpsc::UnboundedReceiver<ControllerLocalEvent>,
+    last_group_route_update_at: Option<Instant>,
+    latest_group_route_nonce: u64,
+}
+
+enum ControllerLocalEvent {
+    AttemptActivateLossless { nonce: u64 },
 }
 
 impl ControllerToDataplaneReceiver {
     pub async fn run(&mut self) {
         loop {
-            let msg = match self.receiver_stream.next().await.unwrap() {
-                Ok(msg) => msg,
-                Err(e) => {
-                    error!("Disconnected from the controller. Restarting the node...");
-                    error!("{:?}", e);
+            tokio::select! {
+                maybe_msg = self.receiver_stream.next() => {
+                    let msg = match maybe_msg.unwrap() {
+                        Ok(msg) => msg,
+                        Err(e) => {
+                            error!("Disconnected from the controller. Restarting the node...");
+                            error!("{:?}", e);
+                            break;
+                        }
+                    };
 
-                    break;
+                    match msg {
+                        Message::Binary(data) => {
+                            let ctrl_msg: ControllerToDataplane =
+                                rmp_serde::from_slice(&data).expect("Failed to parse control message");
+                            let msg_kind = controller_msg_name(&ctrl_msg);
+                            info!(
+                                node_id = self.config.node_id,
+                                msg_kind,
+                                "Controller receiver handling control message"
+                            );
+                            self.process_control_msg(ctrl_msg).await;
+                            info!(
+                                node_id = self.config.node_id,
+                                msg_kind,
+                                "Controller receiver finished control message"
+                            );
+                        }
+                        Message::Pong(_) => {
+                            continue;
+                        }
+                        _ => {
+                            error!("Received a message that is not a binary or a ping message.");
+                        }
+                    };
                 }
-            };
-
-            match msg {
-                Message::Binary(data) => {
-                    let ctrl_msg: ControllerToDataplane =
-                        rmp_serde::from_slice(&data).expect("Failed to parse control message");
-                    self.process_control_msg(ctrl_msg).await;
+                Some(event) = self.local_event_receiver.recv() => {
+                    info!(
+                        node_id = self.config.node_id,
+                        "Controller receiver handling deferred local event"
+                    );
+                    self.handle_local_event(event).await;
+                    info!(
+                        node_id = self.config.node_id,
+                        "Controller receiver finished deferred local event"
+                    );
                 }
-                Message::Pong(_) => {
-                    // received a ping message to keep the connection alive. Do nothing.
-                    continue;
-                }
-                _ => {
-                    error!("Received a message that is not a binary or a ping message.");
-                }
-            };
+            }
         }
     }
 
@@ -439,7 +483,7 @@ impl ControllerToDataplaneReceiver {
                 }
 
                 if !lossless_flows.is_empty() {
-                    if self.topology_ready {
+                    if self.lossless_topology_ready {
                         info!(
                             "Adding {} lossless unicast flows to node {}.",
                             lossless_flows.len(),
@@ -464,7 +508,13 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.topology_ready = true;
-                self.lossless_runtime.set_topology_ready(true).await;
+                info!(
+                    node_id = self.config.node_id,
+                    group_directory_installed = self.group_directory_installed,
+                    installed_group_routes = self.installed_group_route_ids.len(),
+                    expected_group_routes = self.group_ip_by_id.len(),
+                    "Controller topology-ready arrived; evaluating lossless topology gate"
+                );
 
                 // Emit Python event so Python code can wait for topology ready
                 #[cfg(feature = "python-extension")]
@@ -472,7 +522,8 @@ impl ControllerToDataplaneReceiver {
                     py_if.publish_event(PythonEvent::TopologyReady).await;
                 }
 
-                self.flush_pending_flows();
+                self.flush_pending_tcp_flows();
+                self.maybe_activate_lossless_topology().await;
             }
 
             ControllerToDataplane::GroupCreated {
@@ -505,6 +556,7 @@ impl ControllerToDataplaneReceiver {
                 );
                 self.processors.update_group_directory(groups.clone()).await;
                 self.group_ip_by_id.clear();
+                self.installed_group_route_ids.clear();
                 for entry in &groups {
                     self.group_ip_by_id.insert(entry.group_id, entry.group_ip);
                 }
@@ -517,6 +569,7 @@ impl ControllerToDataplaneReceiver {
                 }
 
                 self.group_directory_installed = true;
+                self.maybe_activate_lossless_topology().await;
                 self.maybe_send_local_topology_ready().await;
             }
 
@@ -536,11 +589,68 @@ impl ControllerToDataplaneReceiver {
                 #[cfg(feature = "python-extension")]
                 let cloned_routes = routes.clone();
 
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    route_count = routes.len(),
+                    "Preparing scoped transports before multicast route install"
+                );
                 self.ensure_tree_scope_connections(&routes).await;
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Finished preparing scoped transports before multicast route install"
+                );
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Waiting for processor workers to sync before multicast route update"
+                );
+                self.processors.sync_workers().await;
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Processor workers synced before multicast route update"
+                );
 
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Broadcasting multicast route update to processor workers"
+                );
                 self.processors
                     .update_group_routes(group_id, src_node_id, routes)
                     .await;
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Broadcasted multicast route update to processor workers"
+                );
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Waiting for processor workers to sync after multicast route update"
+                );
+                self.processors.sync_workers().await;
+                info!(
+                    node_id = self.config.node_id,
+                    group_id,
+                    src_node_id,
+                    "Processor workers synced after multicast route update"
+                );
+                self.installed_group_route_ids.insert(group_id);
+                self.last_group_route_update_at = Some(Instant::now());
+                self.latest_group_route_nonce += 1;
+                self.schedule_lossless_activation_attempt(self.latest_group_route_nonce);
+                self.maybe_activate_lossless_topology().await;
+                self.maybe_send_local_topology_ready().await;
 
                 #[cfg(feature = "python-extension")]
                 if let Some(py_if) = self.python_handle().await {
@@ -574,6 +684,69 @@ impl ControllerToDataplaneReceiver {
 
             _ => error!("Received a message with an unknown type from the controller."),
         }
+    }
+
+    async fn handle_local_event(&mut self, event: ControllerLocalEvent) {
+        match event {
+            ControllerLocalEvent::AttemptActivateLossless { nonce } => {
+                info!(
+                    node_id = self.config.node_id,
+                    nonce,
+                    latest_group_route_nonce = self.latest_group_route_nonce,
+                    "Received deferred lossless topology activation event"
+                );
+                if nonce == self.latest_group_route_nonce {
+                    info!(
+                        node_id = self.config.node_id,
+                        nonce,
+                        "Re-checking lossless topology activation after route quiet period"
+                    );
+                    self.maybe_activate_lossless_topology().await;
+                } else {
+                    info!(
+                        node_id = self.config.node_id,
+                        nonce,
+                        latest_group_route_nonce = self.latest_group_route_nonce,
+                        "Ignoring stale deferred lossless topology activation event"
+                    );
+                }
+            }
+        }
+    }
+
+    fn schedule_lossless_activation_attempt(&self, nonce: u64) {
+        info!(
+            node_id = self.config.node_id,
+            nonce,
+            quiet_period_ms = LOSSLESS_GROUP_ROUTE_QUIET_PERIOD.as_millis(),
+            "Scheduling deferred lossless topology activation check"
+        );
+        let sender = self.local_event_sender.clone();
+        let node_id = self.config.node_id;
+        tokio::spawn(async move {
+            tokio::time::sleep(LOSSLESS_GROUP_ROUTE_QUIET_PERIOD).await;
+            info!(
+                node_id,
+                nonce,
+                "Deferred lossless topology activation timer fired"
+            );
+            if sender
+                .send(ControllerLocalEvent::AttemptActivateLossless { nonce })
+                .is_err()
+            {
+                warn!(
+                    node_id,
+                    nonce,
+                    "Failed to enqueue deferred lossless topology activation event"
+                );
+            } else {
+                info!(
+                    node_id,
+                    nonce,
+                    "Enqueued deferred lossless topology activation event"
+                );
+            }
+        });
     }
 
     async fn record_neighbor_connected(&mut self, remote_node_id: usize) {
@@ -723,7 +896,7 @@ impl ControllerToDataplaneReceiver {
         self.user_space_client.add_flows(flows);
     }
 
-    fn flush_pending_flows(&mut self) {
+    fn flush_pending_tcp_flows(&mut self) {
         if !self.pending_tcp_flows.is_empty() {
             let pending = std::mem::take(&mut self.pending_tcp_flows);
 
@@ -735,12 +908,14 @@ impl ControllerToDataplaneReceiver {
 
             self.start_tcp_flows(pending);
         }
+    }
 
+    fn flush_pending_lossless_flows(&mut self) {
         if !self.pending_lossless_flows.is_empty() {
             let pending = std::mem::take(&mut self.pending_lossless_flows);
 
             info!(
-                "Topology ready on node {}; starting {} deferred lossless unicast flows.",
+                "Lossless topology ready on node {}; starting {} deferred lossless unicast flows.",
                 self.config.node_id,
                 pending.len()
             );
@@ -749,9 +924,99 @@ impl ControllerToDataplaneReceiver {
         }
     }
 
+    async fn maybe_activate_lossless_topology(&mut self) {
+        let elapsed_since_last_route_ms = self
+            .last_group_route_update_at
+            .map(|instant| instant.elapsed().as_millis() as u64);
+        info!(
+            node_id = self.config.node_id,
+            controller_topology_ready = self.topology_ready,
+            lossless_topology_ready = self.lossless_topology_ready,
+            group_directory_installed = self.group_directory_installed,
+            installed_group_routes = self.installed_group_route_ids.len(),
+            expected_group_routes = self.group_ip_by_id.len(),
+            last_group_route_elapsed_ms = elapsed_since_last_route_ms,
+            "Evaluating lossless topology activation gate"
+        );
+
+        if self.lossless_topology_ready {
+            return;
+        }
+
+        if !self.topology_ready {
+            info!(
+                node_id = self.config.node_id,
+                "Lossless topology activation is waiting for controller topology-ready"
+            );
+            return;
+        }
+
+        if let Some(last_update_at) = self.last_group_route_update_at
+            && last_update_at.elapsed() < LOSSLESS_GROUP_ROUTE_QUIET_PERIOD
+        {
+            info!(
+                node_id = self.config.node_id,
+                remaining_quiet_ms = (LOSSLESS_GROUP_ROUTE_QUIET_PERIOD
+                    .saturating_sub(last_update_at.elapsed()))
+                .as_millis(),
+                "Lossless topology activation is waiting for group-route quiet period"
+            );
+            return;
+        }
+
+        if !self.group_directory_installed || self.group_ip_by_id.is_empty() {
+            info!(
+                node_id = self.config.node_id,
+                group_directory_installed = self.group_directory_installed,
+                group_count = self.group_ip_by_id.len(),
+                "Lossless topology activation is waiting for multicast group directory"
+            );
+            return;
+        }
+
+        if self.installed_group_route_ids.len() < self.group_ip_by_id.len() {
+            info!(
+                node_id = self.config.node_id,
+                installed_group_routes = self.installed_group_route_ids.len(),
+                expected_group_routes = self.group_ip_by_id.len(),
+                "Lossless topology activation is waiting for all multicast group routes"
+            );
+            return;
+        }
+
+        self.lossless_topology_ready = true;
+        info!(
+            "Lossless topology ready on node {}; enabling runtime and flows.",
+            self.config.node_id
+        );
+        info!(
+            node_id = self.config.node_id,
+            pending_lossless_flows = self.pending_lossless_flows.len(),
+            "Publishing topology-ready to lossless runtime"
+        );
+        self.lossless_runtime.set_topology_ready(true).await;
+        self.flush_pending_lossless_flows();
+    }
+
     #[cfg(feature = "python-extension")]
     async fn python_handle(&self) -> Option<PythonInterfaceHandle> {
         self.python_interface.lock().await.clone()
+    }
+}
+
+fn controller_msg_name(msg: &ControllerToDataplane) -> &'static str {
+    match msg {
+        ControllerToDataplane::StartUp { .. } => "StartUp",
+        ControllerToDataplane::AddNode { .. } => "AddNode",
+        ControllerToDataplane::AddNodeAddress { .. } => "AddNodeAddress",
+        ControllerToDataplane::SetLinkRate { .. } => "SetLinkRate",
+        ControllerToDataplane::InstallRoutes { .. } => "InstallRoutes",
+        ControllerToDataplane::AddFlows { .. } => "AddFlows",
+        ControllerToDataplane::TopologyReady => "TopologyReady",
+        ControllerToDataplane::GroupCreated { .. } => "GroupCreated",
+        ControllerToDataplane::InstallGroupDirectory { .. } => "InstallGroupDirectory",
+        ControllerToDataplane::InstallGroupRoutes { .. } => "InstallGroupRoutes",
+        ControllerToDataplane::ProbeLink { .. } => "ProbeLink",
     }
 }
 

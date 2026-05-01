@@ -250,14 +250,14 @@ impl SenderShared {
             return;
         }
 
-        debug!(
+        info!(
             session_id = self.session.session_id,
             "Lossless sender waiting for topology readiness"
         );
 
         while rx.changed().await.is_ok() {
             if *rx.borrow() {
-                debug!(
+                info!(
                     session_id = self.session.session_id,
                     "Lossless sender observed topology readiness"
                 );
@@ -481,6 +481,13 @@ impl SenderShared {
                     return;
                 }
                 self.active_quorum.record_ready(peer_id);
+                info!(
+                    session_id = self.session.session_id,
+                    peer_id,
+                    active_ready = self.active_quorum.active_members().len(),
+                    configured_receivers = self.active_quorum.configured_len(),
+                    "Lossless sender accepted Ready from receiver"
+                );
             }
             LosslessSessionControl::Need { round_id, report } => {
                 let Some(peer_id) = frame.peer_id else {
@@ -530,6 +537,13 @@ impl SenderShared {
 
     /// Send the negotiated manifest to every receiver.
     async fn send_manifest(&mut self) {
+        info!(
+            session_id = self.session.session_id,
+            total_bytes = self.manifest.total_bytes,
+            total_blocks = self.manifest.total_blocks,
+            fec = self.manifest.mode.is_fec(),
+            "Lossless sender emitted manifest"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {

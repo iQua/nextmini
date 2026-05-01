@@ -70,6 +70,7 @@ impl FecReceiver {
         if state.symbols.contains_key(&symbol.symbol_id) {
             return;
         }
+        shared.observe_payload_frame("fec", symbol.block_id, payload.len());
         shared.mark_first_payload_unit();
         state.symbols.insert(symbol.symbol_id, payload.to_vec());
 

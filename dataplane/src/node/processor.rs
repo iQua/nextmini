@@ -3,6 +3,7 @@
 /// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
 /// processing and routing of network packets.
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use ahash::AHashMap;
 use jumphash::JumpHasher;
@@ -10,7 +11,9 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tracing::{error, warn};
+use tokio::sync::Notify;
+use tokio::time::{Duration, timeout};
+use tracing::{error, info, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
@@ -37,6 +40,36 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 // Keep tree-aware ingress hashing deterministic and aligned with FlowIdExt::hash.
 const FLOW_TREE_HASH_KEY_0: u64 = 0x1234567890ABCDEF;
 const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
+const PROCESSOR_CONTROL_BROADCAST_CAPACITY: usize = 1024;
+
+#[derive(Debug)]
+struct SyncTracker {
+    current_nonce: AtomicU64,
+    ack_count: AtomicUsize,
+    notify: Notify,
+}
+
+impl SyncTracker {
+    fn new() -> Self {
+        Self {
+            current_nonce: AtomicU64::new(0),
+            ack_count: AtomicUsize::new(0),
+            notify: Notify::new(),
+        }
+    }
+
+    fn begin(&self, nonce: u64) {
+        self.ack_count.store(0, Ordering::Release);
+        self.current_nonce.store(nonce, Ordering::Release);
+    }
+
+    fn note_ack(&self, nonce: u64) {
+        if self.current_nonce.load(Ordering::Acquire) == nonce {
+            self.ack_count.fetch_add(1, Ordering::AcqRel);
+            self.notify.notify_waiters();
+        }
+    }
+}
 
 // Message types for the processor actor.
 pub enum ProcessorPacket {
@@ -97,6 +130,7 @@ pub enum ProcessorMessage {
     #[cfg(feature = "python-extension")]
     ConnectPythonInterface(PythonInterfaceHandle),
     ConnectLosslessHandle(LosslessRuntimeHandle),
+    Sync(u64),
 }
 
 #[derive(Clone, Debug)]
@@ -273,6 +307,13 @@ impl ProcessorHandle {
         }
     }
 
+    pub async fn sync_workers(&self) {
+        match self {
+            ProcessorHandle::Sequential(handle) => handle.sync_workers().await,
+            ProcessorHandle::Concurrent(handle) => handle.sync_workers().await,
+        }
+    }
+
     pub fn limit_rate(&self, node_id: NodeId, spec: TokenBucketSpec) {
         if let Err(e) = self
             .broadcast_sender()
@@ -439,12 +480,27 @@ pub struct SequentialProcHandle {
     packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
     connector_message_sender: mpsc::Sender<ConnectorMessage>,
+    sync_tracker: Arc<SyncTracker>,
+    next_sync_nonce: Arc<AtomicU64>,
 }
 
 impl SequentialProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (broadcast_sender, _) = broadcast::channel(
+            config
+                .channel_capacity
+                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
+        );
         let mut packet_senders = Vec::with_capacity(config.num_packet_processors);
+        let (sync_ack_sender, mut sync_ack_receiver) = mpsc::unbounded_channel();
+        let sync_tracker = Arc::new(SyncTracker::new());
+        let next_sync_nonce = Arc::new(AtomicU64::new(1));
+        let sync_tracker_task = sync_tracker.clone();
+        tokio::spawn(async move {
+            while let Some(nonce) = sync_ack_receiver.recv().await {
+                sync_tracker_task.note_ack(nonce);
+            }
+        });
 
         for _ in 0..config.num_packet_processors {
             // creates an mpsc channel for each processor
@@ -454,6 +510,7 @@ impl SequentialProcHandle {
             let mut proc = Processor::new(
                 PacketReceiver::Sequential(packet_receiver),
                 broadcast_sender.subscribe(),
+                sync_ack_sender.clone(),
                 config.clone(),
             );
 
@@ -488,7 +545,40 @@ impl SequentialProcHandle {
             packet_senders,
             connector_packet_sender,
             connector_message_sender,
+            sync_tracker,
+            next_sync_nonce,
         }
+    }
+
+    async fn sync_workers(&self) {
+        let worker_count = self.packet_senders.len();
+        if worker_count == 0 {
+            return;
+        }
+
+        let nonce = self.next_sync_nonce.fetch_add(1, Ordering::Relaxed);
+        info!(nonce, worker_count, "Starting sequential processor worker sync");
+        self.sync_tracker.begin(nonce);
+        if let Err(e) = self.broadcast_sender.send(ProcessorMessage::Sync(nonce)) {
+            error!("Error sending the Sync message to the processors: {}", e);
+            return;
+        }
+
+        while self.sync_tracker.ack_count.load(Ordering::Acquire) < worker_count {
+            let notified = self.sync_tracker.notify.notified();
+            if self.sync_tracker.ack_count.load(Ordering::Acquire) >= worker_count {
+                break;
+            }
+            if timeout(Duration::from_millis(200), notified).await.is_err() {
+                warn!(
+                    nonce,
+                    ack_count = self.sync_tracker.ack_count.load(Ordering::Acquire),
+                    worker_count,
+                    "Still waiting for sequential processor worker sync acknowledgements"
+                );
+            }
+        }
+        info!(nonce, worker_count, "Finished sequential processor worker sync");
     }
 
     pub async fn process_packet(&self, packet: Packet) {
@@ -660,17 +750,35 @@ pub struct ConcurrentProcHandle {
     packet_sender: flume::Sender<ProcessorPacket>,
     connector_packet_sender: mpsc::Sender<ProcessorPacket>,
     connector_message_sender: mpsc::Sender<ConnectorMessage>,
+    worker_count: usize,
+    sync_tracker: Arc<SyncTracker>,
+    next_sync_nonce: Arc<AtomicU64>,
 }
 
 impl ConcurrentProcHandle {
     pub fn new(config: LocalConfig) -> Self {
-        let (broadcast_sender, _) = broadcast::channel(config.channel_capacity);
+        let (broadcast_sender, _) = broadcast::channel(
+            config
+                .channel_capacity
+                .max(PROCESSOR_CONTROL_BROADCAST_CAPACITY),
+        );
+        let worker_count = config.num_packet_processors;
         let (packet_sender, packet_receiver) = flume::bounded(config.channel_capacity);
+        let (sync_ack_sender, mut sync_ack_receiver) = mpsc::unbounded_channel();
+        let sync_tracker = Arc::new(SyncTracker::new());
+        let next_sync_nonce = Arc::new(AtomicU64::new(1));
+        let sync_tracker_task = sync_tracker.clone();
+        tokio::spawn(async move {
+            while let Some(nonce) = sync_ack_receiver.recv().await {
+                sync_tracker_task.note_ack(nonce);
+            }
+        });
 
         for _ in 0..config.num_packet_processors {
             let mut proc = Processor::new(
                 PacketReceiver::Concurrent(packet_receiver.clone()),
                 broadcast_sender.subscribe(),
+                sync_ack_sender.clone(),
                 config.clone(),
             );
 
@@ -701,7 +809,40 @@ impl ConcurrentProcHandle {
             packet_sender,
             connector_packet_sender,
             connector_message_sender,
+            worker_count,
+            sync_tracker,
+            next_sync_nonce,
         }
+    }
+
+    async fn sync_workers(&self) {
+        if self.worker_count == 0 {
+            return;
+        }
+
+        let nonce = self.next_sync_nonce.fetch_add(1, Ordering::Relaxed);
+        info!(nonce, worker_count = self.worker_count, "Starting concurrent processor worker sync");
+        self.sync_tracker.begin(nonce);
+        if let Err(e) = self.broadcast_sender.send(ProcessorMessage::Sync(nonce)) {
+            error!("Error sending the Sync message to the processors: {}", e);
+            return;
+        }
+
+        while self.sync_tracker.ack_count.load(Ordering::Acquire) < self.worker_count {
+            let notified = self.sync_tracker.notify.notified();
+            if self.sync_tracker.ack_count.load(Ordering::Acquire) >= self.worker_count {
+                break;
+            }
+            if timeout(Duration::from_millis(200), notified).await.is_err() {
+                warn!(
+                    nonce,
+                    ack_count = self.sync_tracker.ack_count.load(Ordering::Acquire),
+                    worker_count = self.worker_count,
+                    "Still waiting for concurrent processor worker sync acknowledgements"
+                );
+            }
+        }
+        info!(nonce, worker_count = self.worker_count, "Finished concurrent processor worker sync");
     }
 
     pub async fn process_packet(&self, packet: Packet) {
@@ -918,12 +1059,14 @@ struct Processor {
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
     lossless_handle: Option<LosslessRuntimeHandle>,
+    sync_ack_sender: mpsc::UnboundedSender<u64>,
 }
 
 impl Processor {
     pub fn new(
         packet_receiver: PacketReceiver,
         broadcast_receiver: broadcast::Receiver<ProcessorMessage>,
+        sync_ack_sender: mpsc::UnboundedSender<u64>,
         config: LocalConfig,
     ) -> Self {
         Self {
@@ -939,6 +1082,7 @@ impl Processor {
             #[cfg(feature = "python-extension")]
             python_interface: None,
             lossless_handle: None,
+            sync_ack_sender,
         }
     }
 
@@ -954,8 +1098,14 @@ impl Processor {
                         self.handle_packet_message(msg).await;
                     }
                 }
-                Ok(broadcast_msg) = self.broadcast_receiver.recv() => {
-                    self.handle_message(broadcast_msg).await;
+                recv_result = self.broadcast_receiver.recv() => {
+                    match recv_result {
+                        Ok(broadcast_msg) => self.handle_message(broadcast_msg).await,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                            warn!(skipped, "Processor control broadcast lagged");
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                    }
                 }
                 else => break,
             }
@@ -1043,6 +1193,9 @@ impl Processor {
             }
             ProcessorMessage::ConnectLosslessHandle(handle) => {
                 self.lossless_handle = Some(handle);
+            }
+            ProcessorMessage::Sync(nonce) => {
+                let _ = self.sync_ack_sender.send(nonce);
             }
         }
     }

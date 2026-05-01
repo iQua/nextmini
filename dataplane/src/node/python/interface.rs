@@ -34,8 +34,8 @@ impl fmt::Debug for PythonInterfaceHandle {
 struct Inner {
     capacity: usize,
     senders: Mutex<AHashMap<FlowId, ReceiverEntry>>,
-    event_tx: mpsc::Sender<PythonEvent>,
-    event_rx: Mutex<mpsc::Receiver<PythonEvent>>,
+    event_tx: mpsc::UnboundedSender<PythonEvent>,
+    event_rx: Mutex<mpsc::UnboundedReceiver<PythonEvent>>,
     backpressure: bool,
 }
 
@@ -65,7 +65,7 @@ pub struct PayloadDelivery {
 impl PythonInterfaceHandle {
     #[allow(dead_code)]
     pub fn new(capacity: usize, backpressure: bool) -> Self {
-        let (event_tx, event_rx) = mpsc::channel(capacity);
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
 
         Self {
             inner: Arc::new(Inner {
@@ -146,7 +146,7 @@ impl PythonInterfaceHandle {
     }
 
     pub async fn publish_event(&self, event: PythonEvent) {
-        if let Err(err) = self.inner.event_tx.send(event).await {
+        if let Err(err) = self.inner.event_tx.send(event) {
             error!(
                 "PythonInterface: failed to publish event to Python: {}",
                 err

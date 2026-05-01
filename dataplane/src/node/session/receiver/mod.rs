@@ -75,6 +75,8 @@ pub(super) struct ReceiverShared {
     pub(super) manifest: Option<LosslessSessionManifest>,
     pub(super) plan: Option<BlockPlan>,
     pub(super) complete_blocks: BTreeSet<u64>,
+    payload_frames_received: u64,
+    payload_bytes_received: u64,
 }
 
 /// Concrete receiver mode selected after the manifest is installed.
@@ -96,6 +98,8 @@ impl SessionReceiver {
                 manifest: None,
                 plan: None,
                 complete_blocks: BTreeSet::new(),
+                payload_frames_received: 0,
+                payload_bytes_received: 0,
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
@@ -158,6 +162,7 @@ impl SessionReceiver {
             lifecycle = ?self.lifecycle,
             "Lossless receiver finished"
         );
+        self.shared.log_payload_summary(self.lifecycle);
     }
 
     fn reported_complete(&self) -> bool {
@@ -212,6 +217,14 @@ impl SessionReceiver {
 
         match control {
             LosslessSessionControl::Manifest { manifest } => {
+                info!(
+                    session_id = self.shared.session_id,
+                    local_node_id = self.shared.local_node_id,
+                    total_bytes = manifest.total_bytes,
+                    total_blocks = manifest.total_blocks,
+                    fec = manifest.mode.is_fec(),
+                    "Lossless receiver received manifest control frame"
+                );
                 self.install_manifest(manifest).await;
             }
             LosslessSessionControl::Ready
@@ -306,6 +319,28 @@ impl SessionReceiver {
         self.shared.plan = Some(plan);
         self.shared.manifest = Some(manifest);
         self.mode = Some(mode);
+        info!(
+            session_id = self.shared.session_id,
+            local_node_id = self.shared.local_node_id,
+            total_bytes = self
+                .shared
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.total_bytes)
+                .unwrap_or_default(),
+            total_blocks = self
+                .shared
+                .manifest
+                .as_ref()
+                .map(|manifest| manifest.total_blocks)
+                .unwrap_or_default(),
+            fec = self
+                .shared
+                .manifest
+                .as_ref()
+                .is_some_and(|manifest| manifest.mode.is_fec()),
+            "Lossless receiver installed manifest"
+        );
         self.shared.send_ready().await;
     }
 
@@ -366,6 +401,40 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
 }
 
 impl ReceiverShared {
+    pub(super) fn observe_payload_frame(
+        &mut self,
+        kind: &'static str,
+        block_id: u64,
+        payload_len: usize,
+    ) {
+        self.payload_frames_received = self.payload_frames_received.saturating_add(1);
+        self.payload_bytes_received = self
+            .payload_bytes_received
+            .saturating_add(payload_len as u64);
+
+        if self.payload_frames_received == 1 {
+            info!(
+                session_id = self.session_id,
+                local_node_id = self.local_node_id,
+                kind,
+                block_id,
+                payload_len,
+                "Lossless receiver observed first payload frame"
+            );
+        } else if self.payload_frames_received.is_multiple_of(256) {
+            info!(
+                session_id = self.session_id,
+                local_node_id = self.local_node_id,
+                kind,
+                block_id,
+                payload_frames_received = self.payload_frames_received,
+                payload_bytes_received = self.payload_bytes_received,
+                complete_blocks = self.complete_blocks.len(),
+                "Lossless receiver payload progress"
+            );
+        }
+    }
+
     /// Return whether the receiver has completed every planned block.
     fn has_all_blocks(&self) -> bool {
         let Some(plan) = self.plan else {
@@ -418,6 +487,20 @@ impl ReceiverShared {
         );
     }
 
+    fn log_payload_summary(&self, lifecycle: ReceiverLifecycle) {
+        info!(
+            session_id = self.session_id,
+            local_node_id = self.local_node_id,
+            payload_frames_received = self.payload_frames_received,
+            payload_bytes_received = self.payload_bytes_received,
+            complete_blocks = self.complete_blocks.len(),
+            manifest_installed = self.manifest.is_some(),
+            plan_installed = self.plan.is_some(),
+            lifecycle = ?lifecycle,
+            "Lossless receiver payload summary"
+        );
+    }
+
     /// Copy one completed block payload into the optional sink buffer.
     pub(super) async fn write_block(&self, block_id: u64, payload: &[u8]) {
         let Some(plan) = self.plan else {
@@ -467,6 +550,11 @@ impl ReceiverShared {
 
     /// Send a READY control frame back to the sender.
     async fn send_ready(&self) {
+        info!(
+            session_id = self.session_id,
+            local_node_id = self.local_node_id,
+            "Lossless receiver sent Ready"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {

@@ -7,7 +7,7 @@ use std::time::Instant;
 use ahash::AHashMap;
 use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc, oneshot, watch};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use nextmini_messages::TokenBucketSpec;
 use nextmini_messages::lossless_session::{self, LosslessSessionControl, LosslessSessionManifest};
@@ -330,11 +330,22 @@ impl LosslessRuntime {
             return;
         }
 
+        let control_kind = lossless_session::decode_control(&frame.bytes)
+            .map(|(_, control)| control_kind_name(&control));
+
         match self.deliver_live_receiver(session, frame.clone()).await {
             LiveDeliveryOutcome::Delivered => return,
             LiveDeliveryOutcome::Closed => {
                 if self.replay_completed_receiver(session, frame.clone()).await {
                     return;
+                }
+                if let Some(control_kind) = control_kind {
+                    warn!(
+                        session_id = session,
+                        peer_id = frame.peer_id,
+                        control_kind,
+                        "Lossless runtime: live session inbox closed while delivering control frame."
+                    );
                 }
                 warn!(
                     session_id = session,
@@ -349,6 +360,14 @@ impl LosslessRuntime {
             return;
         }
 
+        if let Some(control_kind) = control_kind {
+            warn!(
+                session_id = session,
+                peer_id = frame.peer_id,
+                control_kind,
+                "Lossless runtime: no live session while delivering control frame."
+            );
+        }
         warn!(
             session_id = session,
             "Lossless runtime: no session for inbound frame."
@@ -421,6 +440,12 @@ impl LosslessRuntime {
         let task = tokio::spawn(sender::run(cfg, inbox_receiver, processors));
         let abort_handle = task.abort_handle();
         let message_sender = self.message_sender.clone();
+        info!(
+            session_id = sid,
+            topology_ready = self.topology_ready,
+            session_inbox_capacity = self.config.session_inbox_capacity,
+            "Lossless runtime started sender session task"
+        );
         tokio::spawn(async move {
             let outcome = match task.await {
                 Ok(outcome) => outcome,
@@ -456,6 +481,7 @@ impl LosslessRuntime {
         req: ReceiverRequest,
     ) -> Result<LosslessSessionHandle, StartError> {
         let sid = req.session_id;
+        let local_node_id = req.local_node_id;
         if self.sessions.contains_key(&sid) {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
@@ -483,6 +509,12 @@ impl LosslessRuntime {
             Some(message_sender.clone()),
         ));
         let abort_handle = task.abort_handle();
+        info!(
+            session_id = sid,
+            local_node_id,
+            session_inbox_capacity = self.config.session_inbox_capacity,
+            "Lossless runtime started receiver session task"
+        );
         tokio::spawn(async move {
             let outcome = match task.await {
                 Ok(()) => SessionOutcome::Completed,
@@ -515,6 +547,7 @@ impl LosslessRuntime {
     /// Publish the current topology-ready state to newly waiting senders.
     fn set_topology_ready(&mut self, ready: bool) {
         self.topology_ready = ready;
+        info!(ready, "Lossless runtime updated topology-ready gate");
         let _ = self.topology_ready_sender.send(ready);
     }
 
@@ -604,11 +637,30 @@ impl LosslessRuntime {
             return LiveDeliveryOutcome::Missing;
         };
 
+        let control_kind = lossless_session::decode_control(&frame.bytes)
+            .map(|(_, control)| control_kind_name(&control));
         if inbox.send(frame).await.is_ok() {
+            if let Some(control_kind) = control_kind {
+                info!(
+                    session_id = session,
+                    control_kind,
+                    "Lossless runtime delivered control frame to live session inbox"
+                );
+            }
             return LiveDeliveryOutcome::Delivered;
         }
 
         LiveDeliveryOutcome::Closed
+    }
+}
+
+fn control_kind_name(control: &LosslessSessionControl) -> &'static str {
+    match control {
+        LosslessSessionControl::Manifest { .. } => "Manifest",
+        LosslessSessionControl::Ready => "Ready",
+        LosslessSessionControl::Need { .. } => "Need",
+        LosslessSessionControl::SourceDone { .. } => "SourceDone",
+        LosslessSessionControl::TreeBackpressure { .. } => "TreeBackpressure",
     }
 }
 
