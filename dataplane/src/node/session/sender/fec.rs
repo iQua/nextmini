@@ -1,6 +1,5 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
-use std::collections::BTreeSet;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -41,7 +40,6 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
-    paused_tree_peers: BTreeMap<u16, BTreeSet<usize>>,
     queued_symbols: u64,
     wouldblock_symbols: u64,
     closed_symbols: u64,
@@ -98,7 +96,6 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
-            paused_tree_peers: BTreeMap::new(),
             queued_symbols: 0,
             wouldblock_symbols: 0,
             closed_symbols: 0,
@@ -297,9 +294,6 @@ impl FecSender {
         for offset in 0..tree_count {
             let idx = (start_idx + offset) % tree_count;
             let tree_id = self.tree_ids[idx];
-            if self.tree_is_paused(tree_id) {
-                continue;
-            }
             if offset > 0 {
                 block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
@@ -366,17 +360,10 @@ impl FecSender {
             queued_symbols = self.queued_symbols,
             wouldblock_symbols = self.wouldblock_symbols,
             closed_symbols = self.closed_symbols,
-            paused_trees = self.paused_tree_peers.len(),
             current_round_id = self.current_round_id,
             round_complete = self.round_complete,
             "Lossless sender FEC submit summary"
         );
-    }
-
-    fn tree_is_paused(&self, tree_id: u16) -> bool {
-        self.paused_tree_peers
-            .get(&tree_id)
-            .is_some_and(|peers| !peers.is_empty())
     }
 
     /// Return the cached source symbol payload for one block and symbol index.
@@ -478,35 +465,6 @@ impl FecSender {
 }
 
 impl super::ModeHooks for FecSender {
-    fn on_tree_backpressure(
-        &mut self,
-        _shared: &mut super::SenderShared,
-        peer_id: usize,
-        tree_id: u16,
-        blocked: bool,
-    ) {
-        if !self.tree_ids.contains(&tree_id) {
-            return;
-        }
-
-        if blocked {
-            self.paused_tree_peers
-                .entry(tree_id)
-                .or_default()
-                .insert(peer_id);
-        } else {
-            let should_remove = if let Some(peers) = self.paused_tree_peers.get_mut(&tree_id) {
-                peers.remove(&peer_id);
-                peers.is_empty()
-            } else {
-                false
-            };
-            if should_remove {
-                self.paused_tree_peers.remove(&tree_id);
-            }
-        }
-    }
-
     fn on_need(
         &mut self,
         shared: &mut super::SenderShared,
@@ -849,26 +807,4 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn fec_sender_tracks_remote_tree_pause_state() {
-        let manifest = test_manifest();
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
-        let mut shared = test_sender_shared(manifest);
-
-        sender.on_tree_backpressure(&mut shared, 2, 7, true);
-        sender.on_tree_backpressure(&mut shared, 3, 7, true);
-        sender.on_tree_backpressure(&mut shared, 2, 99, true);
-        assert!(sender.tree_is_paused(7));
-        assert_eq!(
-            sender.paused_tree_peers.get(&7),
-            Some(&BTreeSet::from([2, 3]))
-        );
-
-        sender.on_tree_backpressure(&mut shared, 2, 7, false);
-        assert!(sender.tree_is_paused(7));
-
-        sender.on_tree_backpressure(&mut shared, 3, 7, false);
-        assert!(!sender.tree_is_paused(7));
-    }
 }

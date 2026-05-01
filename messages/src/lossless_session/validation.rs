@@ -242,9 +242,7 @@ impl LosslessSessionManifest {
         control.validate()?;
         match control {
             LosslessSessionControl::Manifest { manifest } => manifest.validate(),
-            LosslessSessionControl::Ready
-            | LosslessSessionControl::SourceDone { .. }
-            | LosslessSessionControl::TreeBackpressure { .. } => Ok(()),
+            LosslessSessionControl::Ready | LosslessSessionControl::SourceDone { .. } => Ok(()),
             LosslessSessionControl::Need { report, .. } => self.validate_need_report(report),
         }
     }
@@ -254,7 +252,7 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready | Self::SourceDone { .. } | Self::TreeBackpressure { .. } => Ok(()),
+            Self::Ready | Self::SourceDone { .. } => Ok(()),
             Self::Need { report, .. } => report.validate(),
         }
     }

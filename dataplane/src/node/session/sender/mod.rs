@@ -73,15 +73,6 @@ pub(super) trait ModeHooks {
             .collect()
     }
 
-    /// Observe relay-driven tree pause/resume signals for FEC payload striping.
-    fn on_tree_backpressure(
-        &mut self,
-        _shared: &mut SenderShared,
-        _peer_id: usize,
-        _tree_id: u16,
-        _blocked: bool,
-    ) {
-    }
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -521,16 +512,6 @@ impl SenderShared {
                     return;
                 }
                 mode.on_need(self, peer_id, round_id, report);
-            }
-            LosslessSessionControl::TreeBackpressure { tree_id, blocked } => {
-                let Some(peer_id) = frame.peer_id else {
-                    warn!(
-                        session_id = self.session.session_id,
-                        "Lossless sender dropped TreeBackpressure without transport peer_id"
-                    );
-                    return;
-                };
-                mode.on_tree_backpressure(self, peer_id, tree_id, blocked);
             }
         }
     }
@@ -992,7 +973,6 @@ mod tests {
     #[derive(Default)]
     struct RecordingMode {
         needs: Vec<(usize, u32, NeedReport)>,
-        tree_backpressure: Vec<(usize, u16, bool)>,
     }
 
     impl ModeHooks for RecordingMode {
@@ -1005,37 +985,5 @@ mod tests {
         ) {
             self.needs.push((peer_id, round_id, report));
         }
-
-        fn on_tree_backpressure(
-            &mut self,
-            _shared: &mut SenderShared,
-            peer_id: usize,
-            tree_id: u16,
-            blocked: bool,
-        ) {
-            self.tree_backpressure.push((peer_id, tree_id, blocked));
-        }
-    }
-
-    #[tokio::test]
-    async fn tree_backpressure_control_is_forwarded_to_mode_hooks() {
-        let mut shared = test_sender_shared();
-        let mut mode = RecordingMode::default();
-
-        shared.handle_control(
-            InboundFrame {
-                bytes: lossless_session::encode_control(
-                    7,
-                    &LosslessSessionControl::TreeBackpressure {
-                        tree_id: 9,
-                        blocked: true,
-                    },
-                ),
-                peer_id: Some(4),
-            },
-            &mut mode,
-        );
-
-        assert_eq!(mode.tree_backpressure, vec![(4, 9, true)]);
     }
 }

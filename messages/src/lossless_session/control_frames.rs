@@ -9,7 +9,6 @@ const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
-const TREE_BACKPRESSURE_BODY_LEN: usize = 2 + 1 + 1;
 
 /// Stack-friendly scratch size for common control frames.
 ///
@@ -61,7 +60,6 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
                 }
             }
         },
-        LosslessSessionControl::TreeBackpressure { .. } => TREE_BACKPRESSURE_BODY_LEN,
     }
 }
 
@@ -172,13 +170,6 @@ fn encode_control_into<'a>(
                 }
             }
             LosslessSessionCtrlKind::Need as u8
-        }
-        LosslessSessionControl::TreeBackpressure { tree_id, blocked } => {
-            let body_start = LosslessSessionHeader::LEN;
-            buf[body_start..body_start + 2].copy_from_slice(&tree_id.to_be_bytes());
-            buf[body_start + 2] = u8::from(*blocked);
-            buf[body_start + 3] = 0;
-            LosslessSessionCtrlKind::TreeBackpressure as u8
         }
     };
 
@@ -335,21 +326,6 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             report.validate().ok()?;
             LosslessSessionControl::Need { round_id, report }
         }
-        x if x == LosslessSessionCtrlKind::TreeBackpressure as u8 => {
-            if body.len() != TREE_BACKPRESSURE_BODY_LEN {
-                return None;
-            }
-            if body[3] != 0 {
-                return None;
-            }
-            let tree_id = u16::from_be_bytes(body[0..2].try_into().ok()?);
-            let blocked = match body[2] {
-                0 => false,
-                1 => true,
-                _ => return None,
-            };
-            LosslessSessionControl::TreeBackpressure { tree_id, blocked }
-        }
         _ => return None,
     };
     ctrl.validate().ok()?;
@@ -383,10 +359,6 @@ mod tests {
             LosslessSessionControl::Need {
                 round_id: 8,
                 report: NeedReport::Complete,
-            },
-            LosslessSessionControl::TreeBackpressure {
-                tree_id: 11,
-                blocked: true,
             },
             plain_need(
                 9,

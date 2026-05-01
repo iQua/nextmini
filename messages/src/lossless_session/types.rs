@@ -24,7 +24,6 @@ pub enum LosslessSessionCtrlKind {
     Ready = 2,
     SourceDone = 5,
     Need = 6,
-    TreeBackpressure = 7,
 }
 
 #[repr(u8)]
@@ -237,5 +236,4 @@ pub enum LosslessSessionControl {
     Ready,
     SourceDone { round_id: u32 },
     Need { round_id: u32, report: NeedReport },
-    TreeBackpressure { tree_id: u16, blocked: bool },
 }

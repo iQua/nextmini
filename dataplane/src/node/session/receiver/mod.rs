@@ -274,9 +274,7 @@ impl SessionReceiver {
                 );
                 self.install_manifest(manifest).await;
             }
-            LosslessSessionControl::Ready
-            | LosslessSessionControl::Need { .. }
-            | LosslessSessionControl::TreeBackpressure { .. } => {}
+            LosslessSessionControl::Ready | LosslessSessionControl::Need { .. } => {}
             LosslessSessionControl::SourceDone { round_id } => {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
