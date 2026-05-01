@@ -710,7 +710,8 @@ mod tests {
         runtime.sessions.insert(
             session_id,
             SessionEntry {
-                inbox,
+                control_inbox: inbox,
+                data_inbox: None,
                 state_sender,
                 abort_handle: abort_task.abort_handle(),
             },
@@ -864,7 +865,8 @@ mod tests {
         runtime.sessions.insert(
             session_id,
             SessionEntry {
-                inbox,
+                control_inbox: inbox,
+                data_inbox: None,
                 state_sender,
                 abort_handle: abort_task.abort_handle(),
             },
@@ -921,7 +923,8 @@ mod tests {
         runtime.sessions.insert(
             session_id,
             SessionEntry {
-                inbox,
+                control_inbox: inbox,
+                data_inbox: None,
                 state_sender,
                 abort_handle: abort_task.abort_handle(),
             },
@@ -978,7 +981,8 @@ mod tests {
         runtime.sessions.insert(
             session_id,
             SessionEntry {
-                inbox,
+                control_inbox: inbox,
+                data_inbox: None,
                 state_sender,
                 abort_handle: abort_task.abort_handle(),
             },

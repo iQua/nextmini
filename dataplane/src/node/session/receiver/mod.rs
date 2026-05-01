@@ -865,6 +865,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
+            pending_control_frames: VecDeque::new(),
         };
 
         assert!(!receiver.is_complete());
@@ -1332,6 +1333,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
             lifecycle: ReceiverLifecycle::Active,
+            pending_control_frames: VecDeque::new(),
         };
 
         receiver
@@ -1482,7 +1484,7 @@ mod tests {
             "runtime handoff must not start while the passive-complete receiver can still answer later rounds"
         );
 
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 11,
                 &LosslessSessionControl::SourceDone { round_id: 1 },
@@ -1500,7 +1502,8 @@ mod tests {
             "runtime handoff must still wait while the live passive-complete receiver owns future-round replies"
         );
 
-        drop(tx);
+        drop(control_tx);
+        drop(data_tx);
 
         let LosslessRuntimeMessage::ReceiverCompleted {
             session_id,
@@ -1633,7 +1636,7 @@ mod tests {
             "receiver should remain live past the sender peer-report timeout budget"
         );
 
-        tx.send(InboundFrame {
+        control_tx.send(InboundFrame {
             bytes: lossless_session::encode_control(
                 12,
                 &LosslessSessionControl::SourceDone { round_id: 1 },
@@ -1644,7 +1647,8 @@ mod tests {
         .expect("second SourceDone should reach receiver");
         assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
 
-        drop(tx);
+        drop(control_tx);
+        drop(data_tx);
 
         let LosslessRuntimeMessage::ReceiverCompleted {
             session_id,
@@ -1736,6 +1740,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
+                pending_control_frames: VecDeque::new(),
             },
             packet_rx,
         )
@@ -1819,6 +1824,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,
+                pending_control_frames: VecDeque::new(),
             },
             packet_rx,
         )

@@ -1415,6 +1415,8 @@ mod tests {
             packet_senders,
             connector_packet_sender,
             connector_message_sender,
+            sync_tracker: Arc::new(SyncTracker::new()),
+            next_sync_nonce: Arc::new(AtomicU64::new(1)),
         }
     }
 
@@ -1454,6 +1456,9 @@ mod tests {
             packet_sender,
             connector_packet_sender,
             connector_message_sender,
+            worker_count: 1,
+            sync_tracker: Arc::new(SyncTracker::new()),
+            next_sync_nonce: Arc::new(AtomicU64::new(1)),
         }
     }
 
