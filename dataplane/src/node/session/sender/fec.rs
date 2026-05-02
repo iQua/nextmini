@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -23,6 +24,15 @@ enum RoundPhase {
     WaitingForReports,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SymbolKind {
+    Source,
+    Repair,
+}
+
+const FEC_SENDER_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(1);
+const FEC_SENDER_PROGRESS_SYMBOL_INTERVAL: u64 = 4096;
+
 /// FEC-mode sender state and scheduling cursors.
 pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
@@ -40,9 +50,7 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
-    queued_symbols: u64,
-    wouldblock_symbols: u64,
-    closed_symbols: u64,
+    stats: FecSenderStats,
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -52,6 +60,156 @@ struct FecBlockState {
     required_extra_symbols: u16,
     emitted_extra_symbols: u16,
     encoder: Option<Encoder>,
+}
+
+#[derive(Debug)]
+struct FecSenderStats {
+    per_tree: BTreeMap<u16, FecTreeSendStats>,
+    source_attempts: u64,
+    source_queued: u64,
+    source_would_block: u64,
+    source_closed: u64,
+    repair_attempts: u64,
+    repair_queued: u64,
+    repair_would_block: u64,
+    repair_closed: u64,
+    source_send_stalls: u64,
+    repair_send_stalls: u64,
+    last_progress_at: Instant,
+    last_progress_queued: u64,
+    last_progress_attempts: u64,
+    last_progress_would_block: u64,
+}
+
+#[derive(Debug, Default)]
+struct FecTreeSendStats {
+    source_attempts: u64,
+    source_queued: u64,
+    source_would_block: u64,
+    source_closed: u64,
+    repair_attempts: u64,
+    repair_queued: u64,
+    repair_would_block: u64,
+    repair_closed: u64,
+}
+
+impl FecSenderStats {
+    fn new(tree_ids: &[u16]) -> Self {
+        Self {
+            per_tree: tree_ids
+                .iter()
+                .copied()
+                .map(|tree_id| (tree_id, FecTreeSendStats::default()))
+                .collect(),
+            source_attempts: 0,
+            source_queued: 0,
+            source_would_block: 0,
+            source_closed: 0,
+            repair_attempts: 0,
+            repair_queued: 0,
+            repair_would_block: 0,
+            repair_closed: 0,
+            source_send_stalls: 0,
+            repair_send_stalls: 0,
+            last_progress_at: Instant::now(),
+            last_progress_queued: 0,
+            last_progress_attempts: 0,
+            last_progress_would_block: 0,
+        }
+    }
+
+    fn record_attempt(&mut self, kind: SymbolKind, tree_id: u16) {
+        let tree = self.per_tree.entry(tree_id).or_default();
+        match kind {
+            SymbolKind::Source => {
+                self.source_attempts = self.source_attempts.saturating_add(1);
+                tree.source_attempts = tree.source_attempts.saturating_add(1);
+            }
+            SymbolKind::Repair => {
+                self.repair_attempts = self.repair_attempts.saturating_add(1);
+                tree.repair_attempts = tree.repair_attempts.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_outcome(&mut self, kind: SymbolKind, tree_id: u16, outcome: SendOutcome) {
+        let tree = self.per_tree.entry(tree_id).or_default();
+        match (kind, outcome) {
+            (SymbolKind::Source, SendOutcome::Queued) => {
+                self.source_queued = self.source_queued.saturating_add(1);
+                tree.source_queued = tree.source_queued.saturating_add(1);
+            }
+            (SymbolKind::Source, SendOutcome::WouldBlock) => {
+                self.source_would_block = self.source_would_block.saturating_add(1);
+                tree.source_would_block = tree.source_would_block.saturating_add(1);
+            }
+            (SymbolKind::Source, SendOutcome::Closed) => {
+                self.source_closed = self.source_closed.saturating_add(1);
+                tree.source_closed = tree.source_closed.saturating_add(1);
+            }
+            (SymbolKind::Repair, SendOutcome::Queued) => {
+                self.repair_queued = self.repair_queued.saturating_add(1);
+                tree.repair_queued = tree.repair_queued.saturating_add(1);
+            }
+            (SymbolKind::Repair, SendOutcome::WouldBlock) => {
+                self.repair_would_block = self.repair_would_block.saturating_add(1);
+                tree.repair_would_block = tree.repair_would_block.saturating_add(1);
+            }
+            (SymbolKind::Repair, SendOutcome::Closed) => {
+                self.repair_closed = self.repair_closed.saturating_add(1);
+                tree.repair_closed = tree.repair_closed.saturating_add(1);
+            }
+        }
+    }
+
+    fn record_stall(&mut self, kind: SymbolKind) {
+        match kind {
+            SymbolKind::Source => {
+                self.source_send_stalls = self.source_send_stalls.saturating_add(1);
+            }
+            SymbolKind::Repair => {
+                self.repair_send_stalls = self.repair_send_stalls.saturating_add(1);
+            }
+        }
+    }
+
+    fn total_queued(&self) -> u64 {
+        self.source_queued.saturating_add(self.repair_queued)
+    }
+
+    fn total_attempts(&self) -> u64 {
+        self.source_attempts.saturating_add(self.repair_attempts)
+    }
+
+    fn total_would_block(&self) -> u64 {
+        self.source_would_block
+            .saturating_add(self.repair_would_block)
+    }
+
+    fn total_closed(&self) -> u64 {
+        self.source_closed.saturating_add(self.repair_closed)
+    }
+
+    fn tree_summary(&self) -> String {
+        self.per_tree
+            .iter()
+            .map(|(tree_id, stats)| {
+                format!(
+                    "{}:sa={},sq={},sw={},sc={},ra={},rq={},rw={},rc={}",
+                    tree_id,
+                    stats.source_attempts,
+                    stats.source_queued,
+                    stats.source_would_block,
+                    stats.source_closed,
+                    stats.repair_attempts,
+                    stats.repair_queued,
+                    stats.repair_would_block,
+                    stats.repair_closed
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    }
 }
 
 impl FecSender {
@@ -96,9 +254,7 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
-            queued_symbols: 0,
-            wouldblock_symbols: 0,
-            closed_symbols: 0,
+            stats: FecSenderStats::new(&fec.tree_ids),
         })
     }
 
@@ -116,7 +272,7 @@ impl FecSender {
         while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
             if self.protocol_error {
-                self.log_submit_summary(shared, SessionOutcome::Aborted);
+                self.log_tree_stats(shared, "protocol_error");
                 return SessionOutcome::Aborted;
             }
 
@@ -125,8 +281,9 @@ impl FecSender {
                     self.round_source_done_sent = false;
                     continue;
                 }
+                self.log_tree_stats(shared, "source_send_wait");
                 if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_submit_summary(shared, SessionOutcome::Aborted);
+                    self.log_tree_stats(shared, "source_wait_aborted");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -136,8 +293,9 @@ impl FecSender {
                 if self.send_extra_symbol(shared, block_id, symbol_id).await {
                     continue;
                 }
+                self.log_tree_stats(shared, "repair_send_wait");
                 if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_submit_summary(shared, SessionOutcome::Aborted);
+                    self.log_tree_stats(shared, "repair_wait_aborted");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -149,8 +307,9 @@ impl FecSender {
                 if self.send_extra_symbol(shared, block_id, symbol_id).await {
                     continue;
                 }
+                self.log_tree_stats(shared, "pending_repair_send_wait");
                 if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_submit_summary(shared, SessionOutcome::Aborted);
+                    self.log_tree_stats(shared, "pending_repair_wait_aborted");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -180,13 +339,13 @@ impl FecSender {
             {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
-                    self.log_submit_summary(shared, SessionOutcome::Aborted);
+                    self.log_tree_stats(shared, "quorum_wait_aborted");
                     return SessionOutcome::Aborted;
                 }
             }
         }
 
-        self.log_submit_summary(shared, SessionOutcome::Completed);
+        self.log_tree_stats(shared, "run_complete");
         SessionOutcome::Completed
     }
 
@@ -232,7 +391,13 @@ impl FecSender {
             return false;
         };
         shared.pace(payload.len()).await;
-        if !self.try_send_symbol(shared, block_id, symbol_id, payload.as_ref()) {
+        if !self.try_send_symbol(
+            shared,
+            block_id,
+            symbol_id,
+            payload.as_ref(),
+            SymbolKind::Source,
+        ) {
             return false;
         }
 
@@ -255,7 +420,7 @@ impl FecSender {
             return false;
         };
         shared.pace(payload.len()).await;
-        if !self.try_send_symbol(shared, block_id, symbol_id, &payload) {
+        if !self.try_send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair) {
             return false;
         }
 
@@ -274,8 +439,11 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
         payload: &[u8],
+        kind: SymbolKind,
     ) -> bool {
         if self.tree_ids.is_empty() {
+            self.stats.record_stall(kind);
+            self.maybe_log_progress(shared);
             return false;
         }
 
@@ -298,6 +466,7 @@ impl FecSender {
                 block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
             }
+            self.stats.record_attempt(kind, tree_id);
             let submission = control::try_send_frame(
                 &shared.processors,
                 control::FrameRoute {
@@ -310,10 +479,10 @@ impl FecSender {
                 },
                 &self.frame_scratch,
             );
+            self.stats.record_outcome(kind, tree_id, submission.outcome);
             match submission.outcome {
                 SendOutcome::Queued => {
-                    self.queued_symbols = self.queued_symbols.saturating_add(1);
-                    if self.queued_symbols == 1 {
+                    if self.stats.total_queued() == 1 {
                         info!(
                             session_id = shared.session.session_id,
                             tree_id,
@@ -323,24 +492,11 @@ impl FecSender {
                         );
                     }
                     self.next_tree_rr = (idx + 1) % tree_count;
+                    self.maybe_log_progress(shared);
                     return true;
                 }
-                SendOutcome::WouldBlock => {
-                    self.wouldblock_symbols = self.wouldblock_symbols.saturating_add(1);
-                    if self.wouldblock_symbols == 1 || self.wouldblock_symbols % 1024 == 0 {
-                        info!(
-                            session_id = shared.session.session_id,
-                            tree_id,
-                            block_id,
-                            symbol_id,
-                            queued_symbols = self.queued_symbols,
-                            wouldblock_symbols = self.wouldblock_symbols,
-                            "Lossless sender observed FEC ingress WouldBlock"
-                        );
-                    }
-                }
+                SendOutcome::WouldBlock => {}
                 SendOutcome::Closed => {
-                    self.closed_symbols = self.closed_symbols.saturating_add(1);
                     warn!(
                         session_id = shared.session.session_id,
                         tree_id,
@@ -350,20 +506,9 @@ impl FecSender {
             }
         }
 
+        self.stats.record_stall(kind);
+        self.maybe_log_progress(shared);
         false
-    }
-
-    fn log_submit_summary(&self, shared: &super::SenderShared, outcome: SessionOutcome) {
-        info!(
-            session_id = shared.session.session_id,
-            complete = outcome == SessionOutcome::Completed,
-            queued_symbols = self.queued_symbols,
-            wouldblock_symbols = self.wouldblock_symbols,
-            closed_symbols = self.closed_symbols,
-            current_round_id = self.current_round_id,
-            round_complete = self.round_complete,
-            "Lossless sender FEC submit summary"
-        );
     }
 
     /// Return the cached source symbol payload for one block and symbol index.
@@ -415,6 +560,7 @@ impl FecSender {
         shared.send_source_done(self.current_round_id).await;
         self.round_reports.clear();
         self.phase = RoundPhase::WaitingForReports;
+        self.log_tree_stats(shared, "source_done");
     }
 
     fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
@@ -444,6 +590,7 @@ impl FecSender {
 
         if all_complete {
             self.round_complete = true;
+            self.log_tree_stats(shared, "all_complete");
             return;
         }
 
@@ -593,6 +740,75 @@ impl FecSender {
             .div_ceil(quorum_size)
             .max(1);
         self.repair_window_symbols = speculative_window.min(total_required);
+    }
+
+    fn maybe_log_progress(&mut self, shared: &super::SenderShared) {
+        let now = Instant::now();
+        let total_queued = self.stats.total_queued();
+        let total_attempts = self.stats.total_attempts();
+        let total_would_block = self.stats.total_would_block();
+        let queued_delta = total_queued.saturating_sub(self.stats.last_progress_queued);
+        let attempts_delta = total_attempts.saturating_sub(self.stats.last_progress_attempts);
+        let would_block_delta =
+            total_would_block.saturating_sub(self.stats.last_progress_would_block);
+        if attempts_delta == 0 {
+            return;
+        }
+        let interval_due =
+            now.duration_since(self.stats.last_progress_at) >= FEC_SENDER_PROGRESS_LOG_INTERVAL;
+        let symbol_due = queued_delta >= FEC_SENDER_PROGRESS_SYMBOL_INTERVAL;
+        if !interval_due && !symbol_due {
+            return;
+        }
+
+        info!(
+            session_id = shared.session.session_id,
+            round_id = self.current_round_id,
+            phase = ?self.phase,
+            source_queued = self.stats.source_queued,
+            source_would_block = self.stats.source_would_block,
+            repair_queued = self.stats.repair_queued,
+            repair_would_block = self.stats.repair_would_block,
+            source_send_stalls = self.stats.source_send_stalls,
+            repair_send_stalls = self.stats.repair_send_stalls,
+            queued_delta,
+            attempts_delta,
+            would_block_delta,
+            repair_window_symbols = self.repair_window_symbols,
+            total_required_extra_symbols = self.total_required_extra_symbols(),
+            total_emitted_extra_symbols = self.total_emitted_extra_symbols(),
+            "Lossless FEC sender progress"
+        );
+
+        self.stats.last_progress_at = now;
+        self.stats.last_progress_queued = total_queued;
+        self.stats.last_progress_attempts = total_attempts;
+        self.stats.last_progress_would_block = total_would_block;
+    }
+
+    fn log_tree_stats(&self, shared: &super::SenderShared, reason: &'static str) {
+        info!(
+            session_id = shared.session.session_id,
+            round_id = self.current_round_id,
+            phase = ?self.phase,
+            reason,
+            source_attempts = self.stats.source_attempts,
+            source_queued = self.stats.source_queued,
+            source_would_block = self.stats.source_would_block,
+            source_closed = self.stats.source_closed,
+            repair_attempts = self.stats.repair_attempts,
+            repair_queued = self.stats.repair_queued,
+            repair_would_block = self.stats.repair_would_block,
+            repair_closed = self.stats.repair_closed,
+            closed_symbols = self.stats.total_closed(),
+            source_send_stalls = self.stats.source_send_stalls,
+            repair_send_stalls = self.stats.repair_send_stalls,
+            repair_window_symbols = self.repair_window_symbols,
+            total_required_extra_symbols = self.total_required_extra_symbols(),
+            total_emitted_extra_symbols = self.total_emitted_extra_symbols(),
+            tree_stats = %self.stats.tree_summary(),
+            "Lossless FEC sender per-tree stats"
+        );
     }
 }
 
@@ -806,5 +1022,4 @@ mod tests {
             payload_emitted: false,
         }
     }
-
 }

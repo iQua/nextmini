@@ -1,14 +1,18 @@
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Decoder};
 use crate::node::session::plan::SymbolGeometry;
+
+const FEC_RECEIVER_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(1);
+const FEC_RECEIVER_PROGRESS_SYMBOL_INTERVAL: u64 = 4096;
 
 /// Accumulated FEC symbols for one logical block.
 #[derive(Default)]
@@ -23,6 +27,96 @@ pub(super) struct FecReceiver {
     pub(super) last_source_done_round_id: Option<u32>,
     pub(super) last_round_need: Option<NeedReport>,
     complete_reported: bool,
+    stats: FecReceiverStats,
+}
+
+#[derive(Debug)]
+struct FecReceiverStats {
+    per_tree: BTreeMap<u16, FecTreeReceiveStats>,
+    accepted_symbols: u64,
+    source_symbols: u64,
+    repair_symbols: u64,
+    duplicate_symbols: u64,
+    complete_block_symbols: u64,
+    invalid_symbols: u64,
+    last_progress_at: Instant,
+    last_progress_accepted: u64,
+}
+
+#[derive(Debug, Default)]
+struct FecTreeReceiveStats {
+    accepted_symbols: u64,
+    source_symbols: u64,
+    repair_symbols: u64,
+    duplicate_symbols: u64,
+    complete_block_symbols: u64,
+    invalid_symbols: u64,
+}
+
+impl FecReceiverStats {
+    fn new() -> Self {
+        Self {
+            per_tree: BTreeMap::new(),
+            accepted_symbols: 0,
+            source_symbols: 0,
+            repair_symbols: 0,
+            duplicate_symbols: 0,
+            complete_block_symbols: 0,
+            invalid_symbols: 0,
+            last_progress_at: Instant::now(),
+            last_progress_accepted: 0,
+        }
+    }
+
+    fn record_invalid(&mut self, tree_id: u16) {
+        self.invalid_symbols = self.invalid_symbols.saturating_add(1);
+        let tree = self.per_tree.entry(tree_id).or_default();
+        tree.invalid_symbols = tree.invalid_symbols.saturating_add(1);
+    }
+
+    fn record_complete_block(&mut self, tree_id: u16) {
+        self.complete_block_symbols = self.complete_block_symbols.saturating_add(1);
+        let tree = self.per_tree.entry(tree_id).or_default();
+        tree.complete_block_symbols = tree.complete_block_symbols.saturating_add(1);
+    }
+
+    fn record_duplicate(&mut self, tree_id: u16) {
+        self.duplicate_symbols = self.duplicate_symbols.saturating_add(1);
+        let tree = self.per_tree.entry(tree_id).or_default();
+        tree.duplicate_symbols = tree.duplicate_symbols.saturating_add(1);
+    }
+
+    fn record_accepted(&mut self, tree_id: u16, symbol_id: u32, symbols_per_block: u16) {
+        self.accepted_symbols = self.accepted_symbols.saturating_add(1);
+        let tree = self.per_tree.entry(tree_id).or_default();
+        tree.accepted_symbols = tree.accepted_symbols.saturating_add(1);
+        if symbol_id < u32::from(symbols_per_block) {
+            self.source_symbols = self.source_symbols.saturating_add(1);
+            tree.source_symbols = tree.source_symbols.saturating_add(1);
+        } else {
+            self.repair_symbols = self.repair_symbols.saturating_add(1);
+            tree.repair_symbols = tree.repair_symbols.saturating_add(1);
+        }
+    }
+
+    fn tree_summary(&self) -> String {
+        self.per_tree
+            .iter()
+            .map(|(tree_id, stats)| {
+                format!(
+                    "{}:acc={},src={},rep={},dup={},done={},invalid={}",
+                    tree_id,
+                    stats.accepted_symbols,
+                    stats.source_symbols,
+                    stats.repair_symbols,
+                    stats.duplicate_symbols,
+                    stats.complete_block_symbols,
+                    stats.invalid_symbols
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(";")
+    }
 }
 
 impl FecReceiver {
@@ -38,6 +132,7 @@ impl FecReceiver {
             last_source_done_round_id: None,
             last_round_need: None,
             complete_reported: false,
+            stats: FecReceiverStats::new(),
         }
     }
 
@@ -57,21 +152,28 @@ impl FecReceiver {
             return;
         };
         if manifest.validate_block_symbol(&symbol).is_err() {
+            self.stats.record_invalid(symbol.tree_id);
             return;
         }
         if payload.len() != self.geometry.symbol_size() {
+            self.stats.record_invalid(symbol.tree_id);
             return;
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
+            self.stats.record_complete_block(symbol.tree_id);
             return;
         }
 
         let state = self.blocks.entry(symbol.block_id).or_default();
         if state.symbols.contains_key(&symbol.symbol_id) {
+            self.stats.record_duplicate(symbol.tree_id);
             return;
         }
         shared.mark_first_payload_unit();
         state.symbols.insert(symbol.symbol_id, payload.to_vec());
+        self.stats
+            .record_accepted(symbol.tree_id, symbol.symbol_id, fec_mode.symbols_per_block);
+        self.maybe_log_progress(shared);
 
         let _ = self
             .try_decode_fec_block(shared, symbol.block_id, &fec_mode)
@@ -179,6 +281,7 @@ impl FecReceiver {
         self.blocks.remove(&block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
+            self.log_tree_stats(shared, "object_complete");
         }
     }
 
@@ -259,10 +362,61 @@ impl FecReceiver {
         self.last_round_need = Some(report.clone());
         shared.send_fec_need(round_id, &report).await;
         self.complete_reported = matches!(report, NeedReport::Complete);
+        self.log_tree_stats(shared, "source_done");
     }
 
     pub(super) fn is_complete(&self) -> bool {
         self.complete_reported
+    }
+
+    fn maybe_log_progress(&mut self, shared: &super::ReceiverShared) {
+        let now = Instant::now();
+        let accepted_delta = self
+            .stats
+            .accepted_symbols
+            .saturating_sub(self.stats.last_progress_accepted);
+        if accepted_delta == 0 {
+            return;
+        }
+        let interval_due =
+            now.duration_since(self.stats.last_progress_at) >= FEC_RECEIVER_PROGRESS_LOG_INTERVAL;
+        let symbol_due = accepted_delta >= FEC_RECEIVER_PROGRESS_SYMBOL_INTERVAL;
+        if !interval_due && !symbol_due {
+            return;
+        }
+
+        info!(
+            session_id = shared.session_id,
+            local_node_id = shared.local_node_id,
+            accepted_symbols = self.stats.accepted_symbols,
+            source_symbols = self.stats.source_symbols,
+            repair_symbols = self.stats.repair_symbols,
+            duplicate_symbols = self.stats.duplicate_symbols,
+            complete_block_symbols = self.stats.complete_block_symbols,
+            invalid_symbols = self.stats.invalid_symbols,
+            accepted_delta,
+            tree_stats = %self.stats.tree_summary(),
+            "Lossless FEC receiver per-tree progress"
+        );
+
+        self.stats.last_progress_at = now;
+        self.stats.last_progress_accepted = self.stats.accepted_symbols;
+    }
+
+    fn log_tree_stats(&self, shared: &super::ReceiverShared, reason: &'static str) {
+        info!(
+            session_id = shared.session_id,
+            local_node_id = shared.local_node_id,
+            reason,
+            accepted_symbols = self.stats.accepted_symbols,
+            source_symbols = self.stats.source_symbols,
+            repair_symbols = self.stats.repair_symbols,
+            duplicate_symbols = self.stats.duplicate_symbols,
+            complete_block_symbols = self.stats.complete_block_symbols,
+            invalid_symbols = self.stats.invalid_symbols,
+            tree_stats = %self.stats.tree_summary(),
+            "Lossless FEC receiver per-tree stats"
+        );
     }
 }
 
