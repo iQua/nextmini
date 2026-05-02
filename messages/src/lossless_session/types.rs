@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Single cutover protocol version for the block-first wire model.
-pub const LOSSLESS_SESSION_VERSION: u8 = 5;
+/// Protocol version with 32-bit FEC `symbols_per_block` in manifests.
+pub const LOSSLESS_SESSION_VERSION: u8 = 6;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -71,13 +71,13 @@ impl FecScheme {
 pub struct LosslessSessionFecMode {
     /// Raw wire scheme identifier to preserve clean handling for unknown schemes.
     pub scheme: u8,
-    pub symbols_per_block: u16,
+    pub symbols_per_block: u32,
     pub tree_ids: Vec<u16>,
 }
 
 impl LosslessSessionFecMode {
     #[must_use]
-    pub fn new_raptorq(symbols_per_block: u16, tree_ids: Vec<u16>) -> Self {
+    pub fn new_raptorq(symbols_per_block: u32, tree_ids: Vec<u16>) -> Self {
         Self {
             scheme: FecScheme::RaptorQ.to_wire(),
             symbols_per_block,
@@ -86,7 +86,7 @@ impl LosslessSessionFecMode {
     }
 
     #[must_use]
-    pub fn new_mettle(symbols_per_block: u16, tree_ids: Vec<u16>) -> Self {
+    pub fn new_mettle(symbols_per_block: u32, tree_ids: Vec<u16>) -> Self {
         Self {
             scheme: FecScheme::Mettle.to_wire(),
             symbols_per_block,

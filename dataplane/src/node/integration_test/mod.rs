@@ -134,18 +134,33 @@ async fn run_source(
 
     wait_for_ready_receivers(harness_cfg, timeout).await?;
 
-    let source_bytes = fs::read(&harness_cfg.payload_path).map_err(|err| {
-        format!(
-            "failed to read source file {}: {err}",
-            harness_cfg.payload_path
-        )
-    })?;
-    if source_bytes.is_empty() {
-        return Err("source file is empty".to_string());
-    }
+    let (source_buffer, total_bytes) = if harness_cfg.synthetic_payload {
+        if harness_cfg.payload_size == 0 {
+            return Err("synthetic payload size is zero".to_string());
+        }
+        write_synthetic_marker(
+            harness_cfg,
+            config.node_id,
+            IntegrationNodeRole::Source,
+            harness_cfg.payload_size,
+        )?;
+        (Bytes::new(), harness_cfg.payload_size)
+    } else {
+        let source_bytes = fs::read(&harness_cfg.payload_path).map_err(|err| {
+            format!(
+                "failed to read source file {}: {err}",
+                harness_cfg.payload_path
+            )
+        })?;
+        if source_bytes.is_empty() {
+            return Err("source file is empty".to_string());
+        }
 
-    let source_artifact = source_artifact_path(harness_cfg);
-    write_artifact_with_hash(&source_artifact, &source_bytes)?;
+        let source_artifact = source_artifact_path(harness_cfg);
+        write_artifact_with_hash(&source_artifact, &source_bytes)?;
+        let total_bytes = source_bytes.len() as u64;
+        (Bytes::from(source_bytes), total_bytes)
+    };
 
     let block_size = if harness_cfg.block_size > 0 {
         harness_cfg.block_size
@@ -167,8 +182,8 @@ async fn run_source(
         },
         pacing: config.lossless_runtime_config.data_bucket.clone(),
         receiver_ids: harness_cfg.receiver_ids.clone(),
-        total_bytes: source_bytes.len() as u64,
-        source_buffer: Bytes::from(source_bytes),
+        total_bytes,
+        source_buffer,
         ready_grace_ms: config.lossless_runtime_config.ready_grace_ms,
         peer_report_timeout_ms: config.lossless_runtime_config.peer_report_timeout_ms,
     };
@@ -197,14 +212,7 @@ async fn run_source(
         harness_cfg,
         config.node_id,
         IntegrationNodeRole::Source,
-        fs::metadata(&source_artifact)
-            .map_err(|err| {
-                format!(
-                    "failed to stat source artifact {}: {err}",
-                    source_artifact.display()
-                )
-            })?
-            .len(),
+        total_bytes,
         transfer_started_at.elapsed(),
     )?;
 
@@ -240,7 +248,7 @@ async fn run_receiver(
     let (group_id, _, _) = wait_for_group_info(harness_cfg, timeout).await?;
     control.join_group(group_id).await;
 
-    let sink = Arc::new(Mutex::new(Vec::new()));
+    let sink = (!harness_cfg.synthetic_payload).then(|| Arc::new(Mutex::new(Vec::new())));
     let progress = Arc::new(ReceiverProgress::default());
     let sid = multicast_session_id(group_id as u64, harness_cfg.source_node_id);
     let session = lossless_runtime
@@ -255,7 +263,7 @@ async fn run_receiver(
                 dst_port: harness_cfg.dst_port,
             },
             local_node_id: config.node_id,
-            sink_buffer: Some(sink.clone()),
+            sink_buffer: sink.clone(),
             progress: Some(progress.clone()),
         })
         .await
@@ -264,35 +272,58 @@ async fn run_receiver(
 
     write_ready_marker(harness_cfg, config.node_id)?;
 
-    let source_bytes = fs::read(&harness_cfg.payload_path).map_err(|err| {
-        format!(
-            "failed to read source file {}: {err}",
-            harness_cfg.payload_path
-        )
-    })?;
-    if source_bytes.is_empty() {
-        return Err("source file is empty".to_string());
-    }
-
     let receive_deadline =
         tokio::time::Instant::now() + Duration::from_millis(harness_cfg.receive_timeout_ms);
-    let sink_bytes = loop {
-        let sink_bytes = sink.lock().await.clone();
-        if sink_bytes == source_bytes {
-            break sink_bytes;
+    if harness_cfg.synthetic_payload {
+        loop {
+            if progress.object_complete_at().is_some() {
+                break;
+            }
+            if tokio::time::Instant::now() >= receive_deadline {
+                return Err(format!(
+                    "receiver session {session_id} timed out waiting for synthetic object completion"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(harness_cfg.poll_interval_ms)).await;
         }
-        if tokio::time::Instant::now() >= receive_deadline {
-            return Err(format!(
-                "receiver session {session_id} timed out waiting for payload to match the source file"
-            ));
+        write_synthetic_marker(
+            harness_cfg,
+            config.node_id,
+            IntegrationNodeRole::Receiver,
+            harness_cfg.payload_size,
+        )?;
+    } else {
+        let source_bytes = fs::read(&harness_cfg.payload_path).map_err(|err| {
+            format!(
+                "failed to read source file {}: {err}",
+                harness_cfg.payload_path
+            )
+        })?;
+        if source_bytes.is_empty() {
+            return Err("source file is empty".to_string());
         }
-        tokio::time::sleep(Duration::from_millis(harness_cfg.poll_interval_ms)).await;
-    };
 
-    write_artifact_with_hash(
-        &receiver_artifact_path(harness_cfg, config.node_id),
-        &sink_bytes,
-    )?;
+        let Some(sink) = &sink else {
+            return Err("receiver sink missing for file-backed payload".to_string());
+        };
+        let sink_bytes = loop {
+            let sink_bytes = sink.lock().await.clone();
+            if sink_bytes == source_bytes {
+                break sink_bytes;
+            }
+            if tokio::time::Instant::now() >= receive_deadline {
+                return Err(format!(
+                    "receiver session {session_id} timed out waiting for payload to match the source file"
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(harness_cfg.poll_interval_ms)).await;
+        };
+
+        write_artifact_with_hash(
+            &receiver_artifact_path(harness_cfg, config.node_id),
+            &sink_bytes,
+        )?;
+    }
     if let (Some(transfer_started_at), Some(transfer_finished_at)) = (
         progress.first_payload_unit_at(),
         progress.object_complete_at(),
@@ -301,7 +332,18 @@ async fn run_receiver(
             harness_cfg,
             config.node_id,
             IntegrationNodeRole::Receiver,
-            sink_bytes.len() as u64,
+            if harness_cfg.synthetic_payload {
+                harness_cfg.payload_size
+            } else {
+                fs::metadata(receiver_artifact_path(harness_cfg, config.node_id))
+                    .map_err(|err| {
+                        format!(
+                            "failed to stat receiver artifact for node {}: {err}",
+                            config.node_id
+                        )
+                    })?
+                    .len()
+            },
             transfer_finished_at.saturating_duration_since(transfer_started_at),
         )?;
     }
@@ -426,6 +468,18 @@ fn write_status(
         .map_err(|err| format!("failed to write status for node {node_id}: {err}"))
 }
 
+fn write_synthetic_marker(
+    cfg: &IntegrationTestConfig,
+    node_id: usize,
+    role: IntegrationNodeRole,
+    payload_bytes: u64,
+) -> Result<(), String> {
+    let payload =
+        format!("synthetic=true\npayload_bytes={payload_bytes}\npattern=offset_mul31_plus7\n");
+    fs::write(synthetic_marker_path(cfg, node_id, role), payload)
+        .map_err(|err| format!("failed to write synthetic marker for node {node_id}: {err}"))
+}
+
 fn write_performance_metrics(
     cfg: &IntegrationTestConfig,
     node_id: usize,
@@ -484,6 +538,19 @@ fn performance_metrics_path(
         IntegrationNodeRole::Router => "router",
     };
     Path::new(&cfg.artifact_dir).join(format!("{label}-{node_id}.metrics"))
+}
+
+fn synthetic_marker_path(
+    cfg: &IntegrationTestConfig,
+    node_id: usize,
+    role: IntegrationNodeRole,
+) -> PathBuf {
+    let label = match role {
+        IntegrationNodeRole::Source => "source",
+        IntegrationNodeRole::Receiver => "receiver",
+        IntegrationNodeRole::Router => "router",
+    };
+    Path::new(&cfg.artifact_dir).join(format!("{label}-{node_id}.synthetic"))
 }
 
 fn source_artifact_path(cfg: &IntegrationTestConfig) -> PathBuf {

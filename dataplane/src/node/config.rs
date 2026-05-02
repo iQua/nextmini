@@ -604,8 +604,7 @@ impl LocalConfig {
         self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
         let lossless_control_capacity = self.channel_capacity.max(1024);
         self.lossless_runtime_config.runtime_message_capacity = lossless_control_capacity;
-        self.lossless_runtime_config.session_control_inbox_capacity =
-            lossless_control_capacity;
+        self.lossless_runtime_config.session_control_inbox_capacity = lossless_control_capacity;
         self.lossless_runtime_config.session_inbox_capacity = self.channel_capacity.max(1);
     }
 
@@ -694,7 +693,7 @@ pub struct LosslessConfig {
 
     /// Default `symbols_per_block` used when runtime derives sender manifests internally.
     #[serde(default = "default_fec_default_symbols_per_block")]
-    pub fec_default_symbols_per_block: u16,
+    pub fec_default_symbols_per_block: u32,
 
     /// Default FEC scheme used when runtime derives sender manifests internally.
     #[serde(default)]
@@ -762,7 +761,7 @@ const fn default_fec_enabled() -> bool {
     false
 }
 
-const fn default_fec_default_symbols_per_block() -> u16 {
+const fn default_fec_default_symbols_per_block() -> u32 {
     32
 }
 
@@ -795,6 +794,10 @@ pub struct IntegrationTestConfig {
     pub artifact_dir: String,
     #[serde(default)]
     pub payload_path: String,
+    #[serde(default)]
+    pub synthetic_payload: bool,
+    #[serde(default)]
+    pub payload_size: u64,
     #[serde(default = "default_integration_group_timeout_ms")]
     pub group_timeout_ms: u64,
     #[serde(default = "default_integration_receive_timeout_ms")]

@@ -72,7 +72,6 @@ pub(super) trait ModeHooks {
             .copied()
             .collect()
     }
-
 }
 
 /// Shared sender shell that owns session-level transport state.
@@ -108,17 +107,29 @@ enum SenderMode {
 #[derive(Clone)]
 pub(super) struct BlockSource {
     bytes: Bytes,
+    total_bytes: u64,
+    synthetic: bool,
 }
 
 impl BlockSource {
     /// Wrap the transfer bytes used by the sender.
-    fn new(bytes: Bytes) -> Self {
-        Self { bytes }
+    fn new(bytes: Bytes, total_bytes: u64) -> Self {
+        let synthetic = bytes.is_empty() && total_bytes > 0;
+        Self {
+            bytes,
+            total_bytes,
+            synthetic,
+        }
     }
 
     /// Materialize one logical block payload for the requested span.
     fn block_payload(&self, span: BlockSpan) -> Vec<u8> {
         let len = span.len();
+        if self.synthetic {
+            let mut out = vec![0u8; len];
+            fill_synthetic_payload(span.offset(), self.total_bytes, &mut out);
+            return out;
+        }
         let Some(offset) = usize::try_from(span.offset()).ok() else {
             return vec![0u8; len];
         };
@@ -144,6 +155,43 @@ impl BlockSource {
         Bytes::from(padded)
     }
 
+    /// Materialize one fixed-width source symbol without padding the full block.
+    fn source_symbol_payload(
+        &self,
+        span: BlockSpan,
+        geometry: SymbolGeometry,
+        source_index: usize,
+    ) -> Option<Vec<u8>> {
+        if source_index >= geometry.source_symbols() {
+            return None;
+        }
+
+        let symbol_size = geometry.symbol_size();
+        let symbol_offset = source_index.checked_mul(symbol_size)?;
+        let mut out = vec![0; symbol_size];
+        if symbol_offset >= span.len() {
+            return Some(out);
+        }
+
+        let absolute_offset = usize::try_from(span.offset())
+            .ok()?
+            .checked_add(symbol_offset)?;
+        if self.synthetic {
+            fill_synthetic_payload(absolute_offset as u64, self.total_bytes, &mut out);
+            return Some(out);
+        }
+        if absolute_offset >= self.bytes.len() {
+            return Some(out);
+        }
+
+        let block_remaining = span.len() - symbol_offset;
+        let copy_len = symbol_size
+            .min(block_remaining)
+            .min(self.bytes.len() - absolute_offset);
+        out[..copy_len].copy_from_slice(&self.bytes[absolute_offset..absolute_offset + copy_len]);
+        Some(out)
+    }
+
     /// Partition one logical block into reusable fixed-size source symbols.
     fn source_symbols(&self, span: BlockSpan, geometry: SymbolGeometry) -> Vec<Bytes> {
         let padded = self.padded_symbol_bytes(span, geometry);
@@ -157,6 +205,20 @@ impl BlockSource {
     }
 }
 
+fn synthetic_payload_byte(offset: u64) -> u8 {
+    (offset as u8).wrapping_mul(31).wrapping_add(7)
+}
+
+fn fill_synthetic_payload(offset: u64, total_bytes: u64, out: &mut [u8]) {
+    if offset >= total_bytes {
+        return;
+    }
+    let copy_len = usize::try_from((total_bytes - offset).min(out.len() as u64)).unwrap_or(0);
+    for (idx, byte) in out[..copy_len].iter_mut().enumerate() {
+        *byte = synthetic_payload_byte(offset + idx as u64);
+    }
+}
+
 impl SessionSender {
     /// Build sender state from the validated runtime configuration.
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
@@ -167,7 +229,7 @@ impl SessionSender {
             .map_err(|_| "invalid block plan for sender")?;
         let pacer = cfg.pacing.map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
-        let source = BlockSource::new(cfg.source_buffer);
+        let source = BlockSource::new(cfg.source_buffer, manifest.total_bytes);
         let active_quorum = ActiveSessionQuorum::new(cfg.receiver_ids.iter().copied());
         let quorum_liveness = QuorumLiveness::new(
             timing::quorum_solicitation_interval(),
@@ -902,7 +964,7 @@ mod tests {
 
     #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
-        let source = BlockSource::new(Bytes::from_static(b"ab"));
+        let source = BlockSource::new(Bytes::from_static(b"ab"), 2);
         let plan = BlockPlan::new(8, 4).expect("valid plan");
         let payload = source.block_payload(plan.block_span(1).expect("second block"));
         assert_eq!(payload, b"\0\0\0\0");
@@ -910,7 +972,7 @@ mod tests {
 
     #[test]
     fn block_source_builds_fixed_size_source_symbols() {
-        let source = BlockSource::new(Bytes::from_static(b"abcdef"));
+        let source = BlockSource::new(Bytes::from_static(b"abcdef"), 6);
         let plan = BlockPlan::new(6, 6).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");
         let symbols = source.source_symbols(plan.block_span(0).expect("first block"), geometry);
@@ -958,7 +1020,7 @@ mod tests {
                 Duration::from_millis(30),
             ),
             plan,
-            source: BlockSource::new(Bytes::from_static(b"abcd")),
+            source: BlockSource::new(Bytes::from_static(b"abcd"), 4),
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,

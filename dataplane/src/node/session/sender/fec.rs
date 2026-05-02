@@ -1,5 +1,6 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
+use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -14,7 +15,7 @@ use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder};
-use crate::node::session::plan::{BlockPlan, SymbolGeometry};
+use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
 
@@ -37,7 +38,8 @@ const FEC_SENDER_PROGRESS_SYMBOL_INTERVAL: u64 = 4096;
 pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
     scheme: FecScheme,
-    symbols_per_block: u16,
+    symbols_per_block: u32,
+    initial_symbol_count: u32,
     tree_ids: Vec<u16>,
     geometry: SymbolGeometry,
     next_tree_rr: usize,
@@ -60,6 +62,111 @@ struct FecBlockState {
     required_extra_symbols: u16,
     emitted_extra_symbols: u16,
     encoder: Option<Encoder>,
+    mettle_stream: Option<MettleSymbolStream>,
+}
+
+/// Per-block streaming METTLE encoder state.
+///
+/// It keeps only the paper encoder's open coupling window plus any finalized
+/// bins emitted ahead of the currently retried symbol.
+struct MettleSymbolStream {
+    encoder: Option<mettle::stream::Encoder>,
+    span: BlockSpan,
+    geometry: SymbolGeometry,
+    terminal_source_count: u64,
+    next_source_id: u64,
+    finished: bool,
+    buffered_bins: BTreeMap<u32, Vec<u8>>,
+    advance_calls: u64,
+    source_symbols_pushed: u64,
+    bins_buffered_total: u64,
+    finish_calls: u64,
+}
+
+impl MettleSymbolStream {
+    fn new(
+        span: BlockSpan,
+        geometry: SymbolGeometry,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Option<Self> {
+        let source_symbol_bytes = NonZeroUsize::new(geometry.symbol_size())?;
+        Some(Self {
+            encoder: Some(mettle::stream::Encoder::new_terminated(
+                mettle::MettleParams::new(mettle::OverheadRatio::DEFAULT),
+                source_symbol_bytes,
+                seed,
+                terminal_source_count,
+            )),
+            span,
+            geometry,
+            terminal_source_count,
+            next_source_id: 0,
+            finished: false,
+            buffered_bins: BTreeMap::new(),
+            advance_calls: 0,
+            source_symbols_pushed: 0,
+            bins_buffered_total: 0,
+            finish_calls: 0,
+        })
+    }
+
+    fn symbol_payload(&mut self, source: &super::BlockSource, symbol_id: u32) -> Option<Vec<u8>> {
+        while !self.buffered_bins.contains_key(&symbol_id) {
+            if !self.advance(source)? {
+                break;
+            }
+        }
+        self.buffered_bins.get(&symbol_id).cloned()
+    }
+
+    fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
+        self.advance_calls = self.advance_calls.saturating_add(1);
+        if self.next_source_id < self.terminal_source_count {
+            let source_index = usize::try_from(self.next_source_id).ok()?;
+            let payload = source.source_symbol_payload(self.span, self.geometry, source_index)?;
+            let bins = self.encoder.as_mut()?.push_source(&payload);
+            self.next_source_id += 1;
+            self.source_symbols_pushed = self.source_symbols_pushed.saturating_add(1);
+            self.buffer_bins(bins)?;
+            return Some(true);
+        }
+
+        if !self.finished {
+            let bins = self.encoder.take()?.finish();
+            self.finished = true;
+            self.finish_calls = self.finish_calls.saturating_add(1);
+            self.buffer_bins(bins)?;
+            return Some(true);
+        }
+
+        Some(false)
+    }
+
+    fn buffer_bins(&mut self, bins: Vec<mettle::stream::EncodedBin>) -> Option<()> {
+        self.bins_buffered_total = self
+            .bins_buffered_total
+            .saturating_add(u64::try_from(bins.len()).unwrap_or(u64::MAX));
+        for bin in bins {
+            let (bin_id, payload) = bin.into_parts();
+            let bin_id = u32::try_from(bin_id).ok()?;
+            self.buffered_bins.insert(bin_id, payload);
+        }
+        Some(())
+    }
+
+    fn discard_through(&mut self, symbol_id: u32) {
+        let Some(next_symbol_id) = symbol_id.checked_add(1) else {
+            self.buffered_bins.clear();
+            return;
+        };
+        self.buffered_bins = self.buffered_bins.split_off(&next_symbol_id);
+    }
+
+    #[cfg(test)]
+    fn buffered_bin_count(&self) -> usize {
+        self.buffered_bins.len()
+    }
 }
 
 #[derive(Debug)]
@@ -75,6 +182,16 @@ struct FecSenderStats {
     repair_closed: u64,
     source_send_stalls: u64,
     repair_send_stalls: u64,
+    source_payload_builds: u64,
+    source_payload_build_nanos: u128,
+    repair_payload_builds: u64,
+    repair_payload_build_nanos: u128,
+    raptorq_encoder_builds: u64,
+    raptorq_encoder_build_nanos: u128,
+    raptorq_coded_symbol_builds: u64,
+    raptorq_coded_symbol_nanos: u128,
+    mettle_symbol_requests: u64,
+    mettle_symbol_request_nanos: u128,
     last_progress_at: Instant,
     last_progress_queued: u64,
     last_progress_attempts: u64,
@@ -111,6 +228,16 @@ impl FecSenderStats {
             repair_closed: 0,
             source_send_stalls: 0,
             repair_send_stalls: 0,
+            source_payload_builds: 0,
+            source_payload_build_nanos: 0,
+            repair_payload_builds: 0,
+            repair_payload_build_nanos: 0,
+            raptorq_encoder_builds: 0,
+            raptorq_encoder_build_nanos: 0,
+            raptorq_coded_symbol_builds: 0,
+            raptorq_coded_symbol_nanos: 0,
+            mettle_symbol_requests: 0,
+            mettle_symbol_request_nanos: 0,
             last_progress_at: Instant::now(),
             last_progress_queued: 0,
             last_progress_attempts: 0,
@@ -130,6 +257,44 @@ impl FecSenderStats {
                 tree.repair_attempts = tree.repair_attempts.saturating_add(1);
             }
         }
+    }
+
+    fn record_payload_build(&mut self, kind: SymbolKind, duration: Duration) {
+        match kind {
+            SymbolKind::Source => {
+                self.source_payload_builds = self.source_payload_builds.saturating_add(1);
+                self.source_payload_build_nanos = self
+                    .source_payload_build_nanos
+                    .saturating_add(duration.as_nanos());
+            }
+            SymbolKind::Repair => {
+                self.repair_payload_builds = self.repair_payload_builds.saturating_add(1);
+                self.repair_payload_build_nanos = self
+                    .repair_payload_build_nanos
+                    .saturating_add(duration.as_nanos());
+            }
+        }
+    }
+
+    fn record_raptorq_encoder_build(&mut self, duration: Duration) {
+        self.raptorq_encoder_builds = self.raptorq_encoder_builds.saturating_add(1);
+        self.raptorq_encoder_build_nanos = self
+            .raptorq_encoder_build_nanos
+            .saturating_add(duration.as_nanos());
+    }
+
+    fn record_raptorq_coded_symbol(&mut self, duration: Duration) {
+        self.raptorq_coded_symbol_builds = self.raptorq_coded_symbol_builds.saturating_add(1);
+        self.raptorq_coded_symbol_nanos = self
+            .raptorq_coded_symbol_nanos
+            .saturating_add(duration.as_nanos());
+    }
+
+    fn record_mettle_symbol_request(&mut self, duration: Duration) {
+        self.mettle_symbol_requests = self.mettle_symbol_requests.saturating_add(1);
+        self.mettle_symbol_request_nanos = self
+            .mettle_symbol_request_nanos
+            .saturating_add(duration.as_nanos());
     }
 
     fn record_outcome(&mut self, kind: SymbolKind, tree_id: u16, outcome: SendOutcome) {
@@ -227,6 +392,15 @@ impl FecSender {
         let geometry = plan
             .symbol_geometry(fec.symbols_per_block)
             .map_err(|_| "invalid symbol geometry for fec sender")?;
+        let source_symbols = usize::try_from(fec.symbols_per_block)
+            .map_err(|_| "symbols_per_block does not fit this host")?;
+        let initial_symbol_count = session_fec::initial_symbol_count(BlockParams::with_scheme(
+            source_symbols,
+            geometry.symbol_size(),
+            0,
+            scheme,
+        ))
+        .ok_or("invalid initial fec symbol count")?;
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
 
@@ -234,14 +408,16 @@ impl FecSender {
             blocks: (0..block_count)
                 .map(|_| FecBlockState {
                     next_source_symbol: 0,
-                    next_fountain_symbol: u32::from(fec.symbols_per_block),
+                    next_fountain_symbol: initial_symbol_count,
                     required_extra_symbols: 0,
                     emitted_extra_symbols: 0,
                     encoder: None,
+                    mettle_stream: None,
                 })
                 .collect(),
             scheme,
             symbols_per_block: fec.symbols_per_block,
+            initial_symbol_count,
             tree_ids: fec.tree_ids.clone(),
             geometry,
             next_tree_rr: 0,
@@ -355,10 +531,10 @@ impl FecSender {
 
     /// Return the next source symbol to send in FEC mode.
     fn next_source_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
-        let symbols_per_block = u32::from(self.symbols_per_block);
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if block.next_source_symbol < symbols_per_block && self.phase == RoundPhase::SendingData
+            if block.next_source_symbol < self.initial_symbol_count
+                && self.phase == RoundPhase::SendingData
             {
                 return Some((block_id, block.next_source_symbol));
             }
@@ -387,9 +563,14 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
+        let payload_started = Instant::now();
         let Some(payload) = self.source_symbol_payload(shared, block_id, symbol_id) else {
+            self.stats
+                .record_payload_build(SymbolKind::Source, payload_started.elapsed());
             return false;
         };
+        self.stats
+            .record_payload_build(SymbolKind::Source, payload_started.elapsed());
         shared.pace(payload.len()).await;
         if !self.try_send_symbol(
             shared,
@@ -404,6 +585,7 @@ impl FecSender {
         if let Some(block) = fec_block_mut(self, block_id) {
             block.next_source_symbol += 1;
         }
+        self.discard_sent_mettle_symbol(block_id, symbol_id);
         shared.mark_payload_emitted();
         true
     }
@@ -415,10 +597,15 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
+        let payload_started = Instant::now();
         let Some(payload) = self.extra_symbol_payload(shared, block_id, symbol_id) else {
+            self.stats
+                .record_payload_build(SymbolKind::Repair, payload_started.elapsed());
             self.protocol_error = true;
             return false;
         };
+        self.stats
+            .record_payload_build(SymbolKind::Repair, payload_started.elapsed());
         shared.pace(payload.len()).await;
         if !self.try_send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair) {
             return false;
@@ -428,6 +615,7 @@ impl FecSender {
             block.emitted_extra_symbols = block.emitted_extra_symbols.saturating_add(1);
             block.next_fountain_symbol += 1;
         }
+        self.discard_sent_mettle_symbol(block_id, symbol_id);
         shared.mark_payload_emitted();
         true
     }
@@ -511,46 +699,108 @@ impl FecSender {
         false
     }
 
-    /// Return the cached source symbol payload for one block and symbol index.
+    /// Return the next initial data-phase symbol payload for one block.
+    ///
+    /// RaptorQ sends raw source symbols here; METTLE sends paper-native coded
+    /// bins whose ids happen to be in the initial departure prefix.
     fn source_symbol_payload(
         &mut self,
         shared: &super::SenderShared,
         block_id: u64,
         symbol_id: u32,
     ) -> Option<Bytes> {
+        if self.scheme == FecScheme::Mettle {
+            return self
+                .extra_symbol_payload(shared, block_id, symbol_id)
+                .map(Bytes::from);
+        }
+
         ensure_source_symbol_cache(&shared.source, shared.plan, self, block_id)?;
         let (_, symbols) = self.current_source_cache.as_ref()?;
         let idx = usize::try_from(symbol_id).ok()?;
         symbols.get(idx).cloned()
     }
 
-    /// Lazily build an encoder and derive one extra fountain symbol payload.
+    /// Lazily build an encoder and derive one coded/fountain symbol payload.
     fn extra_symbol_payload(
         &mut self,
         shared: &super::SenderShared,
         block_id: u64,
         symbol_id: u32,
     ) -> Option<Vec<u8>> {
+        if self.scheme == FecScheme::Mettle {
+            return self.mettle_symbol_payload(shared, block_id, symbol_id);
+        }
+
         let need_encoder = fec_block_ref(self, block_id).map(|block| block.encoder.is_none())?;
 
         if need_encoder {
             let span = shared.plan.block_span(block_id)?;
             let source_block = shared.source.padded_symbol_bytes(span, self.geometry);
             let params = BlockParams::with_scheme(
-                usize::from(self.symbols_per_block),
+                usize::try_from(self.symbols_per_block).ok()?,
                 self.geometry.symbol_size(),
                 session_fec::block_seed(shared.session.session_id, block_id),
                 self.scheme,
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {
+                let encoder_started = Instant::now();
                 block.encoder = Encoder::from_block(params, source_block.as_ref());
+                self.stats
+                    .record_raptorq_encoder_build(encoder_started.elapsed());
             }
         }
 
-        fec_block_ref(self, block_id)
+        let symbol_started = Instant::now();
+        let payload = fec_block_ref(self, block_id)
             .and_then(|block| block.encoder.as_ref())
-            .and_then(|encoder| encoder.coded_symbol(symbol_id))
+            .and_then(|encoder| encoder.coded_symbol(symbol_id));
+        self.stats
+            .record_raptorq_coded_symbol(symbol_started.elapsed());
+        payload
+    }
+
+    fn mettle_symbol_payload(
+        &mut self,
+        shared: &super::SenderShared,
+        block_id: u64,
+        symbol_id: u32,
+    ) -> Option<Vec<u8>> {
+        let needs_stream =
+            fec_block_ref(self, block_id).map(|block| block.mettle_stream.is_none())?;
+        if needs_stream {
+            let span = shared.plan.block_span(block_id)?;
+            let stream = MettleSymbolStream::new(
+                span,
+                self.geometry,
+                session_fec::block_seed(shared.session.session_id, block_id),
+                u64::from(self.symbols_per_block),
+            )?;
+            let block = fec_block_mut(self, block_id)?;
+            if block.mettle_stream.is_none() {
+                block.mettle_stream = Some(stream);
+            }
+        }
+
+        let request_started = Instant::now();
+        let payload = fec_block_mut(self, block_id)
+            .and_then(|block| block.mettle_stream.as_mut())
+            .and_then(|stream| stream.symbol_payload(&shared.source, symbol_id));
+        self.stats
+            .record_mettle_symbol_request(request_started.elapsed());
+        payload
+    }
+
+    fn discard_sent_mettle_symbol(&mut self, block_id: u64, symbol_id: u32) {
+        if self.scheme != FecScheme::Mettle {
+            return;
+        }
+        if let Some(stream) =
+            fec_block_mut(self, block_id).and_then(|block| block.mettle_stream.as_mut())
+        {
+            stream.discard_through(symbol_id);
+        }
     }
 
     async fn begin_report_round(&mut self, shared: &mut super::SenderShared) {
@@ -771,6 +1021,20 @@ impl FecSender {
             repair_would_block = self.stats.repair_would_block,
             source_send_stalls = self.stats.source_send_stalls,
             repair_send_stalls = self.stats.repair_send_stalls,
+            source_payload_builds = self.stats.source_payload_builds,
+            source_payload_build_nanos =
+                saturating_u128_to_u64(self.stats.source_payload_build_nanos),
+            source_payload_avg_nanos = average_nanos(
+                self.stats.source_payload_build_nanos,
+                self.stats.source_payload_builds,
+            ),
+            repair_payload_builds = self.stats.repair_payload_builds,
+            repair_payload_build_nanos =
+                saturating_u128_to_u64(self.stats.repair_payload_build_nanos),
+            repair_payload_avg_nanos = average_nanos(
+                self.stats.repair_payload_build_nanos,
+                self.stats.repair_payload_builds,
+            ),
             queued_delta,
             attempts_delta,
             would_block_delta,
@@ -803,12 +1067,69 @@ impl FecSender {
             closed_symbols = self.stats.total_closed(),
             source_send_stalls = self.stats.source_send_stalls,
             repair_send_stalls = self.stats.repair_send_stalls,
+            source_payload_builds = self.stats.source_payload_builds,
+            source_payload_build_nanos =
+                saturating_u128_to_u64(self.stats.source_payload_build_nanos),
+            source_payload_avg_nanos = average_nanos(
+                self.stats.source_payload_build_nanos,
+                self.stats.source_payload_builds,
+            ),
+            repair_payload_builds = self.stats.repair_payload_builds,
+            repair_payload_build_nanos =
+                saturating_u128_to_u64(self.stats.repair_payload_build_nanos),
+            repair_payload_avg_nanos = average_nanos(
+                self.stats.repair_payload_build_nanos,
+                self.stats.repair_payload_builds,
+            ),
+            raptorq_encoder_builds = self.stats.raptorq_encoder_builds,
+            raptorq_encoder_build_nanos =
+                saturating_u128_to_u64(self.stats.raptorq_encoder_build_nanos),
+            raptorq_encoder_build_avg_nanos = average_nanos(
+                self.stats.raptorq_encoder_build_nanos,
+                self.stats.raptorq_encoder_builds,
+            ),
+            raptorq_coded_symbol_builds = self.stats.raptorq_coded_symbol_builds,
+            raptorq_coded_symbol_nanos =
+                saturating_u128_to_u64(self.stats.raptorq_coded_symbol_nanos),
+            raptorq_coded_symbol_avg_nanos = average_nanos(
+                self.stats.raptorq_coded_symbol_nanos,
+                self.stats.raptorq_coded_symbol_builds,
+            ),
+            mettle_symbol_requests = self.stats.mettle_symbol_requests,
+            mettle_symbol_request_nanos =
+                saturating_u128_to_u64(self.stats.mettle_symbol_request_nanos),
+            mettle_symbol_request_avg_nanos = average_nanos(
+                self.stats.mettle_symbol_request_nanos,
+                self.stats.mettle_symbol_requests,
+            ),
+            mettle_streams = %self.mettle_stream_summary(),
             repair_window_symbols = self.repair_window_symbols,
             total_required_extra_symbols = self.total_required_extra_symbols(),
             total_emitted_extra_symbols = self.total_emitted_extra_symbols(),
             tree_stats = %self.stats.tree_summary(),
             "Lossless FEC sender per-tree stats"
         );
+    }
+
+    fn mettle_stream_summary(&self) -> String {
+        self.blocks
+            .iter()
+            .enumerate()
+            .filter_map(|(block_id, block)| {
+                let stream = block.mettle_stream.as_ref()?;
+                Some(format!(
+                    "{}:next_src={},buf={},pushed={},bins={},adv={},fin={}",
+                    block_id,
+                    stream.next_source_id,
+                    stream.buffered_bins.len(),
+                    stream.source_symbols_pushed,
+                    stream.bins_buffered_total,
+                    stream.advance_calls,
+                    stream.finish_calls
+                ))
+            })
+            .collect::<Vec<_>>()
+            .join(";")
     }
 }
 
@@ -830,6 +1151,17 @@ fn ensure_source_symbol_cache(
     let span = plan.block_span(block_id)?;
     fec.current_source_cache = Some((block_id, source.source_symbols(span, fec.geometry)));
     Some(())
+}
+
+fn saturating_u128_to_u64(value: u128) -> u64 {
+    u64::try_from(value).unwrap_or(u64::MAX)
+}
+
+fn average_nanos(total_nanos: u128, count: u64) -> u64 {
+    if count == 0 {
+        return 0;
+    }
+    saturating_u128_to_u64(total_nanos / u128::from(count))
 }
 
 /// Borrow mutable FEC state for one block.
@@ -940,12 +1272,12 @@ mod tests {
         assert!(sender.has_pending_repair_work());
         assert_eq!(
             sender.next_extra_symbol(&shared),
-            Some((0, u32::from(sender.symbols_per_block))),
+            Some((0, sender.symbols_per_block)),
             "first quorum report should open a bounded speculative repair window"
         );
         if let Some(block) = sender.blocks.first_mut() {
             block.emitted_extra_symbols = 2;
-            block.next_fountain_symbol = u32::from(sender.symbols_per_block) + 2;
+            block.next_fountain_symbol = sender.symbols_per_block + 2;
         }
         assert_eq!(
             sender.next_extra_symbol(&shared),
@@ -957,7 +1289,7 @@ mod tests {
 
         assert_eq!(
             sender.next_extra_symbol(&shared),
-            Some((0, u32::from(sender.symbols_per_block) + 2)),
+            Some((0, sender.symbols_per_block + 2)),
             "full quorum should open the remaining repair budget"
         );
     }
@@ -975,6 +1307,70 @@ mod tests {
         assert!(FecSender::new(&manifest, plan).is_ok());
     }
 
+    #[test]
+    fn mettle_sender_accepts_large_stream_scale_k() {
+        let k = 131_072u32;
+        let block_size = 1_073_741_824u32;
+        let manifest = LosslessSessionManifest {
+            block_size,
+            total_bytes: u64::from(block_size),
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
+        };
+        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
+
+        let sender = FecSender::new(&manifest, plan).expect("large-K METTLE sender");
+
+        assert_eq!(sender.symbols_per_block, k);
+        assert!(
+            sender.initial_symbol_count > k,
+            "METTLE initial phase should emit the finalized coded-bin prefix"
+        );
+    }
+
+    #[tokio::test]
+    async fn mettle_sender_streams_large_k_symbols_on_demand() {
+        let k = 131_072u32;
+        let block_size = 1_073_741_824u32;
+        let manifest = LosslessSessionManifest {
+            block_size,
+            total_bytes: u64::from(block_size),
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
+        };
+        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("large-K METTLE sender");
+        let mut source = vec![0u8; 16 * 1024];
+        source[..8192].fill(0xA5);
+        source[8192..].fill(0x5A);
+        let shared = test_sender_shared_with_source(manifest, Bytes::from(source));
+
+        let first = sender
+            .source_symbol_payload(&shared, 0, 0)
+            .expect("first METTLE bin");
+
+        assert_eq!(first.len(), 8192);
+        let stream = sender.blocks[0]
+            .mettle_stream
+            .as_ref()
+            .expect("stream encoder should be initialized lazily");
+        assert_eq!(
+            stream.next_source_id, 1,
+            "requesting bin 0 should not scan or materialize the whole block"
+        );
+        assert_eq!(stream.buffered_bin_count(), 1);
+
+        sender.discard_sent_mettle_symbol(0, 0);
+        assert_eq!(
+            sender.blocks[0]
+                .mettle_stream
+                .as_ref()
+                .expect("stream still present")
+                .buffered_bin_count(),
+            0
+        );
+    }
+
     fn test_manifest() -> LosslessSessionManifest {
         LosslessSessionManifest {
             block_size: 16,
@@ -985,6 +1381,13 @@ mod tests {
     }
 
     fn test_sender_shared(manifest: LosslessSessionManifest) -> SenderShared {
+        test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefghijklmnop"))
+    }
+
+    fn test_sender_shared_with_source(
+        manifest: LosslessSessionManifest,
+        source_buffer: Bytes,
+    ) -> SenderShared {
         let processors = ProcessorHandle::new(LocalConfig {
             node_id: 0,
             n_nodes: 1,
@@ -994,11 +1397,13 @@ mod tests {
             local_netmask: Ipv4Addr::new(255, 255, 255, 0),
             ..Default::default()
         });
+        let block_size = usize::try_from(manifest.block_size).expect("test block size fits usize");
+        let plan = BlockPlan::new(manifest.total_bytes, block_size).expect("valid plan");
 
         SenderShared {
             session: SessionConfig {
                 session_id: 7,
-                block_size: 16,
+                block_size,
             },
             route: TransportRoute {
                 src_ip: Ipv4Addr::new(10, 0, 0, 1),
@@ -1014,8 +1419,8 @@ mod tests {
                 Duration::from_millis(10),
                 Duration::from_millis(30),
             ),
-            plan: BlockPlan::new(16, 16).expect("valid plan"),
-            source: BlockSource::new(Bytes::from_static(b"abcdefghijklmnop")),
+            plan,
+            source: BlockSource::new(source_buffer.clone(), source_buffer.len() as u64),
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,

@@ -2,6 +2,7 @@ pub mod block;
 mod decoder;
 mod encoder;
 mod params;
+pub mod stream;
 #[doc(hidden)]
 pub mod test_support;
 #[cfg(test)]

@@ -5,7 +5,7 @@ use super::{
     NeedReport,
 };
 
-const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
+const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
@@ -84,7 +84,7 @@ fn encode_control_into<'a>(
         LosslessSessionControl::Manifest { manifest } => {
             let body_start = LosslessSessionHeader::LEN;
             let (scheme, symbols_per_block, tree_ids) = match &manifest.mode {
-                LosslessSessionMode::Plain => (0u8, 0u16, &[][..]),
+                LosslessSessionMode::Plain => (0u8, 0u32, &[][..]),
                 LosslessSessionMode::Fec(fec) => {
                     (fec.scheme, fec.symbols_per_block, fec.tree_ids.as_slice())
                 }
@@ -103,8 +103,7 @@ fn encode_control_into<'a>(
                 .copy_from_slice(&manifest.total_bytes.to_be_bytes());
             buf[body_start + 16..body_start + 24]
                 .copy_from_slice(&manifest.total_blocks.to_be_bytes());
-            buf[body_start + 24..body_start + 26].copy_from_slice(&symbols_per_block.to_be_bytes());
-            buf[body_start + 26..body_start + 28].copy_from_slice(&0u16.to_be_bytes());
+            buf[body_start + 24..body_start + 28].copy_from_slice(&symbols_per_block.to_be_bytes());
 
             let mut pos = body_start + MANIFEST_FIXED_BODY_LEN;
             for tree_id in tree_ids {
@@ -214,7 +213,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let block_size = u32::from_be_bytes(body[4..8].try_into().ok()?);
             let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
             let total_blocks = u64::from_be_bytes(body[16..24].try_into().ok()?);
-            let symbols_per_block = u16::from_be_bytes(body[24..26].try_into().ok()?);
+            let symbols_per_block = u32::from_be_bytes(body[24..28].try_into().ok()?);
 
             if body.len() != MANIFEST_FIXED_BODY_LEN + (tree_count * 2) {
                 return None;
@@ -424,6 +423,31 @@ mod tests {
             FecScheme::Mettle as u8
         );
         let (_, decoded) = decode_control(&encoded).expect("decode METTLE manifest");
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn fec_manifest_roundtrips_large_symbols_per_block() {
+        let symbols_per_block = 131_072u32;
+        let ctrl = LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size: 1_073_741_824,
+                total_bytes: 1_073_741_824,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
+                    symbols_per_block,
+                    vec![2, 4],
+                )),
+            },
+        };
+
+        let encoded = encode_control(89, &ctrl);
+        let body_start = LosslessSessionHeader::LEN;
+        assert_eq!(
+            &encoded[body_start + 24..body_start + 28],
+            symbols_per_block.to_be_bytes().as_slice()
+        );
+        let (_, decoded) = decode_control(&encoded).expect("decode large-K METTLE manifest");
         assert_eq!(decoded, ctrl);
     }
 
@@ -665,7 +689,7 @@ mod tests {
 
         encoded[body_start + 1] = FecScheme::RaptorQ as u8;
         encoded[body_start + 2] = 1;
-        encoded[body_start + 24..body_start + 26].copy_from_slice(&4u16.to_be_bytes());
+        encoded[body_start + 24..body_start + 28].copy_from_slice(&4u32.to_be_bytes());
         encoded.extend_from_slice(&7u16.to_be_bytes());
 
         let body_len = MANIFEST_FIXED_BODY_LEN + 2;

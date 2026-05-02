@@ -78,8 +78,6 @@ impl MettleEncoder {
 
         self.source_scratch.fill(0);
         self.source_scratch[..payload.len()].copy_from_slice(payload);
-        self.apply_previous_fake_tle_payload(self.next_source_id);
-
         let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer(self.next_source_id);
         for &bin_id in &edge_bin_ids[..edge_count] {
             let slot_index = self.ensure_open_bin_slot(bin_id);
@@ -106,33 +104,6 @@ impl MettleEncoder {
         self.flush_open_bins()
     }
 
-    fn apply_previous_fake_tle_payload(&mut self, source_id: u64) {
-        let tle_bin_id = self.params.tle_bin_id(source_id);
-        if tle_bin_id < self.next_departure_bin_id {
-            return;
-        }
-        let slot_index =
-            usize::try_from(tle_bin_id - self.next_departure_bin_id).expect("open bin index fits");
-        let Self {
-            open_bins,
-            source_scratch,
-            ..
-        } = self;
-        if let Some(Some(previous_fake_tle_payloads)) = open_bins.get(slot_index) {
-            xor_payload(source_scratch, previous_fake_tle_payloads);
-        }
-    }
-
-    fn fake_source_payload(&self, source_id: u64, mut source_payload: Vec<u8>) -> Vec<u8> {
-        if let Some(previous_fake_tle_payloads) =
-            self.open_bin_payload(self.params.tle_bin_id(source_id))
-        {
-            xor_payload(&mut source_payload, previous_fake_tle_payloads);
-        }
-
-        source_payload
-    }
-
     fn unique_edge_bin_id_buffer(
         &self,
         source_id: u64,
@@ -155,6 +126,7 @@ impl MettleEncoder {
         slot_index
     }
 
+    #[cfg(test)]
     fn open_bin_payload(&self, bin_id: u128) -> Option<&Vec<u8>> {
         if bin_id < self.next_departure_bin_id {
             return None;
@@ -284,8 +256,7 @@ mod tests {
             .open_bin_payload(shared_bin)
             .cloned()
             .expect("first source opened shared bin");
-        let second_fake_payload = encoder.fake_source_payload(second_source_id, vec![0b1100_0000]);
-        xor_payload(&mut expected_shared_payload, &second_fake_payload);
+        xor_payload(&mut expected_shared_payload, &[0b1100_0000]);
 
         let second_emitted = encoder.push_source(&[0b1100_0000]);
 

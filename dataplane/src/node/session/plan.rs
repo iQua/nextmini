@@ -8,6 +8,7 @@ use std::fmt::{Display, Formatter};
 pub enum PlanError {
     BlockSizeZero,
     SymbolsPerBlockZero,
+    SymbolsPerBlockTooLarge,
 }
 
 impl Display for PlanError {
@@ -15,6 +16,7 @@ impl Display for PlanError {
         match self {
             Self::BlockSizeZero => write!(f, "block_size must be >= 1"),
             Self::SymbolsPerBlockZero => write!(f, "symbols_per_block must be >= 1"),
+            Self::SymbolsPerBlockTooLarge => write!(f, "symbols_per_block does not fit usize"),
         }
     }
 }
@@ -106,7 +108,7 @@ impl BlockPlan {
     }
 
     /// Derive the source-symbol layout used when FEC mode is enabled.
-    pub fn symbol_geometry(&self, symbols_per_block: u16) -> Result<SymbolGeometry, PlanError> {
+    pub fn symbol_geometry(&self, symbols_per_block: u32) -> Result<SymbolGeometry, PlanError> {
         SymbolGeometry::new(self.block_size, symbols_per_block)
     }
 }
@@ -133,13 +135,14 @@ impl BlockSpan {
 /// Deterministic source-symbol layout derived from the shared block geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SymbolGeometry {
-    symbols_per_block: u16,
+    symbols_per_block: u32,
+    source_symbols: usize,
     symbol_size: usize,
 }
 
 impl SymbolGeometry {
     /// Construct source-symbol geometry for one block size and symbol count.
-    pub fn new(block_size: usize, symbols_per_block: u16) -> Result<Self, PlanError> {
+    pub fn new(block_size: usize, symbols_per_block: u32) -> Result<Self, PlanError> {
         if block_size == 0 {
             return Err(PlanError::BlockSizeZero);
         }
@@ -147,18 +150,20 @@ impl SymbolGeometry {
             return Err(PlanError::SymbolsPerBlockZero);
         }
 
-        let source_symbols = usize::from(symbols_per_block);
+        let source_symbols =
+            usize::try_from(symbols_per_block).map_err(|_| PlanError::SymbolsPerBlockTooLarge)?;
         let symbol_size = block_size.div_ceil(source_symbols);
 
         Ok(Self {
             symbols_per_block,
+            source_symbols,
             symbol_size,
         })
     }
 
-    /// Return the number of systematic source symbols emitted per block.
+    /// Return the configured source-symbol count per block.
     pub fn source_symbols(&self) -> usize {
-        usize::from(self.symbols_per_block)
+        self.source_symbols
     }
 
     /// Return the fixed on-the-wire symbol size in bytes.
@@ -229,6 +234,15 @@ mod tests {
 
         let block = plan.block_span(2).expect("final block should exist");
         assert_eq!(block.offset + symbols.symbol_size() as u64, 23);
+    }
+
+    #[test]
+    fn symbol_geometry_accepts_large_mettle_scale_k() {
+        let block_size = 1_073_741_824usize;
+        let symbols = SymbolGeometry::new(block_size, 131_072).expect("large K geometry");
+
+        assert_eq!(symbols.source_symbols(), 131_072);
+        assert_eq!(symbols.symbol_size(), 8192);
     }
 
     #[test]

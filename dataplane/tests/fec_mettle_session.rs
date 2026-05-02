@@ -7,6 +7,7 @@ use bytes::Bytes;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
+use mettle::block::BlockParams as MettleBlockParams;
 use nextmini::node::packet::Packet;
 use nextmini::node::session::api::{InboundFrame, SessionOutcome};
 use nextmini::node::session::receiver;
@@ -25,6 +26,7 @@ const DST_PORT: u16 = 4800;
 const PEER_REPORT_TIMEOUT_MS: u64 = 30_000;
 const RECEIVER_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const PAPER_SCALE_METTLE_K: usize = 2400;
+const INITIAL_CODED_DROP_MODULUS: usize = 97;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_flow() {
@@ -50,11 +52,13 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
     let session_id = 0x4D45_5454_1E01;
     let k = PAPER_SCALE_METTLE_K;
     let source_bytes = patterned_source_bytes(k);
-    // Fixed one-erasure case for this session seed under the METTLE paper graph.
-    // The real Need, repair, Complete, and sink-byte assertions below catch drift.
-    let missing_source = 45usize;
-    assert!(missing_source < k);
-    let symbols_per_block = u16::try_from(k).expect("paper-scale METTLE K fits u16");
+    // Fixed coded-bin erasure pattern under the METTLE paper graph. The real
+    // Need, repair, Complete, and sink-byte assertions below catch drift.
+    let symbols_per_block = u32::try_from(k).expect("paper-scale METTLE K fits u32");
+    let initial_symbol_count = MettleBlockParams::new(k, 1, 0)
+        .metadata()
+        .expect("paper-scale METTLE metadata")
+        .initial_symbol_count();
     let manifest = LosslessSessionManifest {
         block_size: k as u32,
         total_bytes: k as u64,
@@ -129,8 +133,8 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         .await
         .expect("READY should enqueue at sender");
 
-    let mut delivered_sources = 0usize;
-    let mut dropped_missing_source = false;
+    let mut delivered_initial_symbols = 0usize;
+    let mut dropped_initial_symbols = 0usize;
     loop {
         let packet = common::recv_packet(&mut sender_harness.packet_rx).await;
         let payload = packet
@@ -140,11 +144,11 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
             match control {
                 LosslessSessionControl::SourceDone { round_id } => {
                     assert_eq!(round_id, 0);
-                    assert!(dropped_missing_source, "test must drop one source symbol");
+                    assert!(dropped_initial_symbols > 0, "test must drop coded bins");
                     assert_eq!(
-                        delivered_sources,
-                        k - 1,
-                        "test must deliver every source except the deterministic erasure"
+                        delivered_initial_symbols,
+                        initial_symbol_count - dropped_initial_symbols,
+                        "test must deliver every non-dropped initial coded symbol"
                     );
                     receiver_tx
                         .send(inbound_from_packet(packet, SENDER_NODE_ID))
@@ -166,17 +170,17 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         let symbol = decode_symbol(payload);
         assert_eq!(symbol.block_id, 0);
         assert!(
-            symbol.symbol_id < k as u32,
-            "repair symbol appeared before receiver Need: {symbol:?}"
+            symbol.symbol_id < initial_symbol_count as u32,
+            "future coded symbol appeared before receiver Need: {symbol:?}"
         );
-        if symbol.symbol_id as usize == missing_source {
-            dropped_missing_source = true;
+        if (symbol.symbol_id as usize).is_multiple_of(INITIAL_CODED_DROP_MODULUS) {
+            dropped_initial_symbols += 1;
         } else {
-            delivered_sources += 1;
+            delivered_initial_symbols += 1;
             receiver_tx
                 .send(inbound_from_packet(packet, SENDER_NODE_ID))
                 .await
-                .expect("source symbol should enqueue at receiver");
+                .expect("initial coded symbol should enqueue at receiver");
         }
     }
 
@@ -257,8 +261,8 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         let symbol = decode_symbol(payload);
         assert_eq!(symbol.block_id, 0);
         assert!(
-            symbol.symbol_id >= k as u32,
-            "sender retransmitted a source symbol instead of METTLE repair: {symbol:?}"
+            symbol.symbol_id >= initial_symbol_count as u32,
+            "sender retransmitted an initial coded symbol instead of later METTLE bin: {symbol:?}"
         );
         saw_repair_symbol = true;
         receiver_tx

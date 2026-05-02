@@ -409,7 +409,7 @@ mod tests {
                 Duration::from_millis(30),
             ),
             plan: BlockPlan::new(4, 4).expect("valid plan"),
-            source: BlockSource::new(Bytes::from_static(b"abcd")),
+            source: BlockSource::new(Bytes::from_static(b"abcd"), 4),
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,

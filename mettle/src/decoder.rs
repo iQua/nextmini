@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 
 use crate::MettleParams;
@@ -34,12 +34,6 @@ impl BufferedBin {
     fn unique_source_id(&self) -> Option<u64> {
         (self.remaining_touchers == 1).then_some(self.undecoded_source_xor)
     }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum DecoderMode {
-    Systematic,
-    NonSystematic,
 }
 
 #[derive(Debug)]
@@ -280,13 +274,10 @@ pub(crate) struct MettleDecoder {
     next_decoded_source_id: u64,
     seed: u64,
     terminal_source_count: Option<u64>,
-    mode: DecoderMode,
     decoded_prefix_start_source_id: u64,
     decoded_prefix_equation_payloads: VecDeque<Vec<u8>>,
     decoded_future_equation_payloads: BTreeMap<u64, Vec<u8>>,
-    decoded_tle_prefix_xors: HashMap<u64, Vec<u8>>,
     seen_bin_ids: SeenBinIds,
-    received_source_payloads: BTreeMap<u64, Vec<u8>>,
     received_bins: ReceivedBins,
     ready_bin_ids: VecDeque<u128>,
     graph: Option<DecoderGraph>,
@@ -314,22 +305,6 @@ impl MettleDecoder {
         )
     }
 
-    pub(crate) fn new_non_systematic_terminated(
-        params: MettleParams,
-        source_symbol_bytes: NonZeroUsize,
-        seed: u64,
-        terminal_source_count: u64,
-    ) -> Self {
-        let mut decoder = Self::new_with_terminal_source_count(
-            params,
-            source_symbol_bytes,
-            seed,
-            Some(terminal_source_count),
-        );
-        decoder.mode = DecoderMode::NonSystematic;
-        decoder
-    }
-
     fn new_with_terminal_source_count(
         params: MettleParams,
         source_symbol_bytes: NonZeroUsize,
@@ -345,13 +320,10 @@ impl MettleDecoder {
             next_decoded_source_id: 0,
             seed,
             terminal_source_count,
-            mode: DecoderMode::Systematic,
             decoded_prefix_start_source_id: 0,
             decoded_prefix_equation_payloads: VecDeque::new(),
             decoded_future_equation_payloads: BTreeMap::new(),
-            decoded_tle_prefix_xors: HashMap::new(),
             seen_bin_ids: SeenBinIds::new(bin_count),
-            received_source_payloads: BTreeMap::new(),
             received_bins: ReceivedBins::new(bin_count),
             ready_bin_ids: VecDeque::new(),
             graph,
@@ -378,12 +350,6 @@ impl MettleDecoder {
             return Vec::new();
         }
 
-        if self.mode == DecoderMode::Systematic
-            && let Some(source_id) = self.tle_source_id_for_bin(bin_id)
-        {
-            return self.push_source_observation(source_id, bin_id, payload);
-        }
-
         self.push_equation_bin(bin_id, payload)
     }
 
@@ -399,35 +365,6 @@ impl MettleDecoder {
         }
         self.received_bins.insert(bin_id, bin);
         self.drain_decodable_sources()
-    }
-
-    fn push_source_observation(
-        &mut self,
-        source_id: u64,
-        bin_id: u128,
-        source_payload: Vec<u8>,
-    ) -> Vec<DecodedSource> {
-        if source_id < self.next_decoded_source_id {
-            return Vec::new();
-        }
-        if source_id != self.next_decoded_source_id {
-            if !self
-                .decoded_future_equation_payloads
-                .contains_key(&source_id)
-            {
-                self.received_source_payloads
-                    .entry(source_id)
-                    .or_insert_with(|| source_payload.clone());
-            }
-            // Systematic TLE/source observations carry raw p_x. They are also a
-            // valid triangular equation over q_x and earlier q_i values that
-            // touch TLE(x), so future observations must participate in peeling.
-            return self.push_equation_bin(bin_id, source_payload);
-        }
-
-        let mut decoded = self.observe_source_and_release(source_id, source_payload);
-        decoded.extend(self.drain_decodable_sources());
-        decoded
     }
 
     fn buffer_bin(&self, bin_id: u128, mut payload: Vec<u8>) -> Option<BufferedBin> {
@@ -483,24 +420,14 @@ impl MettleDecoder {
         let mut decoded = Vec::new();
 
         loop {
-            if let Some(source_payload) = self
-                .received_source_payloads
-                .remove(&self.next_decoded_source_id)
-            {
-                decoded.extend(
-                    self.observe_source_and_release(self.next_decoded_source_id, source_payload),
-                );
-                continue;
-            }
             if let Some(bin_id) = self.find_unique_bin_for_next_source() {
                 let payload = self
                     .received_bins
                     .remove(&bin_id)
                     .expect("just matched decodable bin");
-                decoded.extend(self.decode_equation_source_and_release(
-                    self.next_decoded_source_id,
-                    payload.payload,
-                ));
+                decoded.extend(
+                    self.decode_source_and_release(self.next_decoded_source_id, payload.payload),
+                );
                 continue;
             }
             let Some((source_id, bin_id)) = self.find_unique_future_bin() else {
@@ -510,51 +437,30 @@ impl MettleDecoder {
                 .received_bins
                 .remove(&bin_id)
                 .expect("just matched decodable future unique bin");
-            decoded.extend(self.decode_equation_source_and_release(source_id, payload.payload));
+            decoded.extend(self.decode_source_and_release(source_id, payload.payload));
         }
 
         decoded
-    }
-
-    fn observe_source_and_release(
-        &mut self,
-        source_id: u64,
-        source_payload: Vec<u8>,
-    ) -> Vec<DecodedSource> {
-        let equation_payload =
-            self.equation_payload_from_source_observation(source_id, source_payload.as_slice());
-        self.decode_source_and_release(source_id, equation_payload, Some(source_payload))
-    }
-
-    fn decode_equation_source_and_release(
-        &mut self,
-        source_id: u64,
-        equation_payload: Vec<u8>,
-    ) -> Vec<DecodedSource> {
-        self.decode_source_and_release(source_id, equation_payload, None)
     }
 
     fn decode_source_and_release(
         &mut self,
         source_id: u64,
         equation_payload: Vec<u8>,
-        source_payload: Option<Vec<u8>>,
     ) -> Vec<DecodedSource> {
         self.apply_decoded_source_edges(source_id, &equation_payload);
         if source_id == self.next_decoded_source_id {
-            let mut released =
-                vec![self.release_prefix_source(source_id, equation_payload, source_payload)];
+            let mut released = vec![self.release_prefix_source(source_id, equation_payload)];
             while let Some(equation_payload) = self
                 .decoded_future_equation_payloads
                 .remove(&self.next_decoded_source_id)
             {
                 let source_id = self.next_decoded_source_id;
-                released.push(self.release_prefix_source(source_id, equation_payload, None));
+                released.push(self.release_prefix_source(source_id, equation_payload));
             }
             return released;
         }
 
-        self.received_source_payloads.remove(&source_id);
         self.decoded_future_equation_payloads
             .insert(source_id, equation_payload);
         Vec::new()
@@ -564,18 +470,14 @@ impl MettleDecoder {
         &mut self,
         source_id: u64,
         equation_payload: Vec<u8>,
-        source_payload: Option<Vec<u8>>,
     ) -> DecodedSource {
-        let payload = source_payload.unwrap_or_else(|| match self.mode {
-            DecoderMode::Systematic => {
-                self.source_payload_from_equation_payload(source_id, &equation_payload)
-            }
-            DecoderMode::NonSystematic => equation_payload.clone(),
-        });
-        self.push_decoded_prefix_equation_payload(equation_payload);
+        self.push_decoded_prefix_equation_payload(equation_payload.clone());
         self.next_decoded_source_id += 1;
         self.drop_bins_closed_by_prefix();
-        DecodedSource { source_id, payload }
+        DecodedSource {
+            source_id,
+            payload: equation_payload,
+        }
     }
 
     fn find_unique_bin_for_next_source(&self) -> Option<u128> {
@@ -623,18 +525,6 @@ impl MettleDecoder {
                     ready_bin_ids.push(bin_id);
                 }
             }
-            if self.mode == DecoderMode::Systematic
-                && let Some(tle_source_id) = self.tle_source_id_for_bin(bin_id)
-            {
-                if tle_source_id <= source_id {
-                    continue;
-                }
-                let peeled_prefix = self
-                    .decoded_tle_prefix_xors
-                    .entry(tle_source_id)
-                    .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
-                xor_payload(peeled_prefix, payload);
-            }
         }
         for bin_id in drained_bin_ids {
             self.received_bins.remove(&bin_id);
@@ -677,8 +567,6 @@ impl MettleDecoder {
             })
         {
             self.received_bins.clear();
-            self.received_source_payloads.clear();
-            self.decoded_tle_prefix_xors.clear();
             self.seen_bin_ids.clear();
             self.ready_bin_ids.clear();
             return;
@@ -687,39 +575,6 @@ impl MettleDecoder {
         self.received_bins
             .drop_before(frontier, &mut self.bin_cleanup_frontier);
         self.seen_bin_ids.drop_before(frontier);
-        self.received_source_payloads = self
-            .received_source_payloads
-            .split_off(&self.next_decoded_source_id);
-        self.decoded_tle_prefix_xors
-            .retain(|&source_id, _| source_id >= self.next_decoded_source_id);
-    }
-
-    fn equation_payload_from_source_observation(
-        &self,
-        source_id: u64,
-        source_payload: &[u8],
-    ) -> Vec<u8> {
-        let mut equation_payload = source_payload.to_vec();
-        if let Some(previous_fake_tle_payloads) = self.decoded_tle_prefix_xors.get(&source_id) {
-            // Paper: a raw TLE/source observation is p_x. The peeling graph needs
-            // q_x, so remove the prior q_i values that touch TLE(x).
-            xor_payload(&mut equation_payload, previous_fake_tle_payloads);
-        }
-        equation_payload
-    }
-
-    fn source_payload_from_equation_payload(
-        &self,
-        source_id: u64,
-        equation_payload: &[u8],
-    ) -> Vec<u8> {
-        let mut source_payload = equation_payload.to_vec();
-        if let Some(previous_fake_tle_payloads) = self.decoded_tle_prefix_xors.get(&source_id) {
-            // Paper: repair peeling recovers q_x. User-visible output is the raw
-            // p_x reconstructed by re-applying the TLE-prefix q_i values.
-            xor_payload(&mut source_payload, previous_fake_tle_payloads);
-        }
-        source_payload
     }
 
     fn push_decoded_prefix_equation_payload(&mut self, payload: Vec<u8>) {
@@ -758,16 +613,6 @@ impl MettleDecoder {
             .possible_source_id_range_for_bin(bin_id, self.terminal_source_count)
     }
 
-    fn tle_source_id_for_bin(&self, bin_id: u128) -> Option<u64> {
-        self.params
-            .latest_source_id_for_bin(bin_id)
-            .filter(|&source_id| {
-                self.terminal_source_count
-                    .is_none_or(|terminal_source_count| source_id < terminal_source_count)
-                    && self.params.tle_bin_id(source_id) == bin_id
-            })
-    }
-
     pub(crate) fn next_source_id(&self) -> u64 {
         self.next_decoded_source_id
     }
@@ -780,7 +625,7 @@ impl MettleDecoder {
 
     pub(crate) fn skip_next_source_without_edges(&mut self) -> Vec<DecodedSource> {
         let payload = vec![0; self.source_symbol_bytes.get()];
-        let mut released = self.observe_source_and_release(self.next_decoded_source_id, payload);
+        let mut released = self.decode_source_and_release(self.next_decoded_source_id, payload);
         released.extend(self.drain_decodable_sources());
         released
     }
@@ -929,7 +774,7 @@ mod tests {
     }
 
     #[test]
-    fn push_bin_uses_source_observation_to_unblock_overlap_bins() {
+    fn push_bin_uses_decoded_prefix_bin_to_unblock_overlap_bins() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         let source_id = 537u64;
         let future_overlap_bin_id = params
@@ -1081,7 +926,7 @@ mod tests {
     }
 
     #[test]
-    fn fast_tle_path_still_peels_future_tle_bins() {
+    fn coded_tle_bins_peel_future_tle_bins() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
         let source_symbol_bytes = NonZeroUsize::new(1).expect("non-zero");
         let future_tle_source_id = (1..=1024)

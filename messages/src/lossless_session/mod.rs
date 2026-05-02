@@ -1,8 +1,8 @@
 //! Wire protocol definitions for dataplane lossless sessions.
 //!
-//! Version 5 is the flag-day `Manifest -> Ready -> payload sweep ->
-//! SourceDone -> Need` protocol. The normative rewrite rules live in
-//! `plans/simple-lossless.md`.
+//! Version 6 is the flag-day `Manifest -> Ready -> payload sweep ->
+//! SourceDone -> Need` protocol with 32-bit FEC `symbols_per_block`.
+//! The normative rewrite rules live in `plans/simple-lossless.md`.
 
 mod block_frames;
 mod control_frames;

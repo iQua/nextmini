@@ -11,8 +11,11 @@ pub struct OverheadRatio {
 }
 
 impl OverheadRatio {
-    /// Paper default coded-bin expansion, c = 5%.
-    pub const PAPER_DEFAULT: Self = Self {
+    /// Local convenience default used when callers do not specify `c`.
+    ///
+    /// The METTLE paper treats `c` as channel-dependent, so paper-oriented
+    /// experiments should pass an explicit overhead ratio.
+    pub const DEFAULT: Self = Self {
         numerator: 1,
         denominator: 20,
     };

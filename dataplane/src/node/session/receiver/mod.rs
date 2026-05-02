@@ -25,7 +25,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::SessionId;
 use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
-use crate::node::session::plan::BlockPlan;
+use crate::node::session::plan::{BlockPlan, SymbolGeometry};
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
 
@@ -533,6 +533,50 @@ impl ReceiverShared {
         }
     }
 
+    /// Copy one decoded source symbol into the optional sink buffer.
+    pub(super) async fn write_symbol(
+        &self,
+        block_id: u64,
+        geometry: SymbolGeometry,
+        source_index: usize,
+        payload: &[u8],
+    ) {
+        let Some(plan) = self.plan else {
+            return;
+        };
+        let Some(span) = plan.block_span(block_id) else {
+            return;
+        };
+        let Some(sink) = &self.cfg.sink_buffer else {
+            return;
+        };
+
+        let Some(symbol_offset) = source_index.checked_mul(geometry.symbol_size()) else {
+            return;
+        };
+        if symbol_offset >= span.len() {
+            return;
+        }
+        let copy_len = payload
+            .len()
+            .min(geometry.symbol_size())
+            .min(span.len() - symbol_offset);
+        let Some(start) = usize::try_from(span.offset())
+            .ok()
+            .and_then(|offset| offset.checked_add(symbol_offset))
+        else {
+            return;
+        };
+        let Some(end) = start.checked_add(copy_len) else {
+            return;
+        };
+
+        let mut guard = sink.lock().await;
+        if end <= guard.len() {
+            guard[start..end].copy_from_slice(&payload[..copy_len]);
+        }
+    }
+
     /// Ensure the optional sink buffer is large enough for the full object.
     async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
         let Some(sink) = &self.cfg.sink_buffer else {
@@ -761,6 +805,7 @@ mod tests {
             0,
             FecBlockState {
                 symbols: BTreeMap::from([(0, vec![1, 2])]),
+                ..Default::default()
             },
         )]);
         receiver.last_source_done_round_id = Some(0);
@@ -873,7 +918,7 @@ mod tests {
 
     #[test]
     fn receiver_supports_mettle_for_small_experimental_geometry() {
-        const PAPER_SCALE_METTLE_K: u16 = 2400;
+        const PAPER_SCALE_METTLE_K: u32 = 2400;
 
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
@@ -1438,43 +1483,46 @@ mod tests {
             Some(runtime_tx),
         ));
 
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                11,
-                &LosslessSessionControl::Manifest {
-                    manifest: LosslessSessionManifest {
-                        block_size: 8,
-                        total_bytes: 8,
-                        total_blocks: 1,
-                        mode: LosslessSessionMode::Plain,
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    11,
+                    &LosslessSessionControl::Manifest {
+                        manifest: LosslessSessionManifest {
+                            block_size: 8,
+                            total_bytes: 8,
+                            total_blocks: 1,
+                            mode: LosslessSessionMode::Plain,
+                        },
                     },
-                },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("manifest should reach receiver");
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("manifest should reach receiver");
 
         let _ready = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for Ready")
             .expect("packet capture closed unexpectedly");
 
-        data_tx.send(InboundFrame {
-            bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("block data should reach receiver");
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                11,
-                &LosslessSessionControl::SourceDone { round_id: 0 },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("first SourceDone should reach receiver");
+        data_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("block data should reach receiver");
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    11,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("first SourceDone should reach receiver");
 
         assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
         assert!(
@@ -1484,15 +1532,16 @@ mod tests {
             "runtime handoff must not start while the passive-complete receiver can still answer later rounds"
         );
 
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                11,
-                &LosslessSessionControl::SourceDone { round_id: 1 },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("second SourceDone should reach receiver");
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    11,
+                    &LosslessSessionControl::SourceDone { round_id: 1 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("second SourceDone should reach receiver");
 
         assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
         assert!(
@@ -1585,43 +1634,46 @@ mod tests {
             Some(runtime_tx),
         ));
 
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                12,
-                &LosslessSessionControl::Manifest {
-                    manifest: LosslessSessionManifest {
-                        block_size: 8,
-                        total_bytes: 8,
-                        total_blocks: 1,
-                        mode: LosslessSessionMode::Plain,
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    12,
+                    &LosslessSessionControl::Manifest {
+                        manifest: LosslessSessionManifest {
+                            block_size: 8,
+                            total_bytes: 8,
+                            total_blocks: 1,
+                            mode: LosslessSessionMode::Plain,
+                        },
                     },
-                },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("manifest should reach receiver");
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("manifest should reach receiver");
 
         let _ready = timeout(Duration::from_secs(2), packet_rx.recv())
             .await
             .expect("timed out waiting for Ready")
             .expect("packet capture closed unexpectedly");
 
-        data_tx.send(InboundFrame {
-            bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("block data should reach receiver");
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                12,
-                &LosslessSessionControl::SourceDone { round_id: 0 },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("first SourceDone should reach receiver");
+        data_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("block data should reach receiver");
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    12,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("first SourceDone should reach receiver");
 
         assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
         tokio::time::sleep(
@@ -1636,15 +1688,16 @@ mod tests {
             "receiver should remain live past the sender peer-report timeout budget"
         );
 
-        control_tx.send(InboundFrame {
-            bytes: lossless_session::encode_control(
-                12,
-                &LosslessSessionControl::SourceDone { round_id: 1 },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        })
-        .await
-        .expect("second SourceDone should reach receiver");
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    12,
+                    &LosslessSessionControl::SourceDone { round_id: 1 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("second SourceDone should reach receiver");
         assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
 
         drop(control_tx);
@@ -1789,7 +1842,15 @@ mod tests {
         let mut fec = FecReceiver::new(geometry);
         fec.blocks = blocks
             .into_iter()
-            .map(|(block_id, symbols)| (block_id, FecBlockState { symbols }))
+            .map(|(block_id, symbols)| {
+                (
+                    block_id,
+                    FecBlockState {
+                        symbols,
+                        ..Default::default()
+                    },
+                )
+            })
             .collect();
 
         (

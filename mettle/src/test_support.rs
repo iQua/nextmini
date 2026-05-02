@@ -91,20 +91,6 @@ impl Decoder {
         ))
     }
 
-    pub fn new_non_systematic_terminated(
-        params: MettleParams,
-        source_symbol_bytes: NonZeroUsize,
-        seed: u64,
-        terminal_source_count: u64,
-    ) -> Self {
-        Self(MettleDecoder::new_non_systematic_terminated(
-            params,
-            source_symbol_bytes,
-            seed,
-            terminal_source_count,
-        ))
-    }
-
     pub fn push_bin(&mut self, bin_id: u128, payload: Vec<u8>) -> Vec<(u64, Vec<u8>)> {
         self.0
             .push_bin(MettleBin::new(bin_id, payload))

@@ -26,7 +26,9 @@ trees=""
 block_size=""
 symbols_per_block=""
 payload_size=""
+synthetic_payload="false"
 receive_timeout_ms=""
+peer_report_timeout_ms=""
 packet_processors=""
 channel_capacity=""
 queue_capacity=""
@@ -51,7 +53,9 @@ Options:
   --block-size N             Custom run block size (default: 8192).
   --symbols-per-block N      Custom run symbols_per_block (default: 32).
   --payload-size N           Custom run payload size bytes (default: 262144).
+  --synthetic-payload        Use deterministic in-dataplane payload generation and skip large artifact files.
   --receive-timeout-ms N     Session completion timeout in ms (default: 120000).
+  --peer-report-timeout-ms N Sender feedback timeout after SourceDone in ms (default: 15000).
   --packet-processors N      Dataplane packet processor lanes (default: 1).
   --channel-capacity N       Dataplane channel capacity (default: 2048).
   --queue-capacity N         Dataplane queue capacity (default: 2048).
@@ -99,8 +103,16 @@ while [[ $# -gt 0 ]]; do
       payload_size="${2:-}"
       shift 2
       ;;
+    --synthetic-payload)
+      synthetic_payload="true"
+      shift
+      ;;
     --receive-timeout-ms)
       receive_timeout_ms="${2:-}"
+      shift 2
+      ;;
+    --peer-report-timeout-ms)
+      peer_report_timeout_ms="${2:-}"
       shift 2
       ;;
     --packet-processors)
@@ -535,6 +547,7 @@ run_case() {
   local selected_packet_processors="${10}"
   local selected_channel_capacity="${11}"
   local selected_queue_capacity="${12}"
+  local selected_peer_report_timeout_ms="${13:-15000}"
   local case_dir="${artifacts_root}/${name}"
 
   current_case_dir="$case_dir"
@@ -542,7 +555,7 @@ run_case() {
   mkdir -p "$case_dir"
   echo "Preparing case ${name}."
 
-  generate_case \
+  local generate_args=(
     "$case_dir" \
     --case-name "$name" \
     --mode "$mode" \
@@ -553,9 +566,15 @@ run_case() {
     --symbols-per-block "$symbols_per_block" \
     --payload-size "$payload_size" \
     --receive-timeout-ms "$receive_timeout_ms" \
+    --peer-report-timeout-ms "$selected_peer_report_timeout_ms" \
     --packet-processors "$selected_packet_processors" \
     --channel-capacity "$selected_channel_capacity" \
     --queue-capacity "$selected_queue_capacity"
+  )
+  if [[ "$synthetic_payload" == "true" ]]; then
+    generate_args+=(--synthetic-payload)
+  fi
+  generate_case "${generate_args[@]}"
 
   start_controller "$case_dir"
   start_dataplane "$case_dir"
@@ -568,7 +587,11 @@ run_case() {
   done < <(find "${case_dir}/artifacts" -maxdepth 1 -name 'receiver-*.status' | sort)
 
   echo "Verifying hashes for case ${name}."
-  python3 "${script_dir}/verify_hashes.py" "${case_dir}/artifacts"
+  local verify_args=("${case_dir}/artifacts")
+  if [[ "$synthetic_payload" == "true" ]]; then
+    verify_args+=(--synthetic)
+  fi
+  python3 "${script_dir}/verify_hashes.py" "${verify_args[@]}"
   stop_case "$case_dir"
   current_case_dir=""
   echo "Case ${name} completed successfully."
@@ -671,7 +694,7 @@ trap cleanup_on_exit EXIT
 require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
 
 if [[ -n "$case_name" ]]; then
-  if [[ -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+  if [[ -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
     echo "--case cannot be combined with custom run or sweep options." >&2
     exit 1
   fi
@@ -709,6 +732,8 @@ selected_block_size="${block_size:-8192}"
 selected_symbols_per_block="${symbols_per_block:-32}"
 selected_payload_size="${payload_size:-262144}"
 selected_receive_timeout_ms="${receive_timeout_ms:-120000}"
+selected_peer_report_timeout_ms="${peer_report_timeout_ms:-15000}"
+require_positive_int "--peer-report-timeout-ms" "$selected_peer_report_timeout_ms"
 selected_packet_processors="${packet_processors:-1}"
 selected_channel_capacity="${channel_capacity:-2048}"
 selected_queue_capacity="${queue_capacity:-2048}"
@@ -746,7 +771,7 @@ if [[ -n "$receiver_sweep_max" ]]; then
   ran_any="true"
 fi
 
-if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || -n "$receive_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" ) ]]; then
   if [[ -z "$receivers" || -z "$trees" ]]; then
     echo "Custom runs require both --receivers and --trees." >&2
     exit 1
@@ -777,7 +802,8 @@ if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receiver
     "$selected_receive_timeout_ms" \
     "$selected_packet_processors" \
     "$selected_channel_capacity" \
-    "$selected_queue_capacity"
+    "$selected_queue_capacity" \
+    "$selected_peer_report_timeout_ms"
   ran_any="true"
 fi
 

@@ -25,6 +25,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--block-size", type=int, required=True)
     parser.add_argument("--symbols-per-block", type=int, required=True)
     parser.add_argument("--payload-size", type=int, required=True)
+    parser.add_argument(
+        "--synthetic-payload",
+        action="store_true",
+        help="Generate deterministic payload bytes inside the dataplane instead of writing payload.bin.",
+    )
     parser.add_argument("--packet-processors", type=int, default=1)
     parser.add_argument("--channel-capacity", type=int, default=2048)
     parser.add_argument("--queue-capacity", type=int, default=2048)
@@ -33,6 +38,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=120_000,
         help="Transfer completion timeout for source/receiver sessions.",
+    )
+    parser.add_argument(
+        "--peer-report-timeout-ms",
+        type=int,
+        default=15_000,
+        help="Sender timeout for receiver feedback after SourceDone.",
     )
     parser.add_argument(
         "--controller-addr",
@@ -67,6 +78,8 @@ def validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--queue-capacity must be positive.")
     if args.receive_timeout_ms <= 0:
         raise SystemExit("--receive-timeout-ms must be positive.")
+    if args.peer_report_timeout_ms <= 0:
+        raise SystemExit("--peer-report-timeout-ms must be positive.")
     if args.mode == "plain" and args.trees != 1:
         raise SystemExit("plain mode currently supports exactly one tree in this harness.")
 
@@ -183,6 +196,7 @@ auto_add_forward_rules = true
 [lossless_runtime_config]
 default_block_size = {args.block_size}
 ready_grace_ms = 3000
+peer_report_timeout_ms = {args.peer_report_timeout_ms}
 fec_enabled = {fec_enabled}
 fec_default_symbols_per_block = {args.symbols_per_block}
 fec_default_scheme = "{fec_scheme}"
@@ -196,6 +210,8 @@ source_node_id = {SOURCE_NODE_ID}
 receiver_ids = [{receivers}]
 artifact_dir = "{artifact_dir}"
 payload_path = "{payload_path}"
+synthetic_payload = {str(args.synthetic_payload).lower()}
+payload_size = {args.payload_size}
 group_timeout_ms = 30000
 receive_timeout_ms = {args.receive_timeout_ms}
 poll_interval_ms = 200
@@ -222,7 +238,8 @@ def main() -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
     artifact_dir.mkdir(parents=True, exist_ok=True)
 
-    write_payload(payload_path, args.payload_size)
+    if not args.synthetic_payload:
+        write_payload(payload_path, args.payload_size)
     (out_dir / "controller-config.toml").write_text(
         render_controller_config(args), encoding="utf-8"
     )
@@ -232,7 +249,10 @@ def main() -> None:
 
     print(f"Wrote {out_dir / 'controller-config.toml'}")
     print(f"Wrote {out_dir / 'dataplane-config.toml'}")
-    print(f"Wrote {payload_path}")
+    if args.synthetic_payload:
+        print(f"Using synthetic payload size {args.payload_size}")
+    else:
+        print(f"Wrote {payload_path}")
 
 
 if __name__ == "__main__":

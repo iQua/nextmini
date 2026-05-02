@@ -90,11 +90,12 @@ pub struct ReceivedSymbol {
 #[derive(Debug, Clone)]
 enum ReceivedSymbolKind {
     RaptorQ { esi: u32 },
-    MettleSource { source_index: usize },
-    MettleRepair { repair_index: Option<usize> },
 }
 
-/// Thin encoder wrapper around the selected FEC backend.
+/// Thin encoder wrapper around block-materialized FEC backends.
+///
+/// METTLE intentionally does not use this path: its sender advances the
+/// paper-native streaming encoder directly and produces coded bins on demand.
 #[derive(Debug)]
 pub struct Encoder {
     inner: EncoderInner,
@@ -104,7 +105,6 @@ pub struct Encoder {
 #[derive(Debug)]
 enum EncoderInner {
     RaptorQ(SourceBlockEncoder),
-    Mettle(mettle::block::Encoder),
 }
 
 impl Encoder {
@@ -121,17 +121,7 @@ impl Encoder {
             FecScheme::RaptorQ => {
                 EncoderInner::RaptorQ(SourceBlockEncoder::new(0, &params.oti(), source_block))
             }
-            FecScheme::Mettle => EncoderInner::Mettle(
-                mettle::block::Encoder::from_block(
-                    mettle::block::BlockParams::new(
-                        params.source_symbols,
-                        params.symbol_size,
-                        params.seed,
-                    ),
-                    source_block,
-                )
-                .ok()?,
-            ),
+            FecScheme::Mettle => return None,
         };
         Some(Self {
             inner,
@@ -139,19 +129,18 @@ impl Encoder {
         })
     }
 
-    /// Generates a deterministic coded symbol payload for the provided ESI (ESI >= K).
+    /// Generates a deterministic RaptorQ repair symbol payload for the provided ESI.
     #[must_use]
     pub fn coded_symbol(&self, esi: u32) -> Option<Vec<u8>> {
-        let repair_index = self.repair_index(esi)?;
         match &self.inner {
             EncoderInner::RaptorQ(inner) => {
+                let repair_index = self.repair_index(esi)?;
                 let packets = inner.repair_packets(repair_index, 1);
                 packets
                     .into_iter()
                     .next()
                     .map(|packet| packet.data().to_vec())
             }
-            EncoderInner::Mettle(inner) => inner.repair_symbol(repair_index as usize).ok(),
         }
     }
 
@@ -189,35 +178,36 @@ impl Decoder {
     #[must_use]
     pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
         assert!((esi as usize) < self.k, "source ESI must be less than K");
-        let kind = match self.params.scheme {
-            FecScheme::RaptorQ => ReceivedSymbolKind::RaptorQ { esi },
-            FecScheme::Mettle => ReceivedSymbolKind::MettleSource {
-                source_index: esi as usize,
-            },
-        };
-        ReceivedSymbol { kind, payload }
+        assert_eq!(
+            self.params.scheme,
+            FecScheme::RaptorQ,
+            "METTLE uses the streaming decoder path, not block decoder symbols"
+        );
+        ReceivedSymbol {
+            kind: ReceivedSymbolKind::RaptorQ { esi },
+            payload,
+        }
     }
 
     /// Builds a coded symbol in decoder input format.
     #[must_use]
     pub fn coded_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        let kind = match self.params.scheme {
-            FecScheme::RaptorQ => ReceivedSymbolKind::RaptorQ { esi },
-            FecScheme::Mettle => ReceivedSymbolKind::MettleRepair {
-                repair_index: u32::try_from(self.k)
-                    .ok()
-                    .and_then(|k| esi.checked_sub(k))
-                    .and_then(|repair_index| usize::try_from(repair_index).ok()),
-            },
-        };
-        ReceivedSymbol { kind, payload }
+        assert_eq!(
+            self.params.scheme,
+            FecScheme::RaptorQ,
+            "METTLE uses the streaming decoder path, not block decoder symbols"
+        );
+        ReceivedSymbol {
+            kind: ReceivedSymbolKind::RaptorQ { esi },
+            payload,
+        }
     }
 
     /// Attempt to reconstruct the source symbols from the received symbol set.
     pub fn decode(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
         match self.params.scheme {
             FecScheme::RaptorQ => self.decode_raptorq(symbols),
-            FecScheme::Mettle => self.decode_mettle(symbols),
+            FecScheme::Mettle => Err(DecodeError::InvalidSymbol),
         }
     }
 
@@ -232,8 +222,6 @@ impl Decoder {
                     PayloadId::new(0, esi),
                     sym.payload.clone(),
                 )),
-                ReceivedSymbolKind::MettleSource { .. }
-                | ReceivedSymbolKind::MettleRepair { .. } => Err(DecodeError::InvalidSymbol),
             })
             .collect::<Result<_, _>>()?;
         match decoder.decode(packets) {
@@ -259,41 +247,6 @@ impl Decoder {
             None => Err(DecodeError::InsufficientSymbols),
         }
     }
-
-    fn decode_mettle(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
-        let decoder = mettle::block::Decoder::from_block(mettle::block::BlockParams::new(
-            self.params.source_symbols,
-            self.params.symbol_size,
-            self.params.seed,
-        ));
-        let symbols = symbols
-            .iter()
-            .map(|sym| match sym.kind {
-                ReceivedSymbolKind::RaptorQ { .. } => Err(DecodeError::InvalidSymbol),
-                ReceivedSymbolKind::MettleSource { source_index } => {
-                    Ok(decoder.source_symbol(source_index, sym.payload.clone()))
-                }
-                ReceivedSymbolKind::MettleRepair { repair_index } => repair_index
-                    .map(|repair_index| decoder.repair_symbol(repair_index, sym.payload.clone()))
-                    .ok_or(DecodeError::InvalidSymbol),
-            })
-            .collect::<Result<Vec<_>, _>>()?;
-
-        decoder.decode(&symbols).map_or_else(
-            |error| match error {
-                mettle::block::DecodeError::InsufficientSymbols => {
-                    Err(DecodeError::InsufficientSymbols)
-                }
-                mettle::block::DecodeError::Block(_)
-                | mettle::block::DecodeError::WrongSymbolLength => Err(DecodeError::InvalidSymbol),
-            },
-            |output| {
-                Ok(DecodeOutput {
-                    source_symbols: output.source_symbols,
-                })
-            },
-        )
-    }
 }
 
 /// Compute how many future repair symbols are needed for the selected scheme.
@@ -311,6 +264,21 @@ pub fn repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = 
             }
         }
         FecScheme::Mettle => mettle_repair_deficit(params, symbol_ids),
+    }
+}
+
+/// Return the number of symbols to emit before opening the first FEC feedback
+/// round for the selected scheme.
+#[must_use]
+pub fn initial_symbol_count(params: BlockParams) -> Option<u32> {
+    match params.scheme {
+        FecScheme::RaptorQ => u32::try_from(params.source_symbols).ok(),
+        FecScheme::Mettle => {
+            mettle::block::BlockParams::new(params.source_symbols, params.symbol_size, params.seed)
+                .metadata()
+                .ok()
+                .and_then(|metadata| u32::try_from(metadata.initial_symbol_count()).ok())
+        }
     }
 }
 
@@ -465,20 +433,6 @@ mod tests {
         {
             assert_eq!(decoded, expected, "symbol {i} mismatch");
         }
-    }
-
-    #[test]
-    fn mettle_rejects_repair_esi_below_k() {
-        let k = PAPER_SCALE_METTLE_K;
-        let params = BlockParams::with_scheme(k, 1, 0x1234, FecScheme::Mettle);
-        let decoder = Decoder::from_block(params);
-
-        let bad_repair = decoder.coded_symbol(0, vec![0]);
-
-        assert!(matches!(
-            decoder.decode(&[bad_repair]),
-            Err(DecodeError::InvalidSymbol)
-        ));
     }
 
     #[test]
