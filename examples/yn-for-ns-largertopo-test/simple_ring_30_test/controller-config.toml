@@ -1,0 +1,554 @@
+protocol = "tcp"
+flow_transport = "lossless_unicast"
+scheduler_type = "wrr"
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "170.16.8.2"
+database = "nextmini"
+port = "5432"
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 30 }
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+rate = 100_681_950
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 3
+rate = 98_466_956
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 3
+dst_node_id = 4
+rate = 98_104_902
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 4
+dst_node_id = 5
+rate = 101_110_288
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 5
+dst_node_id = 6
+rate = 99_153_556
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 6
+dst_node_id = 7
+rate = 99_027_150
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 7
+dst_node_id = 8
+rate = 98_936_213
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 8
+dst_node_id = 9
+rate = 98_585_264
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 9
+dst_node_id = 10
+rate = 101_088_984
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 10
+dst_node_id = 11
+rate = 98_429_895
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 11
+dst_node_id = 12
+rate = 100_838_283
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 12
+dst_node_id = 13
+rate = 101_106_585
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 13
+dst_node_id = 14
+rate = 101_742_072
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 14
+dst_node_id = 15
+rate = 100_287_433
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 15
+dst_node_id = 16
+rate = 98_364_647
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 16
+dst_node_id = 17
+rate = 100_476_705
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 17
+dst_node_id = 18
+rate = 99_769_668
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 18
+dst_node_id = 19
+rate = 98_133_306
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 19
+dst_node_id = 20
+rate = 98_124_978
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 20
+dst_node_id = 21
+rate = 98_392_986
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 21
+dst_node_id = 22
+rate = 98_917_034
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 22
+dst_node_id = 23
+rate = 98_975_850
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 23
+dst_node_id = 24
+rate = 100_119_613
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 24
+dst_node_id = 25
+rate = 100_525_049
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 25
+dst_node_id = 26
+rate = 98_111_299
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 26
+dst_node_id = 27
+rate = 100_354_032
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 27
+dst_node_id = 28
+rate = 98_833_985
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 28
+dst_node_id = 29
+rate = 101_003_203
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 29
+dst_node_id = 30
+rate = 100_725_812
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 30
+dst_node_id = 1
+rate = 100_941_570
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 1
+rate = 100_285_650
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 3
+dst_node_id = 2
+rate = 99_759_593
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 4
+dst_node_id = 3
+rate = 98_924_594
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 5
+dst_node_id = 4
+rate = 99_884_119
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 6
+dst_node_id = 5
+rate = 100_471_559
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 7
+dst_node_id = 6
+rate = 99_166_816
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 8
+dst_node_id = 7
+rate = 101_394_997
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 9
+dst_node_id = 8
+rate = 101_646_109
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 10
+dst_node_id = 9
+rate = 98_027_257
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 11
+dst_node_id = 10
+rate = 101_182_668
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 12
+dst_node_id = 11
+rate = 101_379_850
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 13
+dst_node_id = 12
+rate = 98_669_659
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 14
+dst_node_id = 13
+rate = 100_928_208
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 15
+dst_node_id = 14
+rate = 99_772_573
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 16
+dst_node_id = 15
+rate = 99_427_114
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 17
+dst_node_id = 16
+rate = 99_165_476
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 18
+dst_node_id = 17
+rate = 98_652_128
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 19
+dst_node_id = 18
+rate = 98_903_091
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 20
+dst_node_id = 19
+rate = 101_202_326
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 21
+dst_node_id = 20
+rate = 99_411_779
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 22
+dst_node_id = 21
+rate = 98_428_700
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 23
+dst_node_id = 22
+rate = 98_389_004
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 24
+dst_node_id = 23
+rate = 99_593_530
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 25
+dst_node_id = 24
+rate = 98_405_657
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 26
+dst_node_id = 25
+rate = 99_505_668
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 27
+dst_node_id = 26
+rate = 101_554_649
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 28
+dst_node_id = 27
+rate = 99_442_654
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 29
+dst_node_id = 28
+rate = 100_532_210
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 30
+dst_node_id = 29
+rate = 99_109_480
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 30
+rate = 101_385_341
+bucket_size = 9000
+
+[[routes]]
+route = [1, 2]
+
+[[routes]]
+route = [2, 1]
+
+[[routes]]
+route = [2, 3]
+
+[[routes]]
+route = [3, 2]
+
+[[routes]]
+route = [3, 4]
+
+[[routes]]
+route = [4, 3]
+
+[[routes]]
+route = [4, 5]
+
+[[routes]]
+route = [5, 4]
+
+[[routes]]
+route = [5, 6]
+
+[[routes]]
+route = [6, 5]
+
+[[routes]]
+route = [6, 7]
+
+[[routes]]
+route = [7, 6]
+
+[[routes]]
+route = [7, 8]
+
+[[routes]]
+route = [8, 7]
+
+[[routes]]
+route = [8, 9]
+
+[[routes]]
+route = [9, 8]
+
+[[routes]]
+route = [9, 10]
+
+[[routes]]
+route = [10, 9]
+
+[[routes]]
+route = [10, 11]
+
+[[routes]]
+route = [11, 10]
+
+[[routes]]
+route = [11, 12]
+
+[[routes]]
+route = [12, 11]
+
+[[routes]]
+route = [12, 13]
+
+[[routes]]
+route = [13, 12]
+
+[[routes]]
+route = [13, 14]
+
+[[routes]]
+route = [14, 13]
+
+[[routes]]
+route = [14, 15]
+
+[[routes]]
+route = [15, 14]
+
+[[routes]]
+route = [15, 16]
+
+[[routes]]
+route = [16, 15]
+
+[[routes]]
+route = [16, 17]
+
+[[routes]]
+route = [17, 16]
+
+[[routes]]
+route = [17, 18]
+
+[[routes]]
+route = [18, 17]
+
+[[routes]]
+route = [18, 19]
+
+[[routes]]
+route = [19, 18]
+
+[[routes]]
+route = [19, 20]
+
+[[routes]]
+route = [20, 19]
+
+[[routes]]
+route = [20, 21]
+
+[[routes]]
+route = [21, 20]
+
+[[routes]]
+route = [21, 22]
+
+[[routes]]
+route = [22, 21]
+
+[[routes]]
+route = [22, 23]
+
+[[routes]]
+route = [23, 22]
+
+[[routes]]
+route = [23, 24]
+
+[[routes]]
+route = [24, 23]
+
+[[routes]]
+route = [24, 25]
+
+[[routes]]
+route = [25, 24]
+
+[[routes]]
+route = [25, 26]
+
+[[routes]]
+route = [26, 25]
+
+[[routes]]
+route = [26, 27]
+
+[[routes]]
+route = [27, 26]
+
+[[routes]]
+route = [27, 28]
+
+[[routes]]
+route = [28, 27]
+
+[[routes]]
+route = [28, 29]
+
+[[routes]]
+route = [29, 28]
+
+[[routes]]
+route = [29, 30]
+
+[[routes]]
+route = [30, 29]
+
+[[routes]]
+route = [30, 1]
+
+[[routes]]
+route = [1, 30]

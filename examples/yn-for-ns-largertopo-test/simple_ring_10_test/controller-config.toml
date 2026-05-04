@@ -1,0 +1,194 @@
+protocol = "tcp"
+flow_transport = "lossless_unicast"
+scheduler_type = "wrr"
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "170.16.8.2"
+database = "nextmini"
+port = "5432"
+
+[topology]
+type = "full_mesh"
+full_mesh_config = { n_nodes = 10 }
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 2
+rate = 100_681_950
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 3
+rate = 98_466_956
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 3
+dst_node_id = 4
+rate = 98_104_902
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 4
+dst_node_id = 5
+rate = 101_110_288
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 5
+dst_node_id = 6
+rate = 99_153_556
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 6
+dst_node_id = 7
+rate = 99_027_150
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 7
+dst_node_id = 8
+rate = 98_936_213
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 8
+dst_node_id = 9
+rate = 98_585_264
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 9
+dst_node_id = 10
+rate = 101_088_984
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 10
+dst_node_id = 1
+rate = 98_429_895
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 2
+dst_node_id = 1
+rate = 100_838_283
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 3
+dst_node_id = 2
+rate = 101_106_585
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 4
+dst_node_id = 3
+rate = 101_742_072
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 5
+dst_node_id = 4
+rate = 100_287_433
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 6
+dst_node_id = 5
+rate = 98_364_647
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 7
+dst_node_id = 6
+rate = 100_476_705
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 8
+dst_node_id = 7
+rate = 99_769_668
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 9
+dst_node_id = 8
+rate = 98_133_306
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 10
+dst_node_id = 9
+rate = 98_124_978
+bucket_size = 9000
+
+[[link_rates]]
+src_node_id = 1
+dst_node_id = 10
+rate = 98_392_986
+bucket_size = 9000
+
+[[routes]]
+route = [1, 2]
+
+[[routes]]
+route = [2, 1]
+
+[[routes]]
+route = [2, 3]
+
+[[routes]]
+route = [3, 2]
+
+[[routes]]
+route = [3, 4]
+
+[[routes]]
+route = [4, 3]
+
+[[routes]]
+route = [4, 5]
+
+[[routes]]
+route = [5, 4]
+
+[[routes]]
+route = [5, 6]
+
+[[routes]]
+route = [6, 5]
+
+[[routes]]
+route = [6, 7]
+
+[[routes]]
+route = [7, 6]
+
+[[routes]]
+route = [7, 8]
+
+[[routes]]
+route = [8, 7]
+
+[[routes]]
+route = [8, 9]
+
+[[routes]]
+route = [9, 8]
+
+[[routes]]
+route = [9, 10]
+
+[[routes]]
+route = [10, 9]
+
+[[routes]]
+route = [10, 1]
+
+[[routes]]
+route = [1, 10]

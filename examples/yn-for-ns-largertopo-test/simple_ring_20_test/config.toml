@@ -1,0 +1,20 @@
+private_network_interface = "eth0"
+private_network_name = "net1"
+n_nodes = 20
+num_tun_queues = 1
+num_packet_processors = 8
+channel_capacity = 4000
+channel_backpressure = true
+queue_capacity = 3000
+feature = "concurrent"
+
+enable_local_interface = false
+auto_add_forward_rules = true
+
+controller_addr = "127.0.0.1:3000"
+
+metrics_collection_interval = 3600
+
+controller_connect_timeout_ms = 30000
+interval_between_spawn = 1
+child_start_delay_ms = 0
