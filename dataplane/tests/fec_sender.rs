@@ -1,5 +1,6 @@
 mod common;
 
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -16,6 +17,7 @@ use nextmini_messages::lossless_session::{
 };
 
 const SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS: u64 = 1500;
+const TEST_FEC_TREE_IDS: &[u16] = &[7, 9];
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn sender_prioritizes_source_symbols_before_extra_symbols() {
@@ -721,6 +723,7 @@ fn fec_status_frame(
             &LosslessSessionControl::Need { round_id, report },
         ),
         peer_id: Some(peer_id),
+        tree_id: None,
     }
 }
 
@@ -728,6 +731,8 @@ async fn wait_for_source_done(
     packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>,
     expected_round_id: u32,
 ) {
+    let expected_tree_ids = TEST_FEC_TREE_IDS.iter().copied().collect::<BTreeSet<_>>();
+    let mut seen_tree_ids = BTreeSet::new();
     loop {
         let packet = common::recv_packet(packet_rx).await;
         let payload = packet
@@ -737,7 +742,17 @@ async fn wait_for_source_done(
             lossless_session::decode_control(payload)
         {
             assert_eq!(round_id, expected_round_id);
-            return;
+            let Some(tree_id) = packet.lossless_fec_tree_id() else {
+                return;
+            };
+            assert!(
+                expected_tree_ids.contains(&tree_id),
+                "unexpected SourceDone tree id {tree_id}"
+            );
+            seen_tree_ids.insert(tree_id);
+            if seen_tree_ids.is_superset(&expected_tree_ids) {
+                return;
+            }
         }
     }
 }

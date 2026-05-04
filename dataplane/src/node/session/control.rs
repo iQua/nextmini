@@ -58,13 +58,7 @@ pub fn try_send_frame(
 /// Build one control packet on the control-routing path.
 pub fn build_control_packet(route: FrameRoute, control: &LosslessSessionControl) -> Packet {
     let frame = lossless_session::encode_control(route.session_id, control);
-    build_packet(
-        FrameRoute {
-            tree_id: None,
-            ..route
-        },
-        &frame,
-    )
+    build_packet(route, &frame)
 }
 
 /// Encode and emit one lossless session control frame.
@@ -83,7 +77,7 @@ mod tests {
     use std::net::Ipv4Addr;
 
     #[test]
-    fn control_packets_clear_payload_tree_ids() {
+    fn control_packets_preserve_explicit_tree_ids() {
         let packet = build_control_packet(
             FrameRoute {
                 session_id: 17,
@@ -97,7 +91,7 @@ mod tests {
         );
 
         assert_eq!(packet.lossless_session_id(), Some(17));
-        assert_eq!(packet.lossless_fec_tree_id(), None);
+        assert_eq!(packet.lossless_fec_tree_id(), Some(9));
         let payload = packet
             .tcp_payload()
             .expect("control packet should include payload");

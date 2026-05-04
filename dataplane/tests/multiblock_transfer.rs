@@ -187,6 +187,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -206,6 +207,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         tx.send(InboundFrame {
             bytes: lossless_session::encode_block_data(0xA11C_E102, block_id as u64, block),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         })
         .await
         .expect("block data should reach receiver");
@@ -217,6 +219,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");
@@ -361,6 +364,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -395,6 +399,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
             tx.send(InboundFrame {
                 bytes,
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("symbol should reach receiver");
@@ -414,6 +419,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");

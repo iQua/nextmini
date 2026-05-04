@@ -733,6 +733,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -764,6 +765,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -778,6 +780,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -807,6 +810,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -826,6 +830,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 1 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -840,6 +845,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 2 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -888,6 +894,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -946,6 +953,7 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;
@@ -997,6 +1005,7 @@ mod tests {
                 InboundFrame {
                     bytes,
                     peer_id: Some(SOURCE_NODE_ID),
+                    tree_id: None,
                 },
             )
             .await;

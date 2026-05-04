@@ -206,9 +206,11 @@ impl SessionReceiver {
         while let Ok(next) = control_rx.try_recv() {
             match (newest_round, source_done_round(&next)) {
                 (Some(current_round), Some(next_round)) => {
-                    if next_round >= current_round {
+                    if next_round > current_round {
                         frame = next;
                         newest_round = Some(next_round);
+                    } else if next_round == current_round {
+                        self.pending_control_frames.push_back(next);
                     }
                 }
                 _ => self.pending_control_frames.push_back(next),
@@ -299,7 +301,8 @@ impl SessionReceiver {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
-                    mode.handle_source_done(&self.shared, round_id).await;
+                    mode.handle_source_done(&self.shared, round_id, frame.tree_id)
+                        .await;
                 }
             }
         }
@@ -365,7 +368,7 @@ impl SessionReceiver {
                 let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
                     return;
                 };
-                ReceiverMode::Fec(FecReceiver::new(geometry))
+                ReceiverMode::Fec(FecReceiver::new(geometry, &fec.tree_ids))
             }
         };
 
@@ -744,6 +747,7 @@ mod tests {
                 &LosslessSessionControl::SourceDone { round_id: 0 },
             ),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         };
         let expected = NeedReport::Fec {
             blocks: vec![NeedBlock {
@@ -766,6 +770,7 @@ mod tests {
                     &[3, 4],
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -819,6 +824,7 @@ mod tests {
                 .ok()
                 .and_then(|plan| plan.symbol_geometry(4).ok())
                 .expect("valid geometry"),
+            &[0, 1],
         );
         receiver.blocks = BTreeMap::from([(
             0,
@@ -880,7 +886,7 @@ mod tests {
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
         };
-        let receiver = FecReceiver::new(geometry);
+        let receiver = FecReceiver::new(geometry, &[]);
 
         let NeedReport::Fec { blocks } = receiver.need_report(&shared).expect("status") else {
             panic!("expected missing-block status");
@@ -993,11 +999,12 @@ mod tests {
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
         };
-        let mut receiver = FecReceiver::new(geometry);
+        let mut receiver = FecReceiver::new(geometry, &[]);
         let payload = vec![0; geometry.symbol_size()];
         let frame = InboundFrame {
             bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         };
 
         receiver.handle_block_symbol_frame(&mut shared, frame).await;
@@ -1039,6 +1046,7 @@ mod tests {
                     &[1],
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -1066,6 +1074,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -1118,6 +1127,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -1135,6 +1145,7 @@ mod tests {
                 &LosslessSessionControl::SourceDone { round_id: 0 },
             ),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         };
         let expected = NeedReport::Plain {
             ranges: vec![MissingBlockRange {
@@ -1156,6 +1167,7 @@ mod tests {
                     b"ijklmnop",
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -1175,6 +1187,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 1 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
         assert_eq!(
@@ -1194,6 +1207,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
         assert!(
@@ -1220,6 +1234,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 1 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
         assert_eq!(
@@ -1239,6 +1254,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
         assert!(
@@ -1255,6 +1271,7 @@ mod tests {
         let frame = InboundFrame {
             bytes: lossless_session::encode_block_data(receiver.shared.session_id, 0, b"abcdefgh"),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         };
 
         receiver.handle_block_data_frame(frame.clone()).await;
@@ -1289,6 +1306,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
@@ -1308,11 +1326,56 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
 
         assert_eq!(recv_fec_need(&mut packet_rx).await, NeedReport::Complete);
         assert!(receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_defers_tree_scoped_source_done_until_all_tree_boundaries() {
+        let (mut receiver, mut packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+                tree_id: Some(0),
+            })
+            .await;
+        assert!(
+            timeout(Duration::from_millis(25), packet_rx.recv())
+                .await
+                .is_err(),
+            "first tree boundary alone must not produce FEC feedback"
+        );
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+                tree_id: Some(1),
+            })
+            .await;
+
+        assert_eq!(
+            recv_fec_need(&mut packet_rx).await,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 4,
+                }],
+            }
+        );
     }
 
     #[tokio::test]
@@ -1466,7 +1529,7 @@ mod tests {
                 plan: BlockPlan::new(8, 8).ok(),
                 complete_blocks: BTreeSet::from([0]),
             },
-            mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
+            mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry, &[]))),
             lifecycle: ReceiverLifecycle::Active,
             pending_control_frames: VecDeque::new(),
         };
@@ -1478,6 +1541,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await;
         assert_eq!(
@@ -1587,6 +1651,7 @@ mod tests {
                     },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("manifest should reach receiver");
@@ -1600,6 +1665,7 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("block data should reach receiver");
@@ -1610,6 +1676,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("first SourceDone should reach receiver");
@@ -1629,6 +1696,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 1 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("second SourceDone should reach receiver");
@@ -1738,6 +1806,7 @@ mod tests {
                     },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("manifest should reach receiver");
@@ -1751,6 +1820,7 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("block data should reach receiver");
@@ -1761,6 +1831,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 0 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("first SourceDone should reach receiver");
@@ -1785,6 +1856,7 @@ mod tests {
                     &LosslessSessionControl::SourceDone { round_id: 1 },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
+                tree_id: None,
             })
             .await
             .expect("second SourceDone should reach receiver");
@@ -1929,7 +2001,7 @@ mod tests {
         let plan = BlockPlan::new(total_bytes, 8).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");
 
-        let mut fec = FecReceiver::new(geometry);
+        let mut fec = FecReceiver::new(geometry, &[0, 1]);
         fec.blocks = blocks
             .into_iter()
             .map(|(block_id, symbols)| {

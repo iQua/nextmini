@@ -610,19 +610,42 @@ impl SenderShared {
             session_id = self.session.session_id,
             round_id, "Lossless sender emitted SourceDone"
         );
-        control::send_control(
-            &self.processors,
-            control::FrameRoute {
-                session_id: self.session.session_id,
-                tree_id: None,
-                src_ip: self.route.src_ip,
-                src_port: self.route.src_port,
-                dst_ip: self.route.dst_ip,
-                dst_port: self.route.dst_port,
-            },
-            &LosslessSessionControl::SourceDone { round_id },
-        )
-        .await;
+        let tree_ids = match &self.manifest.mode {
+            LosslessSessionMode::Fec(fec) => fec.tree_ids.clone(),
+            LosslessSessionMode::Plain => Vec::new(),
+        };
+        if tree_ids.is_empty() {
+            control::send_control(
+                &self.processors,
+                control::FrameRoute {
+                    session_id: self.session.session_id,
+                    tree_id: None,
+                    src_ip: self.route.src_ip,
+                    src_port: self.route.src_port,
+                    dst_ip: self.route.dst_ip,
+                    dst_port: self.route.dst_port,
+                },
+                &LosslessSessionControl::SourceDone { round_id },
+            )
+            .await;
+            return;
+        }
+
+        for tree_id in tree_ids {
+            control::send_control(
+                &self.processors,
+                control::FrameRoute {
+                    session_id: self.session.session_id,
+                    tree_id: Some(tree_id),
+                    src_ip: self.route.src_ip,
+                    src_port: self.route.src_port,
+                    dst_ip: self.route.dst_ip,
+                    dst_port: self.route.dst_port,
+                },
+                &LosslessSessionControl::SourceDone { round_id },
+            )
+            .await;
+        }
     }
 
     /// Apply optional pacing before sending `bytes` bytes of payload.
@@ -662,6 +685,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -684,6 +708,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: None,
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -698,6 +723,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -706,6 +732,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(23),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -730,6 +757,7 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             })
             .await
             .expect("ready should enqueue");
@@ -741,6 +769,7 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(23),
+                tree_id: None,
             })
             .await
             .expect("late ready should enqueue");
@@ -764,6 +793,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -780,6 +810,7 @@ mod tests {
                     },
                 ),
                 peer_id: Some(23),
+                tree_id: None,
             },
             &mut mode,
         );
@@ -794,6 +825,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -810,6 +842,7 @@ mod tests {
                     },
                 ),
                 peer_id: None,
+                tree_id: None,
             },
             &mut mode,
         );
@@ -824,6 +857,7 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -886,6 +920,7 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(9, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
+                tree_id: None,
             })
             .await
             .expect("ready control should enqueue");
@@ -900,6 +935,7 @@ mod tests {
                     },
                 ),
                 peer_id: Some(22),
+                tree_id: None,
             })
             .await
             .expect("need should enqueue");

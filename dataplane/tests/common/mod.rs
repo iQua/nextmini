@@ -138,6 +138,7 @@ pub fn block_data_frame(
     InboundFrame {
         bytes: lossless_session::encode_block_data(session_id, block_id, payload),
         peer_id: Some(peer_id),
+        tree_id: None,
     }
 }
 
@@ -175,10 +176,26 @@ pub fn source_done_frame(session_id: u64, peer_id: usize, round_id: u32) -> Inbo
     )
 }
 
+pub fn source_done_frame_on_tree(
+    session_id: u64,
+    peer_id: usize,
+    round_id: u32,
+    tree_id: u16,
+) -> InboundFrame {
+    let mut frame = control_frame(
+        session_id,
+        peer_id,
+        LosslessSessionControl::SourceDone { round_id },
+    );
+    frame.tree_id = Some(tree_id);
+    frame
+}
+
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {
     InboundFrame {
         bytes: lossless_session::encode_control(session_id, &control),
         peer_id: Some(peer_id),
+        tree_id: None,
     }
 }
 
@@ -202,5 +219,6 @@ pub fn legacy_control_frame(
     InboundFrame {
         bytes,
         peer_id: Some(peer_id),
+        tree_id: None,
     }
 }

@@ -58,6 +58,7 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -87,6 +88,7 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("block data should reach receiver");
@@ -97,6 +99,7 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");
@@ -167,6 +170,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -183,6 +187,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID + 20, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("block data should reach receiver");
@@ -192,6 +197,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("first source-done should reach receiver");
@@ -223,6 +229,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
             &LosslessSessionControl::SourceDone { round_id: 1 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("second source-done should reach receiver");
@@ -285,6 +292,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -293,6 +301,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID + 21, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("block data should reach receiver");
@@ -302,6 +311,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");
@@ -353,6 +363,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -369,6 +380,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID + 2, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("block data should reach receiver");
@@ -392,6 +404,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");
@@ -456,6 +469,7 @@ async fn plain_receiver_ignores_removed_legacy_control_ids() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -538,6 +552,7 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
                 },
             ),
             peer_id: Some(SOURCE_NODE_ID),
+            tree_id: None,
         })
         .await
         .expect("manifest should reach receiver");
@@ -596,6 +611,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("manifest should reach receiver");
@@ -622,6 +638,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
             },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("conflicting manifest should reach receiver");
@@ -636,6 +653,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
     tx.send(InboundFrame {
         bytes: lossless_session::encode_block_data(SESSION_ID + 5, 0, b"abcdefghijklmnop"),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("block data should reach receiver");
@@ -646,6 +664,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
             &LosslessSessionControl::SourceDone { round_id: 0 },
         ),
         peer_id: Some(SOURCE_NODE_ID),
+        tree_id: None,
     })
     .await
     .expect("source-done should reach receiver");

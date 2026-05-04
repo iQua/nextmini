@@ -1373,6 +1373,7 @@ impl Processor {
                 LosslessInboundFrame {
                     bytes: payload_vec,
                     peer_id,
+                    tree_id: packet.lossless_fec_tree_id(),
                 },
             )
             .await;
