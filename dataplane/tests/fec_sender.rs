@@ -40,6 +40,7 @@ async fn sender_prioritizes_source_symbols_before_extra_symbols() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -156,6 +157,7 @@ async fn sender_starts_repair_after_first_receiver_need_without_waiting_for_ever
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -233,6 +235,7 @@ async fn sender_extends_repair_burst_when_late_receiver_need_arrives_after_local
         ready_grace_ms: 200,
         peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -334,6 +337,7 @@ async fn sender_merges_same_round_need_while_repair_is_still_in_flight() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -431,6 +435,7 @@ async fn sender_ignores_future_round_fec_need_while_waiting_for_reports() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -530,6 +535,7 @@ async fn sender_accepts_delayed_control_feedback_before_peer_report_timeout() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -613,6 +619,7 @@ async fn sender_retransmits_source_done_while_waiting_for_silent_peer_and_times_
         ready_grace_ms: 200,
         peer_report_timeout_ms: SOLICITATION_TEST_PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);
@@ -666,6 +673,7 @@ async fn sender_aborts_on_changed_same_round_fec_need_from_one_peer() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);

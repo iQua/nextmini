@@ -65,7 +65,9 @@ pub(super) fn derive_sender_policy(
 }
 
 /// Resolve and validate the tree set used for FEC symbol striping.
-fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, PreflightError> {
+pub(super) fn derive_sender_tree_ids(
+    runtime_config: &LosslessConfig,
+) -> Result<Vec<u16>, PreflightError> {
     let requested_tree_ids = runtime_config.fec_default_tree_ids.clone();
 
     if requested_tree_ids.is_empty() {

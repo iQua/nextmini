@@ -44,6 +44,31 @@ pub struct TransportRoute {
     pub dst_port: u16,
 }
 
+/// Local tree-striping settings for Cloudcast mode.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloudcastRuntimeConfig {
+    tree_ids: Vec<u16>,
+    tree_weights: Vec<f64>,
+}
+
+impl CloudcastRuntimeConfig {
+    #[must_use]
+    pub fn new(tree_ids: Vec<u16>, tree_weights: Vec<f64>) -> Self {
+        Self {
+            tree_ids,
+            tree_weights,
+        }
+    }
+
+    pub fn tree_ids(&self) -> &[u16] {
+        &self.tree_ids
+    }
+
+    pub fn tree_weights(&self) -> &[f64] {
+        &self.tree_weights
+    }
+}
+
 /// User-facing request used to start a sender session.
 #[derive(Clone, Debug)]
 pub struct SenderRequest {
@@ -131,6 +156,8 @@ pub struct SenderConfig {
     pub peer_report_timeout_ms: u64,
     /// Optional topology-ready gate shared by newly spawned senders.
     pub topology_ready: Option<watch::Receiver<bool>>,
+    /// Optional local Cloudcast tree-striping mode.
+    pub cloudcast: Option<CloudcastRuntimeConfig>,
 }
 
 /// Fully derived receiver configuration passed to the receiver task.
@@ -150,6 +177,8 @@ pub struct ReceiverConfig {
     pub peer_report_timeout_ms: u64,
     /// Whether FEC manifests are accepted by this runtime.
     pub fec_enabled: bool,
+    /// Optional local Cloudcast tree-boundary mode.
+    pub cloudcast: Option<CloudcastRuntimeConfig>,
 }
 
 /// Handle for interacting with the background lossless runtime actor.
@@ -412,7 +441,14 @@ impl LosslessRuntime {
                 value: req.session.block_size,
             }
         })?;
-        let policy = fec_policy::derive_sender_policy(&self.config)?;
+        let cloudcast = self.derive_cloudcast_config()?;
+        let policy = if cloudcast.is_some() {
+            fec_policy::SenderPolicy {
+                mode: lossless_session::LosslessSessionMode::Plain,
+            }
+        } else {
+            fec_policy::derive_sender_policy(&self.config)?
+        };
         let manifest = LosslessSessionManifest {
             block_size,
             total_bytes: req.total_bytes,
@@ -429,6 +465,7 @@ impl LosslessRuntime {
             ready_grace_ms: req.ready_grace_ms,
             peer_report_timeout_ms: req.peer_report_timeout_ms,
             topology_ready: None,
+            cloudcast,
         };
         if !self.topology_ready {
             cfg.topology_ready = Some(self.topology_ready_sender.subscribe());
@@ -497,6 +534,7 @@ impl LosslessRuntime {
             progress: req.progress,
             peer_report_timeout_ms: self.config.peer_report_timeout_ms,
             fec_enabled: self.config.fec_enabled,
+            cloudcast: self.derive_cloudcast_config()?,
         };
         let processors = self.processors.clone();
 
@@ -658,6 +696,35 @@ impl LosslessRuntime {
 
         LiveDeliveryOutcome::Closed
     }
+
+    fn derive_cloudcast_config(&self) -> Result<Option<CloudcastRuntimeConfig>, StartError> {
+        if !self.config.session_mode.is_cloudcast() {
+            return Ok(None);
+        }
+        let tree_ids = fec_policy::derive_sender_tree_ids(&self.config)?;
+        let tree_weights =
+            normalize_cloudcast_tree_weights(tree_ids.len(), &self.config.fec_default_tree_weights);
+        Ok(Some(CloudcastRuntimeConfig::new(tree_ids, tree_weights)))
+    }
+}
+
+fn normalize_cloudcast_tree_weights(tree_count: usize, configured: &[f64]) -> Vec<f64> {
+    if tree_count == 0 {
+        return Vec::new();
+    }
+    if configured.len() != tree_count {
+        return vec![1.0; tree_count];
+    }
+    configured
+        .iter()
+        .map(|weight| {
+            if weight.is_finite() && *weight > 0.0 {
+                *weight
+            } else {
+                1.0
+            }
+        })
+        .collect()
 }
 
 fn control_kind_name(control: &LosslessSessionControl) -> &'static str {

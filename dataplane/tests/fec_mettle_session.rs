@@ -78,6 +78,7 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         progress: None,
         peer_report_timeout_ms: PEER_REPORT_TIMEOUT_MS,
         fec_enabled: true,
+        cloudcast: None,
     };
     let (receiver_tx, receiver_rx) = mpsc::channel::<InboundFrame>(4096);
     let receiver_task = tokio::spawn(receiver::run(
@@ -99,6 +100,7 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         ready_grace_ms: 500,
         peer_report_timeout_ms: PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
+        cloudcast: None,
     };
     let (sender_ctrl_tx, sender_ctrl_rx) = mpsc::channel::<InboundFrame>(4096);
     let sender_task = tokio::spawn(sender::run(

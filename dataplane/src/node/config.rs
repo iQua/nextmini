@@ -51,6 +51,22 @@ pub enum LosslessFecScheme {
     Mettle,
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LosslessRuntimeSessionMode {
+    #[default]
+    Plain,
+    Fec,
+    Mettle,
+    Cloudcast,
+}
+
+impl LosslessRuntimeSessionMode {
+    pub const fn is_cloudcast(self) -> bool {
+        matches!(self, Self::Cloudcast)
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -676,6 +692,10 @@ pub struct LosslessConfig {
     /// Default data block size in bytes.
     pub default_block_size: usize,
 
+    /// Local lossless runtime mode. `cloudcast` uses plain block payloads striped across tree scopes.
+    #[serde(default)]
+    pub session_mode: LosslessRuntimeSessionMode,
+
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
@@ -702,6 +722,10 @@ pub struct LosslessConfig {
     /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
+
+    /// Optional tree weights used by tree-scoped Cloudcast striping.
+    #[serde(default)]
+    pub fec_default_tree_weights: Vec<f64>,
 
     /// Effective processor ingress policy copied from `LocalConfig.feature`.
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
@@ -733,6 +757,7 @@ impl Default for LosslessConfig {
     fn default() -> Self {
         Self {
             default_block_size: 8500,
+            session_mode: LosslessRuntimeSessionMode::Plain,
             data_bucket: None,
             ready_grace_ms: 1500,
             peer_report_timeout_ms: 15_000,
@@ -740,6 +765,7 @@ impl Default for LosslessConfig {
             fec_default_symbols_per_block: 32,
             fec_default_scheme: LosslessFecScheme::RaptorQ,
             fec_default_tree_ids: vec![0],
+            fec_default_tree_weights: Vec::new(),
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
             runtime_message_capacity: 1024,
@@ -939,7 +965,7 @@ fn default_netmask() -> Ipv4Addr {
 mod tests {
     use super::{
         IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig, LosslessFecScheme,
-        deserialize_edge_pairs,
+        LosslessRuntimeSessionMode, deserialize_edge_pairs,
     };
     use serde::Deserialize;
     use std::net::Ipv4Addr;
@@ -1018,6 +1044,7 @@ mod tests {
         let lossless = cfg.lossless_runtime_config;
 
         assert_eq!(lossless.default_block_size, 8500);
+        assert_eq!(lossless.session_mode, LosslessRuntimeSessionMode::Plain);
         assert!(
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
@@ -1025,6 +1052,7 @@ mod tests {
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
         assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
+        assert!(lossless.fec_default_tree_weights.is_empty());
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,
@@ -1060,12 +1088,42 @@ mod tests {
             fec_default_symbols_per_block: 0,
             fec_default_scheme: LosslessFecScheme::Mettle,
             fec_default_tree_ids: vec![5, 1, 5, 3],
+            fec_default_tree_weights: vec![2.0, 1.0],
             ..Default::default()
         };
 
         assert_eq!(cfg.fec_default_symbols_per_block, 0);
         assert_eq!(cfg.fec_default_scheme, LosslessFecScheme::Mettle);
         assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
+        assert_eq!(cfg.fec_default_tree_weights, vec![2.0, 1.0]);
+    }
+
+    #[test]
+    fn lossless_cloudcast_mode_parses_from_config() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            lossless_runtime_config: LosslessConfig,
+        }
+
+        let parsed: Wrapper = toml::from_str(
+            r#"
+            [lossless_runtime_config]
+            default_block_size = 8192
+            session_mode = "cloudcast"
+            fec_default_tree_ids = [0, 3]
+            fec_default_tree_weights = [2.5, 1.0]
+            "#,
+        )
+        .expect("cloudcast lossless runtime config should parse");
+
+        assert_eq!(
+            parsed.lossless_runtime_config.session_mode,
+            LosslessRuntimeSessionMode::Cloudcast
+        );
+        assert_eq!(
+            parsed.lossless_runtime_config.fec_default_tree_weights,
+            vec![2.5, 1.0]
+        );
     }
 
     #[test]

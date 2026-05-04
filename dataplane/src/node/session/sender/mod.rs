@@ -6,6 +6,7 @@
 //! aggregate round status feedback with extra fountain symbols.
 
 mod block_symbol_frame;
+mod cloudcast;
 mod fec;
 mod plain;
 mod state;
@@ -27,6 +28,7 @@ use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
 use crate::node::session::timing;
 
+use self::cloudcast::CloudcastSender;
 use self::fec::FecSender;
 use self::plain::PlainSender;
 use self::state::{ActiveSessionQuorum, QuorumLiveness};
@@ -95,11 +97,13 @@ pub(super) struct SenderShared {
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
     pub(super) payload_emitted: bool,
+    pub(super) cloudcast_tree_ids: Option<Vec<u16>>,
 }
 
 /// Concrete sender mode selected from the manifest.
 enum SenderMode {
     Plain(PlainSender),
+    Cloudcast(CloudcastSender),
     Fec(FecSender),
 }
 
@@ -235,9 +239,17 @@ impl SessionSender {
             timing::quorum_solicitation_interval(),
             Duration::from_millis(cfg.peer_report_timeout_ms),
         );
-        let mode = match &manifest.mode {
-            LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-            LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+        let cloudcast = cfg.cloudcast.clone();
+        let mode = if let Some(cloudcast) = cloudcast.as_ref() {
+            if !matches!(manifest.mode, LosslessSessionMode::Plain) {
+                return Err("cloudcast sender requires a plain manifest");
+            }
+            SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
+        } else {
+            match &manifest.mode {
+                LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
+                LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+            }
         };
 
         Ok(Self {
@@ -255,6 +267,7 @@ impl SessionSender {
                 topology_ready: cfg.topology_ready,
                 pacer,
                 payload_emitted: false,
+                cloudcast_tree_ids: cloudcast.map(|config| config.tree_ids().to_vec()),
             },
             mode,
         })
@@ -274,6 +287,7 @@ impl SessionSender {
         self.shared.wait_topology_ready().await;
         let ready = match &mut self.mode {
             SenderMode::Plain(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
+            SenderMode::Cloudcast(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
             SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
         };
         if !ready {
@@ -282,6 +296,7 @@ impl SessionSender {
 
         let outcome = match &mut self.mode {
             SenderMode::Plain(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+            SenderMode::Cloudcast(mode) => mode.run(&mut self.shared, ctrl_rx).await,
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         };
         info!(
@@ -610,9 +625,13 @@ impl SenderShared {
             session_id = self.session.session_id,
             round_id, "Lossless sender emitted SourceDone"
         );
-        let tree_ids = match &self.manifest.mode {
-            LosslessSessionMode::Fec(fec) => fec.tree_ids.clone(),
-            LosslessSessionMode::Plain => Vec::new(),
+        let tree_ids = if let Some(tree_ids) = self.cloudcast_tree_ids.clone() {
+            tree_ids
+        } else {
+            match &self.manifest.mode {
+                LosslessSessionMode::Fec(fec) => fec.tree_ids.clone(),
+                LosslessSessionMode::Plain => Vec::new(),
+            }
         };
         if tree_ids.is_empty() {
             control::send_control(
@@ -908,6 +927,7 @@ mod tests {
             ready_grace_ms: 1,
             peer_report_timeout_ms: 1500,
             topology_ready: None,
+            cloudcast: None,
         };
         let mut sender = SessionSender::new(cfg, processors).expect("sender should build");
         sender.shared.quorum_liveness =
@@ -983,6 +1003,7 @@ mod tests {
             ready_grace_ms: 1,
             peer_report_timeout_ms: 1500,
             topology_ready: None,
+            cloudcast: None,
         };
         let sender = SessionSender::new(cfg, processors).expect("sender should build");
         let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
@@ -1061,6 +1082,7 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            cloudcast_tree_ids: None,
         }
     }
 

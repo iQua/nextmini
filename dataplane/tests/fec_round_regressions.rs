@@ -42,6 +42,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(64);

@@ -6,6 +6,7 @@
 //! FEC mode emits one aggregate `Need` describing either completion or the
 //! remaining per-block deficits for the next retransmit round.
 
+mod cloudcast;
 mod fec;
 mod plain;
 
@@ -29,6 +30,7 @@ use crate::node::session::plan::{BlockPlan, SymbolGeometry};
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
 
+use self::cloudcast::CloudcastReceiver;
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
 
@@ -86,6 +88,7 @@ pub(super) struct ReceiverShared {
 /// Concrete receiver mode selected after the manifest is installed.
 enum ReceiverMode {
     Plain(PlainReceiver),
+    Cloudcast(CloudcastReceiver),
     Fec(FecReceiver),
 }
 
@@ -236,6 +239,7 @@ impl SessionReceiver {
     fn reported_complete(&self) -> bool {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
+            Some(ReceiverMode::Cloudcast(mode)) => mode.is_complete(),
             Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
             None => false,
         }
@@ -300,6 +304,10 @@ impl SessionReceiver {
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
+                if let Some(ReceiverMode::Cloudcast(mode)) = self.mode.as_mut() {
+                    mode.handle_source_done(&self.shared, round_id, frame.tree_id)
+                        .await;
+                }
                 if let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id, frame.tree_id)
                         .await;
@@ -310,10 +318,15 @@ impl SessionReceiver {
 
     /// Dispatch one plain data frame when the installed manifest is plain.
     async fn handle_block_data_frame(&mut self, frame: InboundFrame) {
-        let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() else {
-            return;
-        };
-        mode.handle_block_data_frame(&mut self.shared, frame).await;
+        match self.mode.as_mut() {
+            Some(ReceiverMode::Plain(mode)) => {
+                mode.handle_block_data_frame(&mut self.shared, frame).await;
+            }
+            Some(ReceiverMode::Cloudcast(mode)) => {
+                mode.handle_block_data_frame(&mut self.shared, frame).await;
+            }
+            _ => {}
+        }
     }
 
     /// Dispatch one FEC symbol frame when the installed manifest is FEC.
@@ -363,7 +376,13 @@ impl SessionReceiver {
             return;
         };
         let mode = match &manifest.mode {
-            LosslessSessionMode::Plain => ReceiverMode::Plain(PlainReceiver::default()),
+            LosslessSessionMode::Plain => {
+                if let Some(cloudcast) = self.shared.cfg.cloudcast.as_ref() {
+                    ReceiverMode::Cloudcast(CloudcastReceiver::new(cloudcast.tree_ids()))
+                } else {
+                    ReceiverMode::Plain(PlainReceiver::default())
+                }
+            }
             LosslessSessionMode::Fec(fec) => {
                 let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
                     return;
@@ -439,6 +458,14 @@ impl SessionReceiver {
     fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) if self.reported_complete() => {
+                let round_id = mode.last_source_done_round_id()?;
+                Some(CompletedReceiverReplay::Plain {
+                    round_id,
+                    route: self.shared.route,
+                    report: NeedReport::Complete,
+                })
+            }
+            Some(ReceiverMode::Cloudcast(mode)) if self.reported_complete() => {
                 let round_id = mode.last_source_done_round_id()?;
                 Some(CompletedReceiverReplay::Plain {
                     round_id,
@@ -803,6 +830,7 @@ mod tests {
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
+                cloudcast: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -870,6 +898,7 @@ mod tests {
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
+                cloudcast: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -922,6 +951,7 @@ mod tests {
                     progress: None,
                     peer_report_timeout_ms: 200,
                     fec_enabled: false,
+                    cloudcast: None,
                 },
                 processors: crate::node::processor::ProcessorHandle::new(Default::default()),
                 manifest: Some(LosslessSessionManifest {
@@ -983,6 +1013,7 @@ mod tests {
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
+                cloudcast: None,
             },
             processors: ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1056,7 +1087,7 @@ mod tests {
                 .as_ref()
                 .and_then(|mode| match mode {
                     ReceiverMode::Fec(fec) => fec.blocks.get(&0),
-                    ReceiverMode::Plain(_) => None,
+                    ReceiverMode::Plain(_) | ReceiverMode::Cloudcast(_) => None,
                 })
                 .is_none(),
             "malformed FEC symbol payloads must be dropped before insertion"
@@ -1174,6 +1205,46 @@ mod tests {
         receiver.handle_control_frame(source_done).await;
         assert_eq!(recv_plain_need(&mut packet_rx).await, expected.clone());
         assert!(!receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn cloudcast_receiver_defers_need_until_all_tree_boundaries_arrive() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(1, BTreeSet::from([0])).await;
+        receiver.shared.cfg.cloudcast = Some(
+            crate::node::session::runtime::CloudcastRuntimeConfig::new(vec![0, 1], vec![1.0, 1.0]),
+        );
+        receiver.mode = Some(ReceiverMode::Cloudcast(CloudcastReceiver::new(&[0, 1])));
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+                tree_id: Some(0),
+            })
+            .await;
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "first tree boundary alone must not trigger feedback"
+        );
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+                tree_id: Some(1),
+            })
+            .await;
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(receiver.is_complete());
     }
 
     #[tokio::test]
@@ -1403,6 +1474,7 @@ mod tests {
                 progress: Some(progress.clone()),
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
+                cloudcast: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1445,6 +1517,7 @@ mod tests {
                 progress: Some(progress.clone()),
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
+                cloudcast: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1513,6 +1586,7 @@ mod tests {
                     progress: None,
                     peer_report_timeout_ms: 200,
                     fec_enabled: true,
+                    cloudcast: None,
                 },
                 processors,
                 manifest: Some(LosslessSessionManifest {
@@ -1630,6 +1704,7 @@ mod tests {
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
+                cloudcast: None,
             },
             control_rx,
             data_rx,
@@ -1785,6 +1860,7 @@ mod tests {
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
+                cloudcast: None,
             },
             control_rx,
             data_rx,
@@ -1942,6 +2018,7 @@ mod tests {
                         progress: None,
                         peer_report_timeout_ms: 200,
                         fec_enabled: false,
+                        cloudcast: None,
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {
@@ -2029,6 +2106,7 @@ mod tests {
                         progress: None,
                         peer_report_timeout_ms: 200,
                         fec_enabled: true,
+                        cloudcast: None,
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {
