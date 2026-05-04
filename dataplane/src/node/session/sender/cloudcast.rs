@@ -11,7 +11,7 @@ use crate::node::session::runtime::CloudcastRuntimeConfig;
 /// Cloudcast-mode sender: plain block payloads striped once across tree scopes.
 pub(super) struct CloudcastSender {
     source_cursor: u64,
-    tree_selector: CloudcastTreeSelector,
+    stripe_selector: CloudcastStripeSelector,
     feedback_round_open: bool,
     round_reports: BTreeMap<usize, NeedReport>,
     protocol_error: bool,
@@ -86,7 +86,7 @@ impl CloudcastSender {
     pub(super) fn new(config: &CloudcastRuntimeConfig) -> Result<Self, &'static str> {
         Ok(Self {
             source_cursor: 0,
-            tree_selector: CloudcastTreeSelector::new(config.tree_ids(), config.tree_weights())?,
+            stripe_selector: CloudcastStripeSelector::new(config.stripe_tree_ids())?,
             feedback_round_open: false,
             round_reports: BTreeMap::new(),
             protocol_error: false,
@@ -160,7 +160,7 @@ impl CloudcastSender {
             block_id,
             &payload,
         );
-        let tree_id = self.tree_selector.next_tree_id();
+        let tree_id = self.stripe_selector.tree_id_for_block(block_id);
         shared.pace(frame.len()).await;
         control::send_frame(
             &shared.processors,
@@ -192,67 +192,37 @@ fn nonempty_range(range: &MissingBlockRange) -> bool {
 }
 
 #[derive(Debug)]
-struct CloudcastTreeSelector {
-    tree_ids: Vec<u16>,
-    weights: Vec<f64>,
-    credits: Vec<f64>,
-    total_weight: f64,
+struct CloudcastStripeSelector {
+    stripe_tree_ids: Vec<u16>,
 }
 
-impl CloudcastTreeSelector {
-    fn new(tree_ids: &[u16], weights: &[f64]) -> Result<Self, &'static str> {
-        if tree_ids.is_empty() {
-            return Err("cloudcast sender requires at least one tree");
+impl CloudcastStripeSelector {
+    fn new(stripe_tree_ids: &[u16]) -> Result<Self, &'static str> {
+        if stripe_tree_ids.is_empty() {
+            return Err("cloudcast sender requires at least one stripe");
         }
-        let normalized_weights = if weights.len() == tree_ids.len() {
-            weights
-                .iter()
-                .map(|weight| {
-                    if weight.is_finite() && *weight > 0.0 {
-                        *weight
-                    } else {
-                        1.0
-                    }
-                })
-                .collect::<Vec<_>>()
-        } else {
-            vec![1.0; tree_ids.len()]
-        };
-        let total_weight = normalized_weights.iter().sum::<f64>().max(1.0);
         Ok(Self {
-            tree_ids: tree_ids.to_vec(),
-            credits: vec![0.0; tree_ids.len()],
-            weights: normalized_weights,
-            total_weight,
+            stripe_tree_ids: stripe_tree_ids.to_vec(),
         })
     }
 
-    fn next_tree_id(&mut self) -> u16 {
-        let mut selected = 0usize;
-        let mut selected_credit = f64::NEG_INFINITY;
-        for idx in 0..self.tree_ids.len() {
-            self.credits[idx] += self.weights[idx];
-            if self.credits[idx] > selected_credit {
-                selected = idx;
-                selected_credit = self.credits[idx];
-            }
-        }
-        self.credits[selected] -= self.total_weight;
-        self.tree_ids[selected]
+    fn tree_id_for_block(&self, block_id: u64) -> u16 {
+        let stripe_idx = block_id as usize % self.stripe_tree_ids.len();
+        self.stripe_tree_ids[stripe_idx]
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::CloudcastTreeSelector;
+    use super::CloudcastStripeSelector;
 
     #[test]
-    fn selector_tracks_relative_tree_weights() {
-        let mut selector =
-            CloudcastTreeSelector::new(&[3, 7], &[2.0, 1.0]).expect("valid selector");
-        let emitted = (0..6).map(|_| selector.next_tree_id()).collect::<Vec<_>>();
+    fn selector_routes_blocks_by_fixed_stripe_table() {
+        let selector = CloudcastStripeSelector::new(&[3, 3, 7]).expect("valid selector");
+        let emitted = (0..6)
+            .map(|block_id| selector.tree_id_for_block(block_id))
+            .collect::<Vec<_>>();
 
-        assert_eq!(emitted.iter().filter(|&&tree_id| tree_id == 3).count(), 4);
-        assert_eq!(emitted.iter().filter(|&&tree_id| tree_id == 7).count(), 2);
+        assert_eq!(emitted, vec![3, 3, 7, 3, 3, 7]);
     }
 }

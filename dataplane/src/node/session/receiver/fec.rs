@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::time::{Duration, Instant};
 
@@ -134,8 +134,6 @@ pub(super) struct FecReceiver {
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
     pub(super) last_source_done_round_id: Option<u32>,
     pub(super) last_round_need: Option<NeedReport>,
-    expected_tree_ids: BTreeSet<u16>,
-    pending_source_done_trees: BTreeMap<u32, BTreeSet<u16>>,
     complete_reported: bool,
     stats: FecReceiverStats,
 }
@@ -315,14 +313,12 @@ impl FecReceiver {
     }
 
     /// Build receiver-side FEC state from the negotiated symbol geometry.
-    pub(super) fn new(geometry: SymbolGeometry, tree_ids: &[u16]) -> Self {
+    pub(super) fn new(geometry: SymbolGeometry) -> Self {
         Self {
             geometry,
             blocks: BTreeMap::new(),
             last_source_done_round_id: None,
             last_round_need: None,
-            expected_tree_ids: tree_ids.iter().copied().collect(),
-            pending_source_done_trees: BTreeMap::new(),
             complete_reported: false,
             stats: FecReceiverStats::new(),
         }
@@ -700,7 +696,6 @@ impl FecReceiver {
         &mut self,
         shared: &super::ReceiverShared,
         round_id: u32,
-        tree_id: Option<u16>,
     ) {
         if let Some(last_round_id) = self.last_source_done_round_id {
             if round_id < last_round_id {
@@ -715,62 +710,15 @@ impl FecReceiver {
             }
         }
 
-        if !self.source_done_boundary_ready(shared, round_id, tree_id) {
-            return;
-        }
-
         let Some(report) = self.need_report(shared) else {
             return;
         };
         self.record_reported_mettle_repairs(shared, &report);
         self.last_source_done_round_id = Some(round_id);
         self.last_round_need = Some(report.clone());
-        self.pending_source_done_trees
-            .retain(|pending_round, _| *pending_round > round_id);
         shared.send_fec_need(round_id, &report).await;
         self.complete_reported = matches!(report, NeedReport::Complete);
         self.log_tree_stats(shared, "source_done");
-    }
-
-    fn source_done_boundary_ready(
-        &mut self,
-        shared: &super::ReceiverShared,
-        round_id: u32,
-        tree_id: Option<u16>,
-    ) -> bool {
-        let Some(tree_id) = tree_id else {
-            return true;
-        };
-        if self.expected_tree_ids.is_empty() {
-            return true;
-        }
-        if !self.expected_tree_ids.contains(&tree_id) {
-            warn!(
-                session_id = shared.session_id,
-                local_node_id = shared.local_node_id,
-                round_id,
-                tree_id,
-                expected_tree_ids = ?self.expected_tree_ids,
-                "Lossless FEC receiver ignored SourceDone from unexpected tree"
-            );
-            return false;
-        }
-
-        let seen = self.pending_source_done_trees.entry(round_id).or_default();
-        seen.insert(tree_id);
-        if seen.is_superset(&self.expected_tree_ids) {
-            return true;
-        }
-        info!(
-            session_id = shared.session_id,
-            local_node_id = shared.local_node_id,
-            round_id,
-            tree_id,
-            seen_tree_ids = ?seen,
-            expected_tree_ids = ?self.expected_tree_ids,
-            "Lossless FEC receiver deferred SourceDone until all tree data boundaries arrive"
-        );
-        false
     }
 
     fn record_reported_mettle_repairs(

@@ -414,7 +414,6 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
-            cloudcast_tree_ids: None,
         }
     }
 }

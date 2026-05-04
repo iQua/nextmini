@@ -727,6 +727,14 @@ pub struct LosslessConfig {
     #[serde(default)]
     pub fec_default_tree_weights: Vec<f64>,
 
+    /// Number of Cloudcast stripes/partitions used to quantize tree weights.
+    #[serde(default)]
+    pub cloudcast_stripes: usize,
+
+    /// Explicit Cloudcast stripe-to-tree table. Entry `i` is the tree used by stripe `i`.
+    #[serde(default)]
+    pub cloudcast_stripe_tree_ids: Vec<u16>,
+
     /// Effective processor ingress policy copied from `LocalConfig.feature`.
     /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
     #[serde(skip)]
@@ -766,6 +774,8 @@ impl Default for LosslessConfig {
             fec_default_scheme: LosslessFecScheme::RaptorQ,
             fec_default_tree_ids: vec![0],
             fec_default_tree_weights: Vec::new(),
+            cloudcast_stripes: 0,
+            cloudcast_stripe_tree_ids: Vec::new(),
             ingress_feature: Feature::Sequential,
             ingress_channel_backpressure: true,
             runtime_message_capacity: 1024,
@@ -1112,6 +1122,8 @@ mod tests {
             session_mode = "cloudcast"
             fec_default_tree_ids = [0, 3]
             fec_default_tree_weights = [2.5, 1.0]
+            cloudcast_stripes = 8
+            cloudcast_stripe_tree_ids = [0, 0, 0, 0, 0, 3, 3, 3]
             "#,
         )
         .expect("cloudcast lossless runtime config should parse");
@@ -1123,6 +1135,11 @@ mod tests {
         assert_eq!(
             parsed.lossless_runtime_config.fec_default_tree_weights,
             vec![2.5, 1.0]
+        );
+        assert_eq!(parsed.lossless_runtime_config.cloudcast_stripes, 8);
+        assert_eq!(
+            parsed.lossless_runtime_config.cloudcast_stripe_tree_ids,
+            vec![0, 0, 0, 0, 0, 3, 3, 3]
         );
     }
 

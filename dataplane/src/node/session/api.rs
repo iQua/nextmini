@@ -22,8 +22,6 @@ pub struct InboundFrame {
     pub bytes: Vec<u8>,
     /// Optional peer identity derived from the lower transport path.
     pub peer_id: Option<usize>,
-    /// Optional FEC tree scope derived from the lower transport path.
-    pub tree_id: Option<u16>,
 }
 
 /// Final outcome reported by a completed lossless session.

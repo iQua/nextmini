@@ -327,7 +327,6 @@ fn inbound_from_packet(packet: Packet, peer_id: usize) -> InboundFrame {
             .expect("captured packet should include TCP payload")
             .to_vec(),
         peer_id: Some(peer_id),
-        tree_id: None,
     }
 }
 

@@ -1,6 +1,5 @@
 mod common;
 
-use std::collections::BTreeSet;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -56,9 +55,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
     let mut sender_task =
         tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
 
-    let fec_tree_ids = [7, 9];
-    let first_round =
-        collect_symbols_until_source_done(&mut harness.packet_rx, &fec_tree_ids).await;
+    let first_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         first_round,
         vec![
@@ -112,8 +109,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .await
         .expect("receiver C round-one status should enqueue");
 
-    let second_round =
-        collect_symbols_until_source_done(&mut harness.packet_rx, &fec_tree_ids).await;
+    let second_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         second_round,
         vec![(0, 4), (1, 4), (1, 5)],
@@ -160,8 +156,7 @@ async fn sender_converges_across_staggered_multi_receiver_fec_rounds() {
         .await
         .expect("receiver B round-two status should enqueue");
 
-    let third_round =
-        collect_symbols_until_source_done(&mut harness.packet_rx, &fec_tree_ids).await;
+    let third_round = collect_symbols_until_source_done(&mut harness.packet_rx).await;
     assert_eq!(
         third_round,
         vec![(1, 6)],
@@ -257,7 +252,6 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
                     },
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
-                tree_id: None,
             },
         )
         .await;
@@ -267,7 +261,6 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     ));
 
     for (symbol_id, chunk) in [1u8, 2, 3, 4, 5, 6, 7, 8].chunks(2).enumerate() {
-        let tree_id = if symbol_id % 2 == 0 { 1 } else { 3 };
         runtime
             .deliver(
                 session_id,
@@ -276,23 +269,20 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
                         session_id,
                         0,
                         symbol_id as u32,
-                        tree_id,
+                        if symbol_id % 2 == 0 { 1 } else { 3 },
                         chunk,
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: Some(tree_id),
                 },
             )
             .await;
     }
-    for tree_id in [1, 3] {
-        runtime
-            .deliver(
-                session_id,
-                common::source_done_frame_on_tree(session_id, SOURCE_NODE_ID, 0, tree_id),
-            )
-            .await;
-    }
+    runtime
+        .deliver(
+            session_id,
+            common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+        )
+        .await;
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Need {
@@ -313,7 +303,6 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             InboundFrame {
                 bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]),
                 peer_id: Some(SOURCE_NODE_ID),
-                tree_id: Some(1),
             },
         )
         .await;
@@ -343,10 +332,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
 
 async fn collect_symbols_until_source_done(
     packet_rx: &mut mpsc::Receiver<nextmini::node::packet::Packet>,
-    expected_tree_ids: &[u16],
 ) -> Vec<(u64, u32)> {
-    let expected_tree_ids = expected_tree_ids.iter().copied().collect::<BTreeSet<_>>();
-    let mut seen_source_done_trees = BTreeSet::new();
     let mut symbols = Vec::new();
     loop {
         let packet = common::recv_packet(packet_rx).await;
@@ -356,17 +342,7 @@ async fn collect_symbols_until_source_done(
         if let Some((_, LosslessSessionControl::SourceDone { .. })) =
             lossless_session::decode_control(payload)
         {
-            if expected_tree_ids.is_empty() {
-                return symbols;
-            }
-            let tree_id = packet
-                .lossless_fec_tree_id()
-                .expect("tree-scoped SourceDone should carry a tree id");
-            seen_source_done_trees.insert(tree_id);
-            if seen_source_done_trees.is_superset(&expected_tree_ids) {
-                return symbols;
-            }
-            continue;
+            return symbols;
         }
         if lossless_session::decode_control(payload).is_some() {
             continue;

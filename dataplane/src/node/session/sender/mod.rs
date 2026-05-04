@@ -97,7 +97,6 @@ pub(super) struct SenderShared {
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
     pub(super) payload_emitted: bool,
-    pub(super) cloudcast_tree_ids: Option<Vec<u16>>,
 }
 
 /// Concrete sender mode selected from the manifest.
@@ -267,7 +266,6 @@ impl SessionSender {
                 topology_ready: cfg.topology_ready,
                 pacer,
                 payload_emitted: false,
-                cloudcast_tree_ids: cloudcast.map(|config| config.tree_ids().to_vec()),
             },
             mode,
         })
@@ -625,46 +623,19 @@ impl SenderShared {
             session_id = self.session.session_id,
             round_id, "Lossless sender emitted SourceDone"
         );
-        let tree_ids = if let Some(tree_ids) = self.cloudcast_tree_ids.clone() {
-            tree_ids
-        } else {
-            match &self.manifest.mode {
-                LosslessSessionMode::Fec(fec) => fec.tree_ids.clone(),
-                LosslessSessionMode::Plain => Vec::new(),
-            }
-        };
-        if tree_ids.is_empty() {
-            control::send_control(
-                &self.processors,
-                control::FrameRoute {
-                    session_id: self.session.session_id,
-                    tree_id: None,
-                    src_ip: self.route.src_ip,
-                    src_port: self.route.src_port,
-                    dst_ip: self.route.dst_ip,
-                    dst_port: self.route.dst_port,
-                },
-                &LosslessSessionControl::SourceDone { round_id },
-            )
-            .await;
-            return;
-        }
-
-        for tree_id in tree_ids {
-            control::send_control(
-                &self.processors,
-                control::FrameRoute {
-                    session_id: self.session.session_id,
-                    tree_id: Some(tree_id),
-                    src_ip: self.route.src_ip,
-                    src_port: self.route.src_port,
-                    dst_ip: self.route.dst_ip,
-                    dst_port: self.route.dst_port,
-                },
-                &LosslessSessionControl::SourceDone { round_id },
-            )
-            .await;
-        }
+        control::send_control(
+            &self.processors,
+            control::FrameRoute {
+                session_id: self.session.session_id,
+                tree_id: None,
+                src_ip: self.route.src_ip,
+                src_port: self.route.src_port,
+                dst_ip: self.route.dst_ip,
+                dst_port: self.route.dst_port,
+            },
+            &LosslessSessionControl::SourceDone { round_id },
+        )
+        .await;
     }
 
     /// Apply optional pacing before sending `bytes` bytes of payload.
@@ -704,7 +675,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -727,7 +697,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: None,
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -742,7 +711,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -751,7 +719,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(23),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -776,7 +743,6 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             })
             .await
             .expect("ready should enqueue");
@@ -788,7 +754,6 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(23),
-                tree_id: None,
             })
             .await
             .expect("late ready should enqueue");
@@ -812,7 +777,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -829,7 +793,6 @@ mod tests {
                     },
                 ),
                 peer_id: Some(23),
-                tree_id: None,
             },
             &mut mode,
         );
@@ -844,7 +807,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -861,7 +823,6 @@ mod tests {
                     },
                 ),
                 peer_id: None,
-                tree_id: None,
             },
             &mut mode,
         );
@@ -876,7 +837,6 @@ mod tests {
             InboundFrame {
                 bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             },
             &mut NoopMode,
         );
@@ -940,7 +900,6 @@ mod tests {
             .send(InboundFrame {
                 bytes: lossless_session::encode_control(9, &LosslessSessionControl::Ready),
                 peer_id: Some(22),
-                tree_id: None,
             })
             .await
             .expect("ready control should enqueue");
@@ -955,7 +914,6 @@ mod tests {
                     },
                 ),
                 peer_id: Some(22),
-                tree_id: None,
             })
             .await
             .expect("need should enqueue");
@@ -1082,7 +1040,6 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
-            cloudcast_tree_ids: None,
         }
     }
 

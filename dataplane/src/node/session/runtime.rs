@@ -48,15 +48,15 @@ pub struct TransportRoute {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudcastRuntimeConfig {
     tree_ids: Vec<u16>,
-    tree_weights: Vec<f64>,
+    stripe_tree_ids: Vec<u16>,
 }
 
 impl CloudcastRuntimeConfig {
     #[must_use]
-    pub fn new(tree_ids: Vec<u16>, tree_weights: Vec<f64>) -> Self {
+    pub fn new(tree_ids: Vec<u16>, stripe_tree_ids: Vec<u16>) -> Self {
         Self {
             tree_ids,
-            tree_weights,
+            stripe_tree_ids,
         }
     }
 
@@ -64,8 +64,8 @@ impl CloudcastRuntimeConfig {
         &self.tree_ids
     }
 
-    pub fn tree_weights(&self) -> &[f64] {
-        &self.tree_weights
+    pub fn stripe_tree_ids(&self) -> &[u16] {
+        &self.stripe_tree_ids
     }
 }
 
@@ -702,9 +702,12 @@ impl LosslessRuntime {
             return Ok(None);
         }
         let tree_ids = fec_policy::derive_sender_tree_ids(&self.config)?;
-        let tree_weights =
-            normalize_cloudcast_tree_weights(tree_ids.len(), &self.config.fec_default_tree_weights);
-        Ok(Some(CloudcastRuntimeConfig::new(tree_ids, tree_weights)))
+        let stripe_tree_ids = derive_cloudcast_stripe_tree_ids(&self.config, &tree_ids);
+        let used_tree_ids = cloudcast_used_tree_ids(&stripe_tree_ids);
+        Ok(Some(CloudcastRuntimeConfig::new(
+            used_tree_ids,
+            stripe_tree_ids,
+        )))
     }
 }
 
@@ -725,6 +728,99 @@ fn normalize_cloudcast_tree_weights(tree_count: usize, configured: &[f64]) -> Ve
             }
         })
         .collect()
+}
+
+fn derive_cloudcast_stripe_tree_ids(config: &LosslessConfig, tree_ids: &[u16]) -> Vec<u16> {
+    let explicit = config
+        .cloudcast_stripe_tree_ids
+        .iter()
+        .copied()
+        .filter(|tree_id| tree_ids.contains(tree_id))
+        .collect::<Vec<_>>();
+    if !explicit.is_empty() {
+        return explicit;
+    }
+
+    let stripe_count = if config.cloudcast_stripes > 0 {
+        config.cloudcast_stripes
+    } else {
+        tree_ids.len()
+    };
+    quantize_cloudcast_tree_weights(
+        tree_ids,
+        &normalize_cloudcast_tree_weights(tree_ids.len(), &config.fec_default_tree_weights),
+        stripe_count,
+    )
+}
+
+fn quantize_cloudcast_tree_weights(
+    tree_ids: &[u16],
+    weights: &[f64],
+    stripe_count: usize,
+) -> Vec<u16> {
+    if tree_ids.is_empty() || stripe_count == 0 {
+        return Vec::new();
+    }
+    let normalized_weights = if weights.len() == tree_ids.len() {
+        weights.to_vec()
+    } else {
+        vec![1.0; tree_ids.len()]
+    };
+    let total_weight = normalized_weights
+        .iter()
+        .copied()
+        .filter(|weight| weight.is_finite() && *weight > 0.0)
+        .sum::<f64>();
+    if total_weight <= 0.0 {
+        return (0..stripe_count)
+            .map(|idx| tree_ids[idx % tree_ids.len()])
+            .collect();
+    }
+
+    let mut allocations = normalized_weights
+        .iter()
+        .enumerate()
+        .map(|(idx, weight)| {
+            let safe_weight = if weight.is_finite() && *weight > 0.0 {
+                *weight
+            } else {
+                0.0
+            };
+            let exact = safe_weight / total_weight * stripe_count as f64;
+            let floor = exact.floor() as usize;
+            (idx, floor, exact - floor as f64)
+        })
+        .collect::<Vec<_>>();
+    let assigned = allocations
+        .iter()
+        .map(|(_, floor, _)| *floor)
+        .sum::<usize>();
+    let remaining = stripe_count.saturating_sub(assigned);
+    allocations.sort_by(|left, right| {
+        right
+            .2
+            .partial_cmp(&left.2)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| tree_ids[left.0].cmp(&tree_ids[right.0]))
+    });
+    let allocation_count = allocations.len();
+    for idx in 0..remaining {
+        allocations[idx % allocation_count].1 += 1;
+    }
+    allocations.sort_by_key(|(idx, _, _)| *idx);
+
+    let mut stripes = Vec::with_capacity(stripe_count);
+    for (idx, count, _) in allocations {
+        stripes.extend(std::iter::repeat(tree_ids[idx]).take(count));
+    }
+    stripes
+}
+
+fn cloudcast_used_tree_ids(stripe_tree_ids: &[u16]) -> Vec<u16> {
+    let mut tree_ids = stripe_tree_ids.to_vec();
+    tree_ids.sort_unstable();
+    tree_ids.dedup();
+    tree_ids
 }
 
 fn control_kind_name(control: &LosslessSessionControl) -> &'static str {
@@ -800,7 +896,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -832,7 +927,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -847,7 +941,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -877,7 +970,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -897,7 +989,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 1 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -912,7 +1003,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 2 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -961,7 +1051,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -1020,7 +1109,6 @@ mod tests {
                         &LosslessSessionControl::SourceDone { round_id: 0 },
                     ),
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
@@ -1072,7 +1160,6 @@ mod tests {
                 InboundFrame {
                     bytes,
                     peer_id: Some(SOURCE_NODE_ID),
-                    tree_id: None,
                 },
             )
             .await;
