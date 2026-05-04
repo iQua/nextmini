@@ -8,10 +8,10 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use ahash::AHashMap;
 use jumphash::JumpHasher;
 use tokio::net::TcpStream;
+use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tokio::sync::Notify;
 use tokio::time::{Duration, timeout};
 use tracing::{error, info, warn};
 
@@ -557,7 +557,10 @@ impl SequentialProcHandle {
         }
 
         let nonce = self.next_sync_nonce.fetch_add(1, Ordering::Relaxed);
-        info!(nonce, worker_count, "Starting sequential processor worker sync");
+        info!(
+            nonce,
+            worker_count, "Starting sequential processor worker sync"
+        );
         self.sync_tracker.begin(nonce);
         if let Err(e) = self.broadcast_sender.send(ProcessorMessage::Sync(nonce)) {
             error!("Error sending the Sync message to the processors: {}", e);
@@ -578,7 +581,10 @@ impl SequentialProcHandle {
                 );
             }
         }
-        info!(nonce, worker_count, "Finished sequential processor worker sync");
+        info!(
+            nonce,
+            worker_count, "Finished sequential processor worker sync"
+        );
     }
 
     pub async fn process_packet(&self, packet: Packet) {
@@ -821,7 +827,11 @@ impl ConcurrentProcHandle {
         }
 
         let nonce = self.next_sync_nonce.fetch_add(1, Ordering::Relaxed);
-        info!(nonce, worker_count = self.worker_count, "Starting concurrent processor worker sync");
+        info!(
+            nonce,
+            worker_count = self.worker_count,
+            "Starting concurrent processor worker sync"
+        );
         self.sync_tracker.begin(nonce);
         if let Err(e) = self.broadcast_sender.send(ProcessorMessage::Sync(nonce)) {
             error!("Error sending the Sync message to the processors: {}", e);
@@ -842,7 +852,11 @@ impl ConcurrentProcHandle {
                 );
             }
         }
-        info!(nonce, worker_count = self.worker_count, "Finished concurrent processor worker sync");
+        info!(
+            nonce,
+            worker_count = self.worker_count,
+            "Finished concurrent processor worker sync"
+        );
     }
 
     pub async fn process_packet(&self, packet: Packet) {

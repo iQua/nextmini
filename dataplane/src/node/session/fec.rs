@@ -251,6 +251,7 @@ impl Decoder {
 
 /// Compute how many future repair symbols are needed for the selected scheme.
 #[must_use]
+#[allow(dead_code)]
 pub fn repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
     match params.scheme {
         FecScheme::RaptorQ => {
@@ -282,6 +283,7 @@ pub fn initial_symbol_count(params: BlockParams) -> Option<u32> {
     }
 }
 
+#[allow(dead_code)]
 fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
     let Ok(metadata) =
         mettle::block::BlockParams::new(params.source_symbols, params.symbol_size, params.seed)

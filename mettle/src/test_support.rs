@@ -6,7 +6,7 @@
 use std::num::NonZeroUsize;
 
 use crate::MettleParams;
-use crate::decoder::{DecodedSource, MettleDecoder};
+use crate::decoder::{DecodedSource, MettleDecoder, MettleDecoderStats};
 use crate::encoder::{MettleBin, MettleEncoder};
 
 #[doc(hidden)]
@@ -27,6 +27,36 @@ impl SourceWindow {
 
     pub const fn contains(self, bin_id: u128) -> bool {
         self.start <= bin_id && bin_id < self.end_exclusive
+    }
+}
+
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DecoderStats {
+    pub next_source_id: u64,
+    pub terminal_source_count: Option<u64>,
+    pub received_bins: usize,
+    pub ready_bins: usize,
+    pub seen_bins: usize,
+    pub decoded_future_sources: usize,
+    pub decoded_prefix_sources: usize,
+    pub decoded_prefix_start_source_id: u64,
+    pub graph_bins: Option<usize>,
+    pub bin_cleanup_frontier: u128,
+}
+
+fn decoder_stats(stats: MettleDecoderStats) -> DecoderStats {
+    DecoderStats {
+        next_source_id: stats.next_source_id,
+        terminal_source_count: stats.terminal_source_count,
+        received_bins: stats.received_bins,
+        ready_bins: stats.ready_bins,
+        seen_bins: stats.seen_bins,
+        decoded_future_sources: stats.decoded_future_sources,
+        decoded_prefix_sources: stats.decoded_prefix_sources,
+        decoded_prefix_start_source_id: stats.decoded_prefix_start_source_id,
+        graph_bins: stats.graph_bins,
+        bin_cleanup_frontier: stats.bin_cleanup_frontier,
     }
 }
 
@@ -101,6 +131,10 @@ impl Decoder {
 
     pub fn next_source_id(&self) -> u64 {
         self.0.next_source_id()
+    }
+
+    pub fn stats(&self) -> DecoderStats {
+        decoder_stats(self.0.stats())
     }
 
     pub fn buffered_bin_remaining_touchers(&self, bin_id: u128) -> Option<u16> {

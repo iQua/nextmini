@@ -216,6 +216,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
     .await;
     let mut runtime_cfg = capture.cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = true;
+    runtime_cfg.peer_report_timeout_ms = 200;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
     let session_id = 0xFEC6_0002;
 
@@ -231,50 +232,56 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
         .await
         .expect("receiver should start");
 
-    runtime.deliver(
-        session_id,
-        InboundFrame {
-            bytes: lossless_session::encode_control(
-                session_id,
-                &LosslessSessionControl::Manifest {
-                    manifest: LosslessSessionManifest {
-                        block_size: 8,
-                        total_bytes: 8,
-                        total_blocks: 1,
-                        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(
-                            4,
-                            vec![1, 3],
-                        )),
+    runtime
+        .deliver(
+            session_id,
+            InboundFrame {
+                bytes: lossless_session::encode_control(
+                    session_id,
+                    &LosslessSessionControl::Manifest {
+                        manifest: LosslessSessionManifest {
+                            block_size: 8,
+                            total_bytes: 8,
+                            total_blocks: 1,
+                            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(
+                                4,
+                                vec![1, 3],
+                            )),
+                        },
                     },
-                },
-            ),
-            peer_id: Some(SOURCE_NODE_ID),
-        },
-    ).await;
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            },
+        )
+        .await;
     assert!(matches!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Ready
     ));
 
     for (symbol_id, chunk) in [1u8, 2, 3, 4, 5, 6, 7, 8].chunks(2).enumerate() {
-        runtime.deliver(
-            session_id,
-            InboundFrame {
-                bytes: lossless_session::encode_block_symbol(
-                    session_id,
-                    0,
-                    symbol_id as u32,
-                    if symbol_id % 2 == 0 { 1 } else { 3 },
-                    chunk,
-                ),
-                peer_id: Some(SOURCE_NODE_ID),
-            },
-        ).await;
+        runtime
+            .deliver(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(
+                        session_id,
+                        0,
+                        symbol_id as u32,
+                        if symbol_id % 2 == 0 { 1 } else { 3 },
+                        chunk,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
     }
-    runtime.deliver(
-        session_id,
-        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    ).await;
+    runtime
+        .deliver(
+            session_id,
+            common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+        )
+        .await;
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Need {
@@ -289,13 +296,15 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
         SessionOutcome::Completed
     );
 
-    runtime.deliver(
-        session_id,
-        InboundFrame {
-            bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]),
-            peer_id: Some(SOURCE_NODE_ID),
-        },
-    ).await;
+    runtime
+        .deliver(
+            session_id,
+            InboundFrame {
+                bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]),
+                peer_id: Some(SOURCE_NODE_ID),
+            },
+        )
+        .await;
     assert!(
         timeout(Duration::from_millis(200), capture.packet_rx.recv())
             .await
@@ -303,10 +312,12 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
         "completed receiver replay should not trigger on late payload after T4"
     );
 
-    runtime.deliver(
-        session_id,
-        common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
-    ).await;
+    runtime
+        .deliver(
+            session_id,
+            common::source_done_frame(session_id, SOURCE_NODE_ID, 0),
+        )
+        .await;
     assert_eq!(
         recv_control(&mut capture.packet_rx).await,
         LosslessSessionControl::Need {

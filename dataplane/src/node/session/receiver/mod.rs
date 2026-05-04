@@ -158,11 +158,12 @@ impl SessionReceiver {
         data_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> Option<InboundFrame> {
         if let Some(frame) = self.pending_control_frames.pop_front() {
-            return Some(frame);
+            return Some(self.defer_source_done_behind_ready_data(frame, data_rx));
         }
 
         if let Ok(frame) = control_rx.try_recv() {
-            return Some(self.coalesce_control_frame(frame, control_rx));
+            let frame = self.coalesce_control_frame(frame, control_rx);
+            return Some(self.defer_source_done_behind_ready_data(frame, data_rx));
         }
 
         let maybe_frame = if self.is_passive_complete() {
@@ -171,7 +172,9 @@ impl SessionReceiver {
             );
             tokio::select! {
                 biased;
-                maybe_frame = control_rx.recv() => maybe_frame.map(|frame| self.coalesce_control_frame(frame, control_rx)),
+                maybe_frame = control_rx.recv() => maybe_frame
+                    .map(|frame| self.coalesce_control_frame(frame, control_rx))
+                    .map(|frame| self.defer_source_done_behind_ready_data(frame, data_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
                 _ = tokio::time::sleep(passive_timeout) => {
                     self.finish_session("session_finish_timeout");
@@ -181,7 +184,9 @@ impl SessionReceiver {
         } else {
             tokio::select! {
                 biased;
-                maybe_frame = control_rx.recv() => maybe_frame.map(|frame| self.coalesce_control_frame(frame, control_rx)),
+                maybe_frame = control_rx.recv() => maybe_frame
+                    .map(|frame| self.coalesce_control_frame(frame, control_rx))
+                    .map(|frame| self.defer_source_done_behind_ready_data(frame, data_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
             }
         };
@@ -208,6 +213,20 @@ impl SessionReceiver {
                 }
                 _ => self.pending_control_frames.push_back(next),
             }
+        }
+        frame
+    }
+
+    fn defer_source_done_behind_ready_data(
+        &mut self,
+        frame: InboundFrame,
+        data_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> InboundFrame {
+        if source_done_round(&frame).is_some()
+            && let Ok(data_frame) = data_rx.try_recv()
+        {
+            self.pending_control_frames.push_front(frame);
+            return data_frame;
         }
         frame
     }
@@ -932,6 +951,77 @@ mod tests {
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])
         ));
+    }
+
+    #[tokio::test]
+    async fn mettle_receiver_streams_without_retaining_session_symbol_payloads() {
+        let k = 131_072u32;
+        let block_size = 1_073_741_824u32;
+        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
+        let geometry = plan.symbol_geometry(k).expect("valid geometry");
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 1),
+            src_port: 4752,
+            dst_port: 5752,
+        };
+        let mut shared = ReceiverShared {
+            session_id: 33,
+            route,
+            local_node_id: RECEIVER_NODE_ID,
+            cfg: ReceiverConfig {
+                session_id: 33,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                sink_buffer: None,
+                progress: None,
+                peer_report_timeout_ms: 200,
+                fec_enabled: true,
+            },
+            processors: ProcessorHandle::new(Default::default()),
+            manifest: Some(LosslessSessionManifest {
+                block_size,
+                total_bytes: u64::from(block_size),
+                total_blocks: 1,
+                mode: LosslessSessionMode::Fec(
+                    nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
+                        k,
+                        vec![0],
+                    ),
+                ),
+            }),
+            plan: Some(plan),
+            complete_blocks: BTreeSet::new(),
+        };
+        let mut receiver = FecReceiver::new(geometry);
+        let payload = vec![0; geometry.symbol_size()];
+        let frame = InboundFrame {
+            bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+
+        receiver.handle_block_symbol_frame(&mut shared, frame).await;
+
+        let state = receiver.blocks.get(&0).expect("METTLE block state");
+        assert!(
+            state.symbols.is_empty(),
+            "METTLE should stream bins into the decoder without retaining session payload entries"
+        );
+        assert!(state.mettle.is_some());
+        let metadata = mettle::block::BlockParams::new(
+            k as usize,
+            geometry.symbol_size(),
+            crate::node::session::fec::block_seed(shared.session_id, 0),
+        )
+        .metadata()
+        .expect("large METTLE metadata");
+        let tail_budget = metadata
+            .symbol_count()
+            .saturating_sub(metadata.initial_symbol_count());
+        let expected_deficit = u16::try_from(tail_budget.min((k - 1) as usize))
+            .unwrap_or(u16::MAX)
+            .max(1);
+        assert_eq!(receiver.block_deficit(&shared, 0), expected_deficit);
     }
 
     #[tokio::test]

@@ -23,6 +23,20 @@ impl DecodedSource {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct MettleDecoderStats {
+    pub(crate) next_source_id: u64,
+    pub(crate) terminal_source_count: Option<u64>,
+    pub(crate) received_bins: usize,
+    pub(crate) ready_bins: usize,
+    pub(crate) seen_bins: usize,
+    pub(crate) decoded_future_sources: usize,
+    pub(crate) decoded_prefix_sources: usize,
+    pub(crate) decoded_prefix_start_source_id: u64,
+    pub(crate) graph_bins: Option<usize>,
+    pub(crate) bin_cleanup_frontier: u128,
+}
+
 #[derive(Debug)]
 struct BufferedBin {
     payload: Vec<u8>,
@@ -70,6 +84,28 @@ impl SourceEdgeIds {
     }
 }
 
+#[derive(Debug, Default)]
+struct RollingDecoderGraph {
+    indexed_source_count: u64,
+    bin_touchers: BTreeMap<u128, Vec<u64>>,
+}
+
+impl RollingDecoderGraph {
+    fn clear(&mut self) {
+        self.bin_touchers.clear();
+    }
+
+    fn drop_before(&mut self, frontier: u128) {
+        while self
+            .bin_touchers
+            .first_key_value()
+            .is_some_and(|(&bin_id, _)| bin_id < frontier)
+        {
+            self.bin_touchers.pop_first();
+        }
+    }
+}
+
 #[derive(Debug)]
 enum SeenBinIds {
     Sparse(BTreeSet<u128>),
@@ -113,7 +149,12 @@ impl SeenBinIds {
 
     fn drop_before(&mut self, frontier: u128) {
         if let Self::Sparse(seen_bin_ids) = self {
-            *seen_bin_ids = seen_bin_ids.split_off(&frontier);
+            while seen_bin_ids
+                .first()
+                .is_some_and(|&seen_bin_id| seen_bin_id < frontier)
+            {
+                seen_bin_ids.pop_first();
+            }
         }
     }
 
@@ -129,7 +170,6 @@ impl SeenBinIds {
         }
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         match self {
             Self::Sparse(seen_bin_ids) => seen_bin_ids.len(),
@@ -221,7 +261,12 @@ impl ReceivedBins {
     fn drop_before(&mut self, frontier: u128, cleanup_frontier: &mut u128) {
         match self {
             Self::Sparse(received_bins) => {
-                *received_bins = received_bins.split_off(&frontier);
+                while received_bins
+                    .first_key_value()
+                    .is_some_and(|(&bin_id, _)| bin_id < frontier)
+                {
+                    received_bins.pop_first();
+                }
             }
             Self::Dense(received_bins) => {
                 let start = usize::try_from(*cleanup_frontier)
@@ -238,7 +283,6 @@ impl ReceivedBins {
         }
     }
 
-    #[cfg(test)]
     fn len(&self) -> usize {
         match self {
             Self::Sparse(received_bins) => received_bins.len(),
@@ -281,6 +325,7 @@ pub(crate) struct MettleDecoder {
     received_bins: ReceivedBins,
     ready_bin_ids: VecDeque<u128>,
     graph: Option<DecoderGraph>,
+    rolling_graph: RollingDecoderGraph,
     bin_cleanup_frontier: u128,
 }
 
@@ -311,8 +356,39 @@ impl MettleDecoder {
         seed: u64,
         terminal_source_count: Option<u64>,
     ) -> Self {
-        let graph =
-            terminal_source_count.map(|source_count| precompute_graph(params, seed, source_count));
+        Self::new_with_optional_graph(
+            params,
+            source_symbol_bytes,
+            seed,
+            terminal_source_count,
+            None,
+        )
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn new_terminated_with_precomputed_graph(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Self {
+        let graph = Some(precompute_graph(params, seed, terminal_source_count));
+        Self::new_with_optional_graph(
+            params,
+            source_symbol_bytes,
+            seed,
+            Some(terminal_source_count),
+            graph,
+        )
+    }
+
+    fn new_with_optional_graph(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+        graph: Option<DecoderGraph>,
+    ) -> Self {
         let bin_count = graph.as_ref().map(DecoderGraph::bin_count);
         Self {
             params,
@@ -327,6 +403,7 @@ impl MettleDecoder {
             received_bins: ReceivedBins::new(bin_count),
             ready_bin_ids: VecDeque::new(),
             graph,
+            rolling_graph: RollingDecoderGraph::default(),
             bin_cleanup_frontier: 0,
         }
     }
@@ -367,7 +444,7 @@ impl MettleDecoder {
         self.drain_decodable_sources()
     }
 
-    fn buffer_bin(&self, bin_id: u128, mut payload: Vec<u8>) -> Option<BufferedBin> {
+    fn buffer_bin(&mut self, bin_id: u128, mut payload: Vec<u8>) -> Option<BufferedBin> {
         let mut remaining_touchers = 0u16;
         let mut undecoded_source_xor = 0u64;
 
@@ -391,14 +468,8 @@ impl MettleDecoder {
             });
         }
 
-        let (earliest_source_id, latest_source_id) =
-            self.possible_source_id_range_for_bin(bin_id)?;
-
-        for source_id in earliest_source_id..=latest_source_id {
-            let (edge_bin_ids, edge_count) = self.edge_bin_id_buffer(source_id);
-            if !edge_bin_ids[..edge_count].contains(&bin_id) {
-                continue;
-            }
+        let touchers = self.take_rolling_bin_touchers(bin_id)?;
+        for source_id in touchers {
             if self.source_is_decoded(source_id) {
                 if let Some(decoded_payload) = self.decoded_equation_payload(source_id) {
                     xor_payload(&mut payload, decoded_payload);
@@ -414,6 +485,38 @@ impl MettleDecoder {
             remaining_touchers,
             undecoded_source_xor,
         })
+    }
+
+    fn take_rolling_bin_touchers(&mut self, bin_id: u128) -> Option<Vec<u64>> {
+        let mut latest_source_id = self.params.latest_source_id_for_bin(bin_id)?;
+        if let Some(0) = self.terminal_source_count {
+            return None;
+        }
+        if let Some(terminal_source_count) = self.terminal_source_count {
+            latest_source_id = latest_source_id.min(terminal_source_count - 1);
+        }
+        let target_source_count = latest_source_id.saturating_add(1);
+
+        while self.rolling_graph.indexed_source_count < target_source_count {
+            let source_id = self.rolling_graph.indexed_source_count;
+            let (edge_bin_ids, edge_count) = self
+                .params
+                .unique_edge_bin_id_buffer_with_terminal_source_count(
+                    source_id,
+                    self.seed,
+                    self.terminal_source_count,
+                );
+            for &edge_bin_id in &edge_bin_ids[..edge_count] {
+                self.rolling_graph
+                    .bin_touchers
+                    .entry(edge_bin_id)
+                    .or_default()
+                    .push(source_id);
+            }
+            self.rolling_graph.indexed_source_count += 1;
+        }
+
+        self.rolling_graph.bin_touchers.remove(&bin_id)
     }
 
     fn drain_decodable_sources(&mut self) -> Vec<DecodedSource> {
@@ -569,12 +672,16 @@ impl MettleDecoder {
             self.received_bins.clear();
             self.seen_bin_ids.clear();
             self.ready_bin_ids.clear();
+            self.rolling_graph.clear();
             return;
         }
         let frontier = self.params.tle_bin_id(self.next_decoded_source_id);
         self.received_bins
             .drop_before(frontier, &mut self.bin_cleanup_frontier);
         self.seen_bin_ids.drop_before(frontier);
+        if self.graph.is_none() {
+            self.rolling_graph.drop_before(frontier);
+        }
     }
 
     fn push_decoded_prefix_equation_payload(&mut self, payload: Vec<u8>) {
@@ -608,13 +715,23 @@ impl MettleDecoder {
                 .contains_key(&source_id)
     }
 
-    fn possible_source_id_range_for_bin(&self, bin_id: u128) -> Option<(u64, u64)> {
-        self.params
-            .possible_source_id_range_for_bin(bin_id, self.terminal_source_count)
-    }
-
     pub(crate) fn next_source_id(&self) -> u64 {
         self.next_decoded_source_id
+    }
+
+    pub(crate) fn stats(&self) -> MettleDecoderStats {
+        MettleDecoderStats {
+            next_source_id: self.next_decoded_source_id,
+            terminal_source_count: self.terminal_source_count,
+            received_bins: self.received_bins.len(),
+            ready_bins: self.ready_bin_ids.len(),
+            seen_bins: self.seen_bin_ids.len(),
+            decoded_future_sources: self.decoded_future_equation_payloads.len(),
+            decoded_prefix_sources: self.decoded_prefix_equation_payloads.len(),
+            decoded_prefix_start_source_id: self.decoded_prefix_start_source_id,
+            graph_bins: self.graph.as_ref().map(DecoderGraph::bin_count),
+            bin_cleanup_frontier: self.bin_cleanup_frontier,
+        }
     }
 
     pub(crate) fn buffered_bin_remaining_touchers(&self, bin_id: u128) -> Option<u16> {
@@ -923,6 +1040,57 @@ mod tests {
                 .into_iter()
                 .all(|bin_id| bin_id >= frontier)
         );
+    }
+
+    #[test]
+    fn terminated_decoder_defaults_to_rolling_state() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let decoder =
+            MettleDecoder::new_terminated(params, NonZeroUsize::new(1).expect("non-zero"), 0, 64);
+
+        assert_eq!(decoder.stats().terminal_source_count, Some(64));
+        assert_eq!(decoder.stats().graph_bins, None);
+    }
+
+    #[test]
+    fn precomputed_graph_decoder_matches_rolling_decoder() {
+        let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
+        let source_symbol_bytes = NonZeroUsize::new(2).expect("non-zero");
+        let source_count = 64u64;
+        let sources = (0..source_count)
+            .map(|source_id| vec![source_id as u8, source_id.wrapping_mul(17) as u8])
+            .collect::<Vec<_>>();
+        let mut encoder =
+            MettleEncoder::new_terminated(params, source_symbol_bytes, 0, source_count);
+        let mut bins = Vec::new();
+
+        for source in &sources {
+            bins.extend(encoder.push_source(source));
+        }
+        bins.extend(encoder.finish());
+
+        let mut rolling =
+            MettleDecoder::new_terminated(params, source_symbol_bytes, 0, source_count);
+        let mut precomputed = MettleDecoder::new_terminated_with_precomputed_graph(
+            params,
+            source_symbol_bytes,
+            0,
+            source_count,
+        );
+        assert_eq!(rolling.stats().graph_bins, None);
+        assert!(precomputed.stats().graph_bins.is_some());
+
+        let mut rolling_decoded = Vec::new();
+        let mut precomputed_decoded = Vec::new();
+        for bin in bins {
+            let (bin_id, payload) = bin.into_parts();
+            rolling_decoded.extend(rolling.push_bin(MettleBin::new(bin_id, payload.clone())));
+            precomputed_decoded.extend(precomputed.push_bin(MettleBin::new(bin_id, payload)));
+        }
+
+        assert_eq!(rolling_decoded, precomputed_decoded);
+        assert_eq!(rolling.next_source_id(), source_count);
+        assert_eq!(precomputed.next_source_id(), source_count);
     }
 
     #[test]

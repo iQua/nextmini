@@ -96,4 +96,3 @@ async fn sender_stripes_symbols_across_configured_trees() {
         "with uncongested trees, the sender should stripe across every configured tree"
     );
 }
-

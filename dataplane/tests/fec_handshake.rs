@@ -174,10 +174,13 @@ async fn start_sender_defaults_to_raptorq_fec_scheme() {
         Some(nextmini_messages::lossless_session::FecScheme::RaptorQ)
     );
 
-    harness.runtime.deliver(
-        harness.session_id,
-        common::ready_frame(harness.session_id, 2),
-    ).await;
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::ready_frame(harness.session_id, 2),
+        )
+        .await;
     drop(harness.session);
 }
 
@@ -268,10 +271,13 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness.runtime.deliver(
-        harness.session_id,
-        common::ready_frame(harness.session_id, 2),
-    ).await;
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::ready_frame(harness.session_id, 2),
+        )
+        .await;
 
     let mut saw_block_data = false;
     let mut saw_source_done = false;
@@ -291,10 +297,13 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness.runtime.deliver(
-        harness.session_id,
-        common::plain_status_frame(harness.session_id, 2, 0, NeedReport::Complete),
-    ).await;
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::plain_status_frame(harness.session_id, 2, 0, NeedReport::Complete),
+        )
+        .await;
     let completed = timeout(Duration::from_secs(5), harness.session.wait())
         .await
         .expect("sender runtime wait should not time out");

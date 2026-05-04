@@ -516,8 +516,7 @@ impl LosslessRuntime {
         let abort_handle = task.abort_handle();
         info!(
             session_id = sid,
-            local_node_id,
-            "Lossless runtime started receiver session task"
+            local_node_id, "Lossless runtime started receiver session task"
         );
         tokio::spawn(async move {
             let outcome = match task.await {
