@@ -52,6 +52,9 @@ impl CloudcastReceiver {
         shared.complete_blocks.insert(data.block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
+            if let Some(round_id) = self.last_source_done_round_id {
+                self.report_complete(shared, round_id).await;
+            }
         }
     }
 
@@ -82,16 +85,23 @@ impl CloudcastReceiver {
             }
         }
 
-        let Some(report) = shared.plain_need() else {
-            return;
-        };
         self.last_source_done_round_id = Some(round_id);
-        self.last_round_need = Some(report.clone());
-        shared.send_plain_need(round_id, &report).await;
-        self.complete_reported = matches!(report, NeedReport::Complete);
+        if shared.has_all_blocks() {
+            self.report_complete(shared, round_id).await;
+        }
     }
 
     pub(super) fn is_complete(&self) -> bool {
         self.complete_reported
+    }
+
+    async fn report_complete(&mut self, shared: &super::ReceiverShared, round_id: u32) {
+        if self.complete_reported {
+            return;
+        }
+        let report = NeedReport::Complete;
+        self.last_round_need = Some(report.clone());
+        shared.send_plain_need(round_id, &report).await;
+        self.complete_reported = true;
     }
 }

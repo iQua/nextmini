@@ -13,6 +13,7 @@ mod plain;
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::ops::Bound::{Excluded, Unbounded};
+use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -33,6 +34,8 @@ use crate::node::session::timing;
 use self::cloudcast::CloudcastReceiver;
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
+
+const METTLE_SOURCE_DONE_DATA_IDLE: Duration = Duration::from_millis(500);
 
 /// Run one receiver session until the transfer is complete or the channel closes.
 #[allow(dead_code)]
@@ -161,12 +164,18 @@ impl SessionReceiver {
         data_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> Option<InboundFrame> {
         if let Some(frame) = self.pending_control_frames.pop_front() {
-            return Some(self.defer_source_done_behind_ready_data(frame, data_rx));
+            return Some(
+                self.defer_source_done_behind_ready_data(frame, data_rx)
+                    .await,
+            );
         }
 
         if let Ok(frame) = control_rx.try_recv() {
             let frame = self.coalesce_control_frame(frame, control_rx);
-            return Some(self.defer_source_done_behind_ready_data(frame, data_rx));
+            return Some(
+                self.defer_source_done_behind_ready_data(frame, data_rx)
+                    .await,
+            );
         }
 
         let maybe_frame = if self.is_passive_complete() {
@@ -176,8 +185,7 @@ impl SessionReceiver {
             tokio::select! {
                 biased;
                 maybe_frame = control_rx.recv() => maybe_frame
-                    .map(|frame| self.coalesce_control_frame(frame, control_rx))
-                    .map(|frame| self.defer_source_done_behind_ready_data(frame, data_rx)),
+                    .map(|frame| self.coalesce_control_frame(frame, control_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
                 _ = tokio::time::sleep(passive_timeout) => {
                     self.finish_session("session_finish_timeout");
@@ -188,8 +196,7 @@ impl SessionReceiver {
             tokio::select! {
                 biased;
                 maybe_frame = control_rx.recv() => maybe_frame
-                    .map(|frame| self.coalesce_control_frame(frame, control_rx))
-                    .map(|frame| self.defer_source_done_behind_ready_data(frame, data_rx)),
+                    .map(|frame| self.coalesce_control_frame(frame, control_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
             }
         };
@@ -197,7 +204,10 @@ impl SessionReceiver {
         if maybe_frame.is_none() {
             self.finish_session("receiver_channel_closed");
         }
-        maybe_frame
+        Some(
+            self.defer_source_done_behind_ready_data(maybe_frame?, data_rx)
+                .await,
+        )
     }
 
     fn coalesce_control_frame(
@@ -220,18 +230,47 @@ impl SessionReceiver {
         frame
     }
 
-    fn defer_source_done_behind_ready_data(
+    async fn defer_source_done_behind_ready_data(
         &mut self,
         frame: InboundFrame,
         data_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> InboundFrame {
-        if source_done_round(&frame).is_some()
-            && let Ok(data_frame) = data_rx.try_recv()
-        {
+        if source_done_round(&frame).is_none() {
+            return frame;
+        }
+
+        if let Ok(data_frame) = data_rx.try_recv() {
             self.pending_control_frames.push_front(frame);
             return data_frame;
         }
+
+        if self.should_wait_for_mettle_source_done_data() {
+            match tokio::time::timeout(METTLE_SOURCE_DONE_DATA_IDLE, data_rx.recv()).await {
+                Ok(Some(data_frame)) => {
+                    self.pending_control_frames.push_front(frame);
+                    return data_frame;
+                }
+                Ok(None) | Err(_) => {}
+            }
+        }
         frame
+    }
+
+    fn should_wait_for_mettle_source_done_data(&self) -> bool {
+        if self.object_complete() || self.reported_complete() {
+            return false;
+        }
+        if !matches!(self.mode, Some(ReceiverMode::Fec(_))) {
+            return false;
+        }
+        self.shared
+            .manifest
+            .as_ref()
+            .and_then(|manifest| match &manifest.mode {
+                LosslessSessionMode::Fec(fec) => fec.scheme_kind(),
+                LosslessSessionMode::Plain => None,
+            })
+            == Some(FecScheme::Mettle)
     }
 
     fn reported_complete(&self) -> bool {
@@ -846,7 +885,6 @@ mod tests {
                 .ok()
                 .and_then(|plan| plan.symbol_geometry(4).ok())
                 .expect("valid geometry"),
-            &[0, 1],
         );
         receiver.blocks = BTreeMap::from([(
             0,
@@ -1056,6 +1094,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn mettle_receiver_defers_source_done_until_late_data_is_idle() {
+        let (mut receiver, _packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+        let geometry = receiver
+            .shared
+            .plan
+            .expect("test receiver has a plan")
+            .symbol_geometry(4)
+            .expect("valid geometry");
+        receiver.shared.manifest = Some(LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
+        });
+        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
+
+        let (control_tx, mut control_rx) = mpsc::channel(8);
+        let (data_tx, mut data_rx) = mpsc::channel(8);
+        let session_id = receiver.shared.session_id;
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("SourceDone should reach receiver");
+
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            let payload = vec![7; geometry.symbol_size()];
+            data_tx
+                .send(InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 0, &payload),
+                    peer_id: Some(SOURCE_NODE_ID),
+                })
+                .await
+                .expect("late data should reach receiver");
+        });
+
+        let first = timeout(
+            Duration::from_secs(1),
+            receiver.next_frame(&mut control_rx, &mut data_rx),
+        )
+        .await
+        .expect("timed out waiting for deferred data")
+        .expect("receiver should return late data");
+        assert!(
+            lossless_session::decode_block_symbol(&first.bytes).is_some(),
+            "METTLE SourceDone must yield to late data before feedback"
+        );
+        assert_eq!(receiver.pending_control_frames.len(), 1);
+
+        let second = timeout(
+            Duration::from_secs(1),
+            receiver.next_frame(&mut control_rx, &mut data_rx),
+        )
+        .await
+        .expect("timed out waiting for deferred SourceDone")
+        .expect("receiver should return SourceDone after data goes idle");
+        assert_eq!(source_done_round(&second), Some(0));
+    }
+
+    #[tokio::test]
     async fn fec_receiver_rejects_malformed_symbol_payload_length() {
         let (mut receiver, _packet_rx) =
             fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
@@ -1208,6 +1313,46 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert_eq!(recv_plain_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn cloudcast_receiver_waits_for_in_flight_blocks_after_source_done() {
+        let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
+        receiver.shared.cfg.cloudcast = Some(
+            crate::node::session::runtime::CloudcastRuntimeConfig::new(vec![0, 1], vec![0, 1]),
+        );
+        receiver.mode = Some(ReceiverMode::Cloudcast(CloudcastReceiver::new(&[0, 1])));
+
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::SourceDone { round_id: 0 },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert!(
+            timeout(Duration::from_millis(100), packet_rx.recv())
+                .await
+                .is_err(),
+            "Cloudcast SourceDone must not trigger a missing-block Need while tree data is still in flight"
+        );
+
+        receiver
+            .handle_block_data_frame(InboundFrame {
+                bytes: lossless_session::encode_block_data(
+                    receiver.shared.session_id,
+                    1,
+                    b"abcdefgh",
                 ),
                 peer_id: Some(SOURCE_NODE_ID),
             })
