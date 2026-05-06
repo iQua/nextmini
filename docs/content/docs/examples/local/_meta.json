@@ -7,7 +7,6 @@
     "smoltcp-test",
     "splice-test",
     "curl",
-    "wget",
     "routes",
     "routing"
   ]
