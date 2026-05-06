@@ -524,7 +524,7 @@ def main():
             elif active != last_active_count:
                 last_active_count = active
                 last_progress_time = time.time()
-            elif time.time() - last_progress_time > 30:
+            elif time.time() - last_progress_time > 120 and active == 0:
                 console.print("[bold red]Early exit triggered due to lack of progress for 30 seconds.[/bold red]")
                 end_time = time.time()
                 if(start_time is not None):
@@ -552,6 +552,7 @@ def main():
                 break
 
             # Insert any flows which can now be inserted after dependent flows have completed
+            # time.sleep(1) # Small sleep to avoid hammering the database in a tight loop; adjust as needed
             dep_manager.maybe_insert_dependent_flows()
             total, active, finished = db.get_flow_stats()
 
@@ -573,8 +574,8 @@ def main():
                                 latest = max(latest, finish)
                     collective_finish_times[collective_id] = latest
 
-                avg_collective_completion_time = np.mean(list(collective_finish_times.values()))
-                console.print(f"Average collective completion time: {avg_collective_completion_time:.2f} seconds.")
+                # avg_collective_completion_time = np.mean(list(collective_finish_times.values()))
+                # console.print(f"Average collective completion time: {avg_collective_completion_time:.2f} seconds.")
 
                 # Save both metrics to file
                 objective_output_dir = Path("results") / base_name / method

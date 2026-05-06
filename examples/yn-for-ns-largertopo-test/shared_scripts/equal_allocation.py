@@ -181,4 +181,4 @@ def equal_share_per_link_flow(
 
     logging.info(f"time cost: {time_cost}")
     logging.info(f"objective value: {avg_completion}")
-    return {"avg_completion_time": avg_completion, "time_cost": time_cost, "flow_rate": flow_bw}
+    return {"avg_completion_time": avg_completion, "time_cost": time_cost}

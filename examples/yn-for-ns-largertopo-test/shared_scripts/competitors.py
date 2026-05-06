@@ -91,23 +91,34 @@ def baseline_allocation(
 
     start_time = time.time()
 
+    link_ids = link_container.item_objs
     capacities = np.array(
-        [link.capacity for link in link_container.item_objs]
+        [link_container.item_objs[idx].capacity for idx in range(len(link_ids))]
     )
     sort_index = np.argsort(capacities)
     l2h_capacities = capacities[sort_index]
+    print("ori capacities: ", capacities)
+    print("l2h_capacities: ", l2h_capacities)
+    print("sort_index: ", sort_index)
+    # Sort the capacity and also obtained the index
 
     K = cg_container.K
     Nks = cg_container.Nks
+    N = cg_container.N
+    F = fl_s_holder.fl_holder.F
 
     big_R = [[0 for _ in range(Nks[k])] for k in range(K)]
 
     for idx, min_capacity in enumerate(l2h_capacities):
         link_idx = sort_index[idx]
+        #print("*" * 50)
         # 2. Get the flows that are sent on this link
         link_flows = fl_s_holder.fl_holder.matrix[:, link_idx]
         flow_indxes = np.where(link_flows == 1)[0]
 
+        #print("link_idx: ", link_idx)
+        #print("flow_indxes: ", flow_indxes)
+        #print("before min_capacity: ", min_capacity)
         # We skip the allocation once the link is not used
         # by any flows and if it is used, the compete flows
         # should be more than 2.
@@ -119,6 +130,7 @@ def baseline_allocation(
         # [:,0]: collective id, [: 1]: group id
         coll_groups = fcg_holder.matrix[flow_indxes, :2]
         coll_groups = np.unique(coll_groups, axis=0)
+        #print("coll_groups: ", coll_groups)
         # We skip the allocation once the there is no compete
         # in the link
         if len(coll_groups) == 1:
@@ -136,12 +148,15 @@ def baseline_allocation(
             [big_R[coll_idx][group_idx] for coll_idx, group_idx in coll_groups_idx]
         )
         min_capacity -= allocated_capacity
+        #print("after min_capacity: ", min_capacity)
+        #print("allocated_capacity: ", allocated_capacity)
         # 3.2. Get the number of groups that have not been allocated
         to_allocated_groups = [
             (coll_idx, group_idx)
             for coll_idx, group_idx in coll_groups_idx
             if big_R[coll_idx][group_idx] == 0
         ]
+        #print("to_allocated_groups: ", to_allocated_groups)
         # 4. Allocate the bandwidth equally among the groups
         # Get allocations: A list holding the allocated bandwidth
         # for each group
@@ -175,8 +190,11 @@ def baseline_allocation(
     )
 
     end_time = time.time()
-    logging.info("time cost: %s", end_time - start_time)
-    logging.info("objective value: %s", big_R_obj)
+    big_R_obj = compute_average_completion_time(
+        big_R, fcg_holder, cg_container, flow_datas, K, Nks
+    )
+    logging.info(f"time cost: {end_time - start_time}")
+    logging.info(f"objective value: {big_R_obj}")
     return big_R, end_time - start_time
 
 
@@ -200,10 +218,12 @@ def barrier_aware_allocation(
     # Get the basic numbers
     K = cg_container.K
     Nks = cg_container.Nks
+    N = cg_container.N
     F = fl_s_holder.fl_holder.F
     E = fl_s_holder.fl_holder.E
 
     capacities = np.array([link.capacity for link in link_container.item_objs])
+    print("capacities: ", capacities)
     big_R = [[0 for _ in range(Nks[k])] for k in range(K)]
     allocated_collectives = []
     visited_link_indexes = []
@@ -286,8 +306,8 @@ def barrier_aware_allocation(
     )
 
     end_time = time.time()
-    logging.info("time cost: %s", end_time - start_time)
-    logging.info("objective value: %s", big_R_obj)
+    logging.info(f"time cost: {end_time - start_time}")
+    logging.info(f"objective value: {big_R_obj}")
     return big_R, end_time - start_time
 
 
@@ -306,12 +326,21 @@ def data_aware_allocation(
 
     start_time = time.time()
 
+    link_ids = link_container.item_objs
     capacities = np.array(
-        [link.capacity for link in link_container.item_objs]
+        [link_container.item_objs[idx].capacity for idx in range(len(link_ids))]
     )
+    sort_index = np.argsort(capacities)
+    l2h_capacities = capacities[sort_index]
+    print("ori capacities: ", capacities)
+    print("l2h_capacities: ", l2h_capacities)
+    print("sort_index: ", sort_index)
+    # Sort the capacity and also obtained the index
 
     K = cg_container.K
     Nks = cg_container.Nks
+    N = cg_container.N
+    F = fl_s_holder.fl_holder.F
     E = fl_s_holder.fl_holder.E
 
     big_R = [[0 for _ in range(Nks[k])] for k in range(K)]
@@ -370,6 +399,8 @@ def data_aware_allocation(
                 link_allocations.append(allocations[loc])
 
             # Get the minimum allocation from all links as the capacity of this group
+            if not link_allocations:  # 加这一行
+                continue
             min_alloc = min(link_allocations)
             big_R[k][n] = min_alloc
 
@@ -385,7 +416,7 @@ def data_aware_allocation(
     )
 
     end_time = time.time()
-    logging.info("time cost: %s", end_time - start_time)
-    logging.info("objective value: %s", big_R_obj)
+    logging.info(f"time cost: {end_time - start_time}")
+    logging.info(f"objective value: {big_R_obj}")
 
     return big_R, end_time - start_time

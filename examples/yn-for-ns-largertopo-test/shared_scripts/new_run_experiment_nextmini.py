@@ -12,10 +12,8 @@ from collections import defaultdict, deque
 import numpy as np
 from equal_allocation import equal_share_by_group_baseline
 from equal_allocation import equal_share_full_outof_dependency
-from equal_allocation import equal_share_per_link_flow
-from equal_allocation import data_aware_by_group
 from new_setting import *
-# from flow_chunk_optimization import flow_chunk_optimization
+#from flow_chunk_optimization import flow_chunk_optimization
 from dynamic_allocation import dynamic_allocation_optimization
 from weight_allocation import weight_allocation_optimization
 from multi_ring import flow_chunk_optimization3
@@ -101,12 +99,6 @@ def _main():
 
     elif method_name == "equalOutOfOrderAlloc":
         result = equal_share_full_outof_dependency(flow_info, link_cap, flows_for_each_link)
-
-    elif method_name == "equalPerLink":
-        result =equal_share_per_link_flow(flow_info, link_cap, flows_for_each_link)
-
-    elif method_name == "dataAwareByGroup":
-        result = data_aware_by_group(flow_info, link_cap, flows_for_each_link)
 
     elif method_name == "weightAlloc":
         weights_out, flow_rates, time_cost, objective = weight_allocation_optimization(flow_info, link_cap, fid_to_order_dict, flows_for_each_link, verbose=True)

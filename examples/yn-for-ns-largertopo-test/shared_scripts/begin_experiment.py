@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-This script launches the docker containers and database, and handles insertion of flows with flow dependencies
+This script launches the docker containers and database, and handles insertion of flows with flow dependencies.
+
+Namespace mode: instead of running dataplane nodes as Docker containers, a single nextmini
+binary is launched on the host with sudo. It creates Linux network namespaces internally,
+one per node. Docker only runs postgres + controller.
 """
 
 import sys
@@ -25,7 +29,6 @@ from functools import reduce
 import argparse
 from collections import defaultdict
 
-
 def get_db_host():
     """
     Returns 'postgres' if running inside Docker (where internal DNS resolves service names),
@@ -40,7 +43,6 @@ def get_db_host():
         # Fallback to localhost if detection fails
         return "localhost"
 
-
 def launch_docker_compose():
     print("Running: docker compose up --build -d")
     try:
@@ -50,8 +52,66 @@ def launch_docker_compose():
         print("Failed to run docker compose:", e)
         sys.exit(1)
 
+def launch_namespace_dataplane(log_level: str = "info") -> subprocess.Popen:
+    """
+    Launch nextmini on the host in namespace mode.
 
-def wait_for_postgres(timeout=30):
+    Expects to be called with cwd = the experiment folder (e.g. simple_ring_3/).
+    The config.toml in that folder must have:
+        enable_local_interface = false
+        auto_add_forward_rules = true
+        controller_addr = "127.0.0.1:3000"
+
+    The nextmini binary is looked up at <repo_root>/target/release/nextmini.
+    Override with the NEXTMINI_BIN environment variable if needed.
+    """
+    # Resolve binary path: NEXTMINI_BIN env var, or default repo-relative path
+    binary_path = os.environ.get("NEXTMINI_BIN", "")
+    if not binary_path:
+        # shared_scripts/ -> yn-for-ns-test/ -> examples/ -> repo root
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        repo_root = os.path.abspath(os.path.join(script_dir, "../../.."))
+        binary_path = os.path.join(repo_root, "target", "release", "nextmini")
+
+    if not os.path.isfile(binary_path):
+        print(f"[ERROR] nextmini binary not found at: {binary_path}", file=sys.stderr)
+        print("  Build it with:  cargo build -p nextmini --release", file=sys.stderr)
+        print("  Or set:         export NEXTMINI_BIN=/path/to/nextmini", file=sys.stderr)
+        sys.exit(1)
+
+    config_path = os.path.join(os.getcwd(), "config.toml")
+    if not os.path.isfile(config_path):
+        print(f"[ERROR] config.toml not found at: {config_path}", file=sys.stderr)
+        sys.exit(1)
+
+    # Validate (and cache) sudo credentials upfront so the actual launch doesn't fail silently.
+    print("Validating sudo credentials (you may be prompted for your password)...")
+    try:
+        subprocess.run(["sudo", "-v"], check=True)
+    except subprocess.CalledProcessError:
+        print("[ERROR] sudo credential validation failed. Cannot launch nextmini.", file=sys.stderr)
+        sys.exit(1)
+
+    env = os.environ.copy()
+    env["RUST_LOG"] = log_level
+
+    print(f"Launching namespace dataplane: sudo -E {binary_path} --config-path {config_path}")
+    proc = subprocess.Popen(
+        ["sudo", "-E", binary_path, "--config-path", config_path],
+        env=env,
+    )
+
+    # Brief check: give the process 2 seconds to start; if it exits immediately, something is wrong.
+    time.sleep(2)
+    if proc.poll() is not None:
+        print(f"[ERROR] nextmini exited immediately (return code {proc.returncode}). "
+              "Check RUST_LOG output above for details.", file=sys.stderr)
+        sys.exit(1)
+
+    print("Namespace dataplane started successfully.")
+    return proc
+
+def wait_for_postgres(timeout=60):
     host = get_db_host()
     port = 5432
     print("Waiting for PostgreSQL and 'flows' table to become available...")
@@ -63,7 +123,7 @@ def wait_for_postgres(timeout=30):
                 password="pgpwrd",
                 host=host,
                 port=port,
-                database="nextmini",
+                database="nextmini"
             )
             cur = conn.cursor()
             cur.execute("SELECT 1 FROM flows LIMIT 1;")
@@ -78,19 +138,19 @@ def wait_for_postgres(timeout=30):
                 print("Timeout: PostgreSQL or 'flows' table did not become available.")
                 sys.exit(1)
 
-
 class FlowDatabase:
     """Database connection and operations for flows table."""
 
     def __init__(self):
         """Initialize database connection using same credentials as dashboard.py"""
+        host = get_db_host()
         try:
             self.connection = psycopg2.connect(
                 user="pgusr",
                 password="pgpwrd",
-                host="127.0.0.1",
+                host=host,
                 port="5432",
-                database="nextmini",
+                database="nextmini"
             )
             self.connection.autocommit = True
         except psycopg2.Error as e:
@@ -103,7 +163,7 @@ class FlowDatabase:
             query = """
                 SELECT id, src_node_id, dst_node_id, flow_len_type,
                        flow_len_bytes, flow_len_duration, flow_rate,
-                       flow_weight, start_time, finish_time, is_finished
+                       flow_weight, is_finished
                 FROM flows
                 ORDER BY id ASC
             """
@@ -133,34 +193,23 @@ class FlowDatabase:
         finally:
             cursor.close()
 
-    def insert_flow(
-        self,
-        src_node_id: int,
-        dst_node_id: int,
-        flow_len_type: str,
-        flow_len_bytes: Optional[int] = None,
-        flow_len_duration: Optional[float] = None,
-        flow_rate: Optional[int] = None,
-        flow_weight: Optional[int] = None,
-    ) -> Optional[int]:
+    def insert_flow(self, src_node_id: int, dst_node_id: int, flow_len_type: str,
+                   flow_len_bytes: Optional[int] = None, flow_len_duration: Optional[float] = None,
+                   flow_rate: Optional[int] = None, flow_weight: Optional[int] = None) -> bool:
         """Insert a new flow into the database."""
         cursor = self.connection.cursor()
         try:
-            if flow_len_type not in ["bytes", "duration"]:
+            if flow_len_type not in ['bytes', 'duration']:
                 print("Error: flow_len_type must be 'bytes' or 'duration'")
-                return None
+                return False
 
-            if flow_len_type == "bytes" and flow_len_bytes is None:
-                print(
-                    "Error: flow_len_bytes must be provided when flow_len_type is 'bytes'"
-                )
-                return None
+            if flow_len_type == 'bytes' and flow_len_bytes is None:
+                print("Error: flow_len_bytes must be provided when flow_len_type is 'bytes'")
+                return False
 
-            if flow_len_type == "duration" and flow_len_duration is None:
-                print(
-                    "Error: flow_len_duration must be provided when flow_len_type is 'duration'"
-                )
-                return None
+            if flow_len_type == 'duration' and flow_len_duration is None:
+                print("Error: flow_len_duration must be provided when flow_len_type is 'duration'")
+                return False
 
             query = """
                 INSERT INTO flows (src_node_id, dst_node_id, flow_len_type,
@@ -170,19 +219,11 @@ class FlowDatabase:
                 RETURNING id
             """
 
-            cursor.execute(
-                query,
-                (
-                    src_node_id,
-                    dst_node_id,
-                    flow_len_type,
-                    flow_len_bytes,
-                    flow_len_duration,
-                    flow_rate,
-                    flow_weight,
-                    False,
-                ),
-            )
+            cursor.execute(query, (
+                src_node_id, dst_node_id, flow_len_type,
+                flow_len_bytes, flow_len_duration, flow_rate,
+                flow_weight, False
+            ))
 
             flow_id = cursor.fetchone()[0]
             return flow_id
@@ -197,22 +238,17 @@ class FlowDatabase:
         if self.connection:
             self.connection.close()
 
-
 class DependencyManager:
     def __init__(self, json_path: str, db):
         self.json_path = json_path
         self.db = db
         self.flow_map: Dict[str, dict] = {}
-        self.dep_graph: Dict[
-            str, Set[str]
-        ] = {}  # Map of flow IDs to sets of flow IDs they depend on
-        self.flow_db_ids: Dict[
-            str, int
-        ] = {}  # Map of flow IDs (JSON) to the actual DB IDs once inserted
+        self.dep_graph: Dict[str, Set[str]] = {} # Map of flow IDs to sets of flow IDs they depend on
+        self.flow_db_ids: Dict[str, int] = {} # Map of flow IDs (JSON) to the actual DB IDs once inserted
 
     # Parse the JSON file and store each flow's metadata in flow_map and each flow's dependencies in self.dep_graph (as a set of string flow IDs)
     def load_config(self):
-        with open(self.json_path, "r") as f:
+        with open(self.json_path, 'r') as f:
             config = json.load(f)
 
         for key, flow in config.items():
@@ -246,10 +282,8 @@ class DependencyManager:
                 dst_node_id=flow["dst"],
                 flow_len_type="bytes",
                 flow_len_bytes=flow["total"],
-                flow_rate=flow.get(
-                    "bps"
-                ),  # the bps field is calculated by the algorithm
-                flow_weight=1,  # flow.get("flow_weight") # the flow_weight field is calculated by the algorithm
+                flow_rate = flow.get("bps"), # the bps field is calculated by the algorithm
+                flow_weight = 1# flow.get("flow_weight") # the flow_weight field is calculated by the algorithm
             )
             if db_id is not None:
                 self.flow_db_ids[flow_id] = db_id
@@ -267,12 +301,8 @@ class DependencyManager:
         for fid, deps in self.dep_graph.items():
             if fid in inserted:
                 continue
-            if all(
-                str(dep) in self.flow_db_ids and self.flow_db_ids[str(dep)] in finished
-                for dep in deps
-            ):
+            if all(str(dep) in self.flow_db_ids and self.flow_db_ids[str(dep)] in finished for dep in deps):
                 self.insert_flow(fid)
-
 
 def display_flows(flows: List[Tuple], console: Console):
     if not flows:
@@ -288,35 +318,12 @@ def display_flows(flows: List[Tuple], console: Console):
     table.add_column("Duration (s)", justify="right", style="blue")
     table.add_column("Rate (bps)", justify="right", style="yellow")
     table.add_column("Weight", justify="right", style="yellow")
-    table.add_column("Start Time", justify="right", style="cyan")
-    table.add_column("Finish Time", justify="right", style="cyan")
-    table.add_column("Status", justify="center", style="red")
+    table.add_column("Finished", justify="center", style="red")
 
     for flow in flows:
-        (
-            flow_id,
-            src_node_id,
-            dst_node_id,
-            flow_len_type,
-            flow_len_bytes,
-            flow_len_duration,
-            flow_rate,
-            flow_weight,
-            start_time,
-            finish_time,
-            is_finished,
-        ) = flow
-
-        # Determine status
-        if is_finished:
-            status = "✓ Finished"
-            status_style = "green"
-        elif start_time is not None:
-            status = "⟳ Running"
-            status_style = "yellow"
-        else:
-            status = "⋯ Pending"
-            status_style = "dim"
+        (flow_id, src_node_id, dst_node_id, flow_len_type,
+         flow_len_bytes, flow_len_duration, flow_rate,
+         flow_weight, is_finished) = flow
 
         table.add_row(
             str(flow_id),
@@ -327,9 +334,7 @@ def display_flows(flows: List[Tuple], console: Console):
             str(flow_len_duration) if flow_len_duration is not None else "-",
             str(flow_rate) if flow_rate is not None else "-",
             str(flow_weight) if flow_weight is not None else "-",
-            str(start_time) if start_time is not None else "-",
-            str(finish_time) if finish_time is not None else "-",
-            f"[{status_style}]{status}[/{status_style}]",
+            "✓" if is_finished else "✗"
         )
 
     console.print(table)
@@ -340,59 +345,44 @@ def display_stats(total: int, active: int, finished: int, console: Console):
     stats_text.append(f"Total Flows: {total}\n", style="bold cyan")
     stats_text.append(f"Active Flows: {active}\n", style="bold green")
     stats_text.append(f"Finished Flows: {finished}", style="bold red")
-
     console.print(Panel(stats_text, title="Flow Statistics", style="blue"))
 
 
 """Hard-coded source and destination node IDs."""
-
-
 def generate_random_flow() -> dict:
     flow = {
-        "src_node_id": random.randint(1, 3),
-        "dst_node_id": random.randint(1, 3),
-        "flow_len_type": "bytes",
-        "flow_rate": random.randint(100000, 10000000),  # 100KB to 10MB per second
-        "flow_weight": random.randint(1, 100),
+        'src_node_id': random.randint(1, 3),
+        'dst_node_id': random.randint(1, 3),
+        'flow_len_type': 'bytes',
+        'flow_rate': random.randint(100000, 10000000),  # 100KB to 10MB per second
+        'flow_weight': random.randint(1, 100)
     }
 
     # Ensure source and destination nodes are not the same
-    while flow["src_node_id"] == flow["dst_node_id"]:
-        flow["dst_node_id"] = random.randint(1, 3)  # since now we have only 3 nodes
+    while flow['src_node_id'] == flow['dst_node_id']:
+        flow['dst_node_id'] = random.randint(1, 3) # since now we have only 3 nodes
 
-    flow["flow_len_bytes"] = random.randint(1000000, 100000000)  # 1MB to 100MB
-    flow["flow_len_duration"] = None
+    flow['flow_len_bytes'] = random.randint(1000000, 100000000)  # 1MB to 100MB
+    flow['flow_len_duration'] = None
 
     return flow
-
 
 def main():
     # Parse algorithm mode
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "-m",
-        "--method",
-        choices=[
-            "dynamicAlloc",
-            "weightAlloc",
-            "multiRing",
-            "dataAwareAlloc",
-            "multiRingWeight",
-            "dataAware",
-            "equalAlloc",
-            "equalOutOfOrderAlloc",
-        ],
-        default="dynamicAlloc",
-        help="Choose an algorithm to use",
-    )
+    parser.add_argument("-m", "--method", choices=["dynamicAlloc", "weightAlloc", "multiRing", "dataAwareAlloc", "multiRingWeight", "dataAware", "equalAlloc", "equalOutOfOrderAlloc"], default="dynamicAlloc", help="Choose an algorithm to use")
+    parser.add_argument("--log-level", default="info", help="RUST_LOG level for nextmini dataplane (default: info)")
     args = parser.parse_args()
     method = args.method
 
-    # Launch the docker containers, database
-    # launch_docker_compose()
-
-    host = get_db_host()
+    # 1. Start Docker (postgres + controller only; no node containers in namespace mode)
+    launch_docker_compose()
     wait_for_postgres()
+
+    # 2. Launch the nextmini dataplane on the host in namespace mode.
+    #    This requires sudo and Linux network namespace support.
+    ns_proc = launch_namespace_dataplane(log_level=args.log_level)
+
     console = Console()
     db = FlowDatabase()
 
@@ -405,72 +395,48 @@ def main():
     if method != "dataAware":
         try:
             print(f"Running algorithm: {method}")
-            subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "../shared_scripts/new_run_experiment_nextmini.py",
-                    "-r",
-                    "results",
-                    "-p",
-                    base_name,
-                    "-c",
-                    str((Path.cwd() / json_filename).resolve()),
-                    "-m",
-                    method,
-                ],
-                check=True,
-            )
+            subprocess.run([
+                "uv", "run", "../shared_scripts/new_run_experiment_nextmini.py",
+                "-r", "results",
+                "-p", base_name,
+                "-c", str((Path.cwd() / json_filename).resolve()),
+                "-m", method
+
+            ], check = True)
         except subprocess.CalledProcessError as e:
             print(f"Error running optimization script: {e}")
             sys.exit(1)
 
     # Else run the optimization algorithm through run_experiment.py if it's a stellar folder script
     else:
-        # Run through run_experiment_nextmini.py for dataAwareAlloc
-        try:
-            subprocess.run(
-                [
-                    "uv",
-                    "run",
-                    "../shared_scripts/run_experiment_nextmini.py",
-                    "-r",
-                    "results",
-                    "-p",
-                    base_name,
-                    "-c",
-                    str((Path.cwd() / json_filename).resolve()),
-                    "-o",
-                    str((Path.cwd() / f"{base_name}_optimization.json").resolve()),
-                    "-m",
-                    "dataAwareAlloc",
-                ],
-                check=True,
-            )
-        except subprocess.CalledProcessError as e:
-            print(f"Error running dataAwareAlloc optimization: {e}")
-            sys.exit(1)
+           # Run through run_experiment_nextmini.py for dataAwareAlloc
+           try:
+               subprocess.run([
+                   "uv", "run", "../shared_scripts/run_experiment_nextmini.py",
+                   "-r", "results",
+                   "-p", base_name,
+                   "-c", str((Path.cwd() / json_filename).resolve()),
+                   "-o", str((Path.cwd() / f"{base_name}_optimization.json").resolve()),
+                   "-m", "dataAwareAlloc"
+               ], check=True)
+           except subprocess.CalledProcessError as e:
+               print(f"Error running dataAwareAlloc optimization: {e}")
+               sys.exit(1)
 
     # Load the output of optimization
     result_json_path = Path("results") / base_name / method / "result.json"
     with open(result_json_path, "r") as f:
         result = json.load(f)
     flow_rates = result["flow_rate"]
-    if method == "weightAlloc":
+    if(method=="weightAlloc"):
         weights = result["weights"]
 
         # We must convert the double 0->1 weights into int weights having similar ratios
-        fractions = [
-            Fraction(w).limit_denominator(1000000) for w in weights.values()
-        ]  # Convert weights to approximate fractions
-        if any(f == 0 for f in fractions):
-            raise ValueError(
-                "One or more weights rounded to zero after conversion to fractions"
-            )
+        fractions = [Fraction(w).limit_denominator(1000000) for w in weights.values()] # Convert weights to approximate fractions
+        if any(f==0 for f in fractions):
+            raise ValueError("One or more weights rounded to zero after conversion to fractions")
         lcm = np.lcm.reduce([f.denominator for f in fractions])
-        int_weights_list = [
-            int(f.numerator * (lcm // f.denominator)) for f in fractions
-        ]  # Convert the weights to integers
+        int_weights_list = [int(f.numerator * (lcm // f.denominator)) for f in fractions] # Convert the weights to integers
 
         # Reduce to smallest integer ratios
         g = np.gcd.reduce(int_weights_list)
@@ -506,18 +472,16 @@ def main():
         n = flow["group_id"]
         group_key = f"{k}_{n}"
         if method == "weightAlloc":
-            flow["flow_weight"] = 1  # int_weights[group_key]
+            flow["flow_weight"] = 1#int_weights[group_key]
         else:
             flow["flow_weight"] = 1
-        flow["bps"] = int(flow_rates[fid] * 1024 * 1024 * 8)
+        flow["bps"] = int(flow_rates[fid] * 1024 * 1024)  # MB/s → bytes/s (nextmini flow_rate unit)
 
     # Insert all dependency-free flows initially
     for flow_id, deps in dep_manager.dep_graph.items():
         if not deps:
             dep_manager.insert_flow(flow_id)
-            console.print(
-                f"\n[bold green]Inserted new flow with ID: {flow_id}[/bold green]"
-            )
+            console.print(f"\n[bold green]Inserted new flow with ID: {flow_id}[/bold green]")
 
     # Continually insert flows whose dependencies have completed
     start_time = None
@@ -535,7 +499,7 @@ def main():
             # Record flow end times and display all flows both completed and in transmission
             flows = db.get_all_flows()
             for flow_row in flows:
-                db_id, *_, is_finished = flow_row
+                db_id, *_ , is_finished = flow_row
                 if is_finished and str(db_id) not in flow_finish_times:
                     if start_time is not None:
                         flow_finish_times[str(db_id)] = time.time() - start_time
@@ -560,12 +524,10 @@ def main():
             elif active != last_active_count:
                 last_active_count = active
                 last_progress_time = time.time()
-            elif time.time() - last_progress_time > 30:
-                console.print(
-                    "[bold red]Early exit triggered due to lack of progress for 30 seconds.[/bold red]"
-                )
+            elif time.time() - last_progress_time > 1200 and active == 0:
+                console.print("[bold red]Early exit triggered due to lack of progress for 30 seconds.[/bold red]")
                 end_time = time.time()
-                if start_time is not None:
+                if(start_time is not None):
                     elapsed = end_time - start_time
 
                 for collective_id, fids in collective_to_flows.items():
@@ -578,24 +540,19 @@ def main():
                                 latest = max(latest, finish)
                     collective_finish_times[collective_id] = latest
 
-                avg_collective_completion_time = np.mean(
-                    list(collective_finish_times.values())
-                )
+                avg_collective_completion_time = np.mean(list(collective_finish_times.values()))
                 objective_output_dir = Path("results") / base_name / method
                 objective_output_dir.mkdir(parents=True, exist_ok=True)
                 with open(objective_output_dir / "objective_time.json", "w") as f:
-                    json.dump(
-                        {
-                            "total_flow_completion_time": elapsed,
-                            "avg_collective_completion_time": avg_collective_completion_time,
-                            "early_exit": True,
-                        },
-                        f,
-                        indent=4,
-                    )
+                    json.dump({
+                        "total_flow_completion_time": elapsed,
+                        "avg_collective_completion_time": avg_collective_completion_time,
+                        "early_exit": True
+                    }, f, indent=4)
                 break
 
             # Insert any flows which can now be inserted after dependent flows have completed
+            # time.sleep(1) # Small sleep to avoid hammering the database in a tight loop; adjust as needed
             dep_manager.maybe_insert_dependent_flows()
             total, active, finished = db.get_flow_stats()
 
@@ -603,9 +560,7 @@ def main():
             if total > 0 and finished == total and start_time is not None:
                 end_time = time.time()
                 elapsed = end_time - start_time
-                console.print(
-                    f"\nCompletion time of all flows occured in {elapsed:.2f} seconds."
-                )
+                console.print(f"\nCompletion time of all flows occured in {elapsed:.2f} seconds.")
 
                 # Compute collective completion times
                 for collective_id, fids in collective_to_flows.items():
@@ -619,12 +574,8 @@ def main():
                                 latest = max(latest, finish)
                     collective_finish_times[collective_id] = latest
 
-                avg_collective_completion_time = np.mean(
-                    list(collective_finish_times.values())
-                )
-                console.print(
-                    f"Average collective completion time: {avg_collective_completion_time:.2f} seconds."
-                )
+                # avg_collective_completion_time = np.mean(list(collective_finish_times.values()))
+                # console.print(f"Average collective completion time: {avg_collective_completion_time:.2f} seconds.")
 
                 # Save both metrics to file
                 objective_output_dir = Path("results") / base_name / method
@@ -632,15 +583,11 @@ def main():
                 objective_file_path = objective_output_dir / "objective_time.json"
 
                 with open(objective_file_path, "w") as f:
-                    json.dump(
-                        {
-                            "total_flow_completion_time": elapsed,
-                            "avg_collective_completion_time": avg_collective_completion_time,
-                            "early_exit": False,
-                        },
-                        f,
-                        indent=4,
-                    )
+                    json.dump({
+                        "total_flow_completion_time": elapsed,
+                        "avg_collective_completion_time": avg_collective_completion_time,
+                        "early_exit": False
+                    }, f, indent=4)
                 break
 
             # waits for 1 second before the next iteration.
@@ -654,7 +601,14 @@ def main():
     finally:
         db.close()
         console.print("[dim]Database connection closed[/dim]")
-
+        # Terminate the namespace dataplane process
+        if ns_proc.poll() is None:
+            print("Terminating namespace dataplane...")
+            ns_proc.terminate()
+            try:
+                ns_proc.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                ns_proc.kill()
 
 if __name__ == "__main__":
     main()
