@@ -34,7 +34,6 @@ use self::plain::PlainSender;
 use self::state::{ActiveSessionQuorum, QuorumLiveness};
 
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
-const IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// Run one sender session until completion or channel shutdown.
 pub async fn run(
@@ -239,17 +238,20 @@ impl SessionSender {
             Duration::from_millis(cfg.peer_report_timeout_ms),
         );
         let cloudcast = cfg.cloudcast.clone();
-        let mode = if let Some(cloudcast) = cloudcast.as_ref() {
-            if !matches!(manifest.mode, LosslessSessionMode::Plain) {
-                return Err("cloudcast sender requires a plain manifest");
-            }
-            SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
-        } else {
-            match &manifest.mode {
-                LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-                LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
-            }
-        };
+        let mode =
+            if let Some(cloudcast) = cloudcast.as_ref() {
+                if !matches!(manifest.mode, LosslessSessionMode::Plain) {
+                    return Err("cloudcast sender requires a plain manifest");
+                }
+                SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
+            } else {
+                match &manifest.mode {
+                    LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
+                    LosslessSessionMode::Fec(_) => SenderMode::Fec(
+                        FecSender::new_with_tree_weights(&manifest, plan, &cfg.fec_tree_weights)?,
+                    ),
+                }
+            };
 
         Ok(Self {
             shared: SenderShared {
@@ -462,29 +464,6 @@ impl SenderShared {
     ) {
         while let Ok(frame) = ctrl_rx.try_recv() {
             self.handle_control(frame, mode);
-        }
-    }
-
-    /// Wait for either new control input or a short idle retry interval.
-    pub(super) async fn wait_for_signal<M: ModeHooks>(
-        &mut self,
-        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
-        mode: &mut M,
-    ) -> bool {
-        tokio::select! {
-            maybe_frame = ctrl_rx.recv() => {
-                let Some(frame) = maybe_frame else {
-                    warn!(
-                        session_id = self.session.session_id,
-                        reason = "control_channel_closed",
-                        "Lossless sender aborted while waiting for more control because the control channel closed"
-                    );
-                    return false;
-                };
-                self.handle_control(frame, mode);
-                true
-            }
-            _ = tokio::time::sleep(IDLE_WAIT) => true,
         }
     }
 
@@ -877,6 +856,7 @@ mod tests {
             },
             pacing: None,
             receiver_ids: vec![22, 23],
+            fec_tree_weights: Vec::new(),
             source_buffer: Bytes::new(),
             manifest: LosslessSessionManifest {
                 block_size: 4,
@@ -951,6 +931,7 @@ mod tests {
             },
             pacing: None,
             receiver_ids: vec![22],
+            fec_tree_weights: Vec::new(),
             source_buffer: Bytes::new(),
             manifest: LosslessSessionManifest {
                 block_size: 4,

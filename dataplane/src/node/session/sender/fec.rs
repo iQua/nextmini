@@ -1,7 +1,6 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -31,8 +30,13 @@ enum SymbolKind {
     Repair,
 }
 
-const FEC_SENDER_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(1);
-const FEC_SENDER_PROGRESS_SYMBOL_INTERVAL: u64 = 4096;
+const WEIGHTED_TREE_SCHEDULE_SLOTS: usize = 256;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TreeScheduleEntry {
+    tree_id: u16,
+    tree_index: usize,
+}
 
 /// FEC-mode sender state and scheduling cursors.
 pub(super) struct FecSender {
@@ -40,7 +44,10 @@ pub(super) struct FecSender {
     scheme: FecScheme,
     symbols_per_block: u32,
     initial_symbol_count: u32,
+    mettle_stream_symbol_limit: u32,
+    mettle_overhead: mettle::OverheadRatio,
     tree_ids: Vec<u16>,
+    tree_schedule: Vec<TreeScheduleEntry>,
     geometry: SymbolGeometry,
     next_tree_rr: usize,
     current_source_cache: Option<(u64, Vec<Bytes>)>,
@@ -65,22 +72,21 @@ struct FecBlockState {
     mettle_stream: Option<MettleSymbolStream>,
 }
 
-/// Per-block streaming METTLE encoder state.
+/// Per-block finite-stream METTLE encoder state.
 ///
-/// It keeps only the paper encoder's open coupling window plus any finalized
-/// bins emitted ahead of the currently retried symbol.
+/// It keeps only the paper encoder's rolling coupling window plus any
+/// finalized bins emitted ahead of the currently retried symbol.
 struct MettleSymbolStream {
     encoder: Option<mettle::stream::Encoder>,
     span: BlockSpan,
     geometry: SymbolGeometry,
-    terminal_source_count: u64,
+    real_source_count: u64,
     next_source_id: u64,
     finished: bool,
     buffered_bins: BTreeMap<u32, Vec<u8>>,
     advance_calls: u64,
     source_symbols_pushed: u64,
     bins_buffered_total: u64,
-    finish_calls: u64,
 }
 
 impl MettleSymbolStream {
@@ -88,26 +94,26 @@ impl MettleSymbolStream {
         span: BlockSpan,
         geometry: SymbolGeometry,
         seed: u64,
-        terminal_source_count: u64,
+        real_source_count: u64,
+        mettle_overhead: mettle::OverheadRatio,
     ) -> Option<Self> {
         let source_symbol_bytes = NonZeroUsize::new(geometry.symbol_size())?;
         Some(Self {
             encoder: Some(mettle::stream::Encoder::new_terminated(
-                mettle::MettleParams::new(mettle::OverheadRatio::DEFAULT),
+                mettle::MettleParams::new(mettle_overhead),
                 source_symbol_bytes,
                 seed,
-                terminal_source_count,
+                real_source_count,
             )),
             span,
             geometry,
-            terminal_source_count,
+            real_source_count,
             next_source_id: 0,
             finished: false,
             buffered_bins: BTreeMap::new(),
             advance_calls: 0,
             source_symbols_pushed: 0,
             bins_buffered_total: 0,
-            finish_calls: 0,
         })
     }
 
@@ -122,25 +128,21 @@ impl MettleSymbolStream {
 
     fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
         self.advance_calls = self.advance_calls.saturating_add(1);
-        if self.next_source_id < self.terminal_source_count {
+        let bins = if self.next_source_id < self.real_source_count {
             let source_index = usize::try_from(self.next_source_id).ok()?;
             let payload = source.source_symbol_payload(self.span, self.geometry, source_index)?;
-            let bins = self.encoder.as_mut()?.push_source(&payload);
             self.next_source_id += 1;
             self.source_symbols_pushed = self.source_symbols_pushed.saturating_add(1);
-            self.buffer_bins(bins)?;
-            return Some(true);
-        }
-
-        if !self.finished {
-            let bins = self.encoder.take()?.finish();
+            self.encoder.as_mut()?.push_source(&payload)
+        } else {
+            if self.finished {
+                return Some(false);
+            }
             self.finished = true;
-            self.finish_calls = self.finish_calls.saturating_add(1);
-            self.buffer_bins(bins)?;
-            return Some(true);
-        }
-
-        Some(false)
+            self.encoder.take()?.finish()
+        };
+        self.buffer_bins(bins)?;
+        Some(true)
     }
 
     fn buffer_bins(&mut self, bins: Vec<mettle::stream::EncodedBin>) -> Option<()> {
@@ -171,7 +173,6 @@ impl MettleSymbolStream {
 
 #[derive(Debug)]
 struct FecSenderStats {
-    per_tree: BTreeMap<u16, FecTreeSendStats>,
     source_attempts: u64,
     source_queued: u64,
     source_would_block: u64,
@@ -182,42 +183,11 @@ struct FecSenderStats {
     repair_closed: u64,
     source_send_stalls: u64,
     repair_send_stalls: u64,
-    source_payload_builds: u64,
-    source_payload_build_nanos: u128,
-    repair_payload_builds: u64,
-    repair_payload_build_nanos: u128,
-    raptorq_encoder_builds: u64,
-    raptorq_encoder_build_nanos: u128,
-    raptorq_coded_symbol_builds: u64,
-    raptorq_coded_symbol_nanos: u128,
-    mettle_symbol_requests: u64,
-    mettle_symbol_request_nanos: u128,
-    last_progress_at: Instant,
-    last_progress_queued: u64,
-    last_progress_attempts: u64,
-    last_progress_would_block: u64,
-}
-
-#[derive(Debug, Default)]
-struct FecTreeSendStats {
-    source_attempts: u64,
-    source_queued: u64,
-    source_would_block: u64,
-    source_closed: u64,
-    repair_attempts: u64,
-    repair_queued: u64,
-    repair_would_block: u64,
-    repair_closed: u64,
 }
 
 impl FecSenderStats {
-    fn new(tree_ids: &[u16]) -> Self {
+    fn new(_tree_ids: &[u16]) -> Self {
         Self {
-            per_tree: tree_ids
-                .iter()
-                .copied()
-                .map(|tree_id| (tree_id, FecTreeSendStats::default()))
-                .collect(),
             source_attempts: 0,
             source_queued: 0,
             source_would_block: 0,
@@ -228,101 +198,39 @@ impl FecSenderStats {
             repair_closed: 0,
             source_send_stalls: 0,
             repair_send_stalls: 0,
-            source_payload_builds: 0,
-            source_payload_build_nanos: 0,
-            repair_payload_builds: 0,
-            repair_payload_build_nanos: 0,
-            raptorq_encoder_builds: 0,
-            raptorq_encoder_build_nanos: 0,
-            raptorq_coded_symbol_builds: 0,
-            raptorq_coded_symbol_nanos: 0,
-            mettle_symbol_requests: 0,
-            mettle_symbol_request_nanos: 0,
-            last_progress_at: Instant::now(),
-            last_progress_queued: 0,
-            last_progress_attempts: 0,
-            last_progress_would_block: 0,
         }
     }
 
-    fn record_attempt(&mut self, kind: SymbolKind, tree_id: u16) {
-        let tree = self.per_tree.entry(tree_id).or_default();
+    fn record_attempt(&mut self, kind: SymbolKind, _tree_id: u16) {
         match kind {
             SymbolKind::Source => {
                 self.source_attempts = self.source_attempts.saturating_add(1);
-                tree.source_attempts = tree.source_attempts.saturating_add(1);
             }
             SymbolKind::Repair => {
                 self.repair_attempts = self.repair_attempts.saturating_add(1);
-                tree.repair_attempts = tree.repair_attempts.saturating_add(1);
             }
         }
     }
 
-    fn record_payload_build(&mut self, kind: SymbolKind, duration: Duration) {
-        match kind {
-            SymbolKind::Source => {
-                self.source_payload_builds = self.source_payload_builds.saturating_add(1);
-                self.source_payload_build_nanos = self
-                    .source_payload_build_nanos
-                    .saturating_add(duration.as_nanos());
-            }
-            SymbolKind::Repair => {
-                self.repair_payload_builds = self.repair_payload_builds.saturating_add(1);
-                self.repair_payload_build_nanos = self
-                    .repair_payload_build_nanos
-                    .saturating_add(duration.as_nanos());
-            }
-        }
-    }
-
-    fn record_raptorq_encoder_build(&mut self, duration: Duration) {
-        self.raptorq_encoder_builds = self.raptorq_encoder_builds.saturating_add(1);
-        self.raptorq_encoder_build_nanos = self
-            .raptorq_encoder_build_nanos
-            .saturating_add(duration.as_nanos());
-    }
-
-    fn record_raptorq_coded_symbol(&mut self, duration: Duration) {
-        self.raptorq_coded_symbol_builds = self.raptorq_coded_symbol_builds.saturating_add(1);
-        self.raptorq_coded_symbol_nanos = self
-            .raptorq_coded_symbol_nanos
-            .saturating_add(duration.as_nanos());
-    }
-
-    fn record_mettle_symbol_request(&mut self, duration: Duration) {
-        self.mettle_symbol_requests = self.mettle_symbol_requests.saturating_add(1);
-        self.mettle_symbol_request_nanos = self
-            .mettle_symbol_request_nanos
-            .saturating_add(duration.as_nanos());
-    }
-
-    fn record_outcome(&mut self, kind: SymbolKind, tree_id: u16, outcome: SendOutcome) {
-        let tree = self.per_tree.entry(tree_id).or_default();
+    fn record_outcome(&mut self, kind: SymbolKind, _tree_id: u16, outcome: SendOutcome) {
         match (kind, outcome) {
             (SymbolKind::Source, SendOutcome::Queued) => {
                 self.source_queued = self.source_queued.saturating_add(1);
-                tree.source_queued = tree.source_queued.saturating_add(1);
             }
             (SymbolKind::Source, SendOutcome::WouldBlock) => {
                 self.source_would_block = self.source_would_block.saturating_add(1);
-                tree.source_would_block = tree.source_would_block.saturating_add(1);
             }
             (SymbolKind::Source, SendOutcome::Closed) => {
                 self.source_closed = self.source_closed.saturating_add(1);
-                tree.source_closed = tree.source_closed.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::Queued) => {
                 self.repair_queued = self.repair_queued.saturating_add(1);
-                tree.repair_queued = tree.repair_queued.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::WouldBlock) => {
                 self.repair_would_block = self.repair_would_block.saturating_add(1);
-                tree.repair_would_block = tree.repair_would_block.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::Closed) => {
                 self.repair_closed = self.repair_closed.saturating_add(1);
-                tree.repair_closed = tree.repair_closed.saturating_add(1);
             }
         }
     }
@@ -341,47 +249,134 @@ impl FecSenderStats {
     fn total_queued(&self) -> u64 {
         self.source_queued.saturating_add(self.repair_queued)
     }
+}
 
-    fn total_attempts(&self) -> u64 {
-        self.source_attempts.saturating_add(self.repair_attempts)
+fn build_tree_schedule(tree_ids: &[u16], tree_weights: &[f64]) -> Vec<TreeScheduleEntry> {
+    if tree_ids.is_empty() {
+        return Vec::new();
+    }
+    if tree_weights.len() != tree_ids.len() {
+        return unweighted_tree_schedule(tree_ids);
     }
 
-    fn total_would_block(&self) -> u64 {
-        self.source_would_block
-            .saturating_add(self.repair_would_block)
+    let weights = tree_weights
+        .iter()
+        .map(|weight| {
+            if weight.is_finite() && *weight > 0.0 {
+                *weight
+            } else {
+                1.0
+            }
+        })
+        .collect::<Vec<_>>();
+    let total_weight = weights.iter().sum::<f64>();
+    if !total_weight.is_finite() || total_weight <= 0.0 {
+        return unweighted_tree_schedule(tree_ids);
     }
 
-    fn total_closed(&self) -> u64 {
-        self.source_closed.saturating_add(self.repair_closed)
+    let schedule_len = tree_ids.len().max(WEIGHTED_TREE_SCHEDULE_SLOTS);
+    let mut slot_counts = vec![1usize; tree_ids.len()];
+    let remaining_slots = schedule_len.saturating_sub(tree_ids.len());
+    let mut assigned_slots = 0usize;
+    let mut remainders = Vec::with_capacity(tree_ids.len());
+    for (idx, weight) in weights.iter().enumerate() {
+        let exact = (*weight / total_weight) * remaining_slots as f64;
+        let base = exact.floor() as usize;
+        slot_counts[idx] += base;
+        assigned_slots += base;
+        remainders.push((idx, exact - base as f64, *weight));
+    }
+    remainders.sort_by(|left, right| {
+        right
+            .1
+            .total_cmp(&left.1)
+            .then_with(|| right.2.total_cmp(&left.2))
+            .then_with(|| left.0.cmp(&right.0))
+    });
+    for idx in 0..remaining_slots.saturating_sub(assigned_slots) {
+        let tree_index = remainders[idx % remainders.len()].0;
+        slot_counts[tree_index] += 1;
     }
 
-    fn tree_summary(&self) -> String {
-        self.per_tree
-            .iter()
-            .map(|(tree_id, stats)| {
-                format!(
-                    "{}:sa={},sq={},sw={},sc={},ra={},rq={},rw={},rc={}",
-                    tree_id,
-                    stats.source_attempts,
-                    stats.source_queued,
-                    stats.source_would_block,
-                    stats.source_closed,
-                    stats.repair_attempts,
-                    stats.repair_queued,
-                    stats.repair_would_block,
-                    stats.repair_closed
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(";")
+    interleave_tree_slots(tree_ids, &slot_counts)
+}
+
+fn unweighted_tree_schedule(tree_ids: &[u16]) -> Vec<TreeScheduleEntry> {
+    tree_ids
+        .iter()
+        .copied()
+        .enumerate()
+        .map(|(tree_index, tree_id)| TreeScheduleEntry {
+            tree_id,
+            tree_index,
+        })
+        .collect()
+}
+
+fn interleave_tree_slots(tree_ids: &[u16], slot_counts: &[usize]) -> Vec<TreeScheduleEntry> {
+    let total_slots = slot_counts.iter().sum();
+    let mut positioned = Vec::with_capacity(total_slots);
+    for (tree_index, (&tree_id, &slot_count)) in tree_ids.iter().zip(slot_counts).enumerate() {
+        for slot_idx in 0..slot_count {
+            let position = (slot_idx as f64 + 0.5) / slot_count as f64;
+            positioned.push((position, tree_index, tree_id));
+        }
     }
+    positioned.sort_by(|left, right| {
+        left.0
+            .total_cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+    });
+    positioned
+        .into_iter()
+        .map(|(_, tree_index, tree_id)| TreeScheduleEntry {
+            tree_id,
+            tree_index,
+        })
+        .collect()
+}
+
+fn mark_tree_attempted(
+    tree_index: usize,
+    tried_mask: &mut u128,
+    tried_large: Option<&mut Vec<bool>>,
+) -> bool {
+    if let Some(tried) = tried_large {
+        let Some(entry) = tried.get_mut(tree_index) else {
+            return false;
+        };
+        if *entry {
+            return false;
+        }
+        *entry = true;
+        return true;
+    }
+
+    let Some(bit) = 1u128.checked_shl(tree_index as u32) else {
+        return false;
+    };
+    if *tried_mask & bit != 0 {
+        return false;
+    }
+    *tried_mask |= bit;
+    true
 }
 
 impl FecSender {
     /// Build the initial FEC sender state for a validated manifest.
+    #[cfg(test)]
     pub(super) fn new(
         manifest: &LosslessSessionManifest,
         plan: BlockPlan,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_tree_weights(manifest, plan, &[])
+    }
+
+    /// Build FEC sender state using optional solver-derived tree weights.
+    pub(super) fn new_with_tree_weights(
+        manifest: &LosslessSessionManifest,
+        plan: BlockPlan,
+        tree_weights: &[f64],
     ) -> Result<Self, &'static str> {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build fec sender for plain manifest");
@@ -394,15 +389,33 @@ impl FecSender {
             .map_err(|_| "invalid symbol geometry for fec sender")?;
         let source_symbols = usize::try_from(fec.symbols_per_block)
             .map_err(|_| "symbols_per_block does not fit this host")?;
-        let initial_symbol_count = session_fec::initial_symbol_count(BlockParams::with_scheme(
-            source_symbols,
-            geometry.symbol_size(),
-            0,
-            scheme,
-        ))
+        let mettle_overhead = session_fec::mettle_overhead_from_fec_mode(fec)
+            .ok_or("invalid METTLE coded rate in fec sender manifest")?;
+        let initial_symbol_count = session_fec::initial_symbol_count(
+            BlockParams::with_scheme(source_symbols, geometry.symbol_size(), 0, scheme),
+            mettle_overhead,
+        )
         .ok_or("invalid initial fec symbol count")?;
+        let mettle_stream_symbol_limit = if scheme == FecScheme::Mettle {
+            mettle::block::BlockParams::with_overhead(
+                source_symbols,
+                geometry.symbol_size(),
+                0,
+                mettle_overhead,
+            )
+            .metadata()
+            .ok()
+            .and_then(|metadata| u32::try_from(metadata.symbol_count()).ok())
+            .ok_or("invalid METTLE finite stream symbol count")?
+        } else {
+            0
+        };
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
+        if scheme == FecScheme::Mettle && block_count > 1 {
+            return Err("paper-native METTLE requires one logical object stream");
+        }
+        let tree_schedule = build_tree_schedule(&fec.tree_ids, tree_weights);
 
         Ok(Self {
             blocks: (0..block_count)
@@ -418,7 +431,10 @@ impl FecSender {
             scheme,
             symbols_per_block: fec.symbols_per_block,
             initial_symbol_count,
+            mettle_stream_symbol_limit,
+            mettle_overhead,
             tree_ids: fec.tree_ids.clone(),
+            tree_schedule,
             geometry,
             next_tree_rr: 0,
             current_source_cache: None,
@@ -436,10 +452,11 @@ impl FecSender {
 
     /// Main send loop for FEC mode.
     ///
-    /// Source symbols are always sent before extra fountain symbols. The sender
-    /// starts repair as soon as the first useful Need snapshot arrives, but it
-    /// does not open the next feedback round until the current one is fully
-    /// drained and every frozen quorum peer has reported.
+    /// RaptorQ sends raw source symbols before feedback-driven repairs.
+    /// METTLE uses one paper-native finite object stream: the sender pushes
+    /// the real object symbols into a terminated stream and then emits the
+    /// encoder's finish tail. SourceDone is not used to estimate a finite
+    /// repair budget for METTLE.
     pub(super) async fn run(
         &mut self,
         shared: &mut super::SenderShared,
@@ -453,25 +470,17 @@ impl FecSender {
             }
 
             if let Some((block_id, symbol_id)) = self.next_source_symbol(shared) {
-                if self.send_source_symbol(shared, block_id, symbol_id).await {
-                    self.round_source_done_sent = false;
-                    continue;
-                }
-                self.log_tree_stats(shared, "source_send_wait");
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_tree_stats(shared, "source_wait_aborted");
+                if !self.send_source_symbol(shared, block_id, symbol_id).await {
+                    self.log_tree_stats(shared, "source_send_failed");
                     return SessionOutcome::Aborted;
                 }
+                self.round_source_done_sent = false;
                 continue;
             }
 
             if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
-                if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    continue;
-                }
-                self.log_tree_stats(shared, "repair_send_wait");
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_tree_stats(shared, "repair_wait_aborted");
+                if !self.send_extra_symbol(shared, block_id, symbol_id).await {
+                    self.log_tree_stats(shared, "repair_send_failed");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -480,12 +489,8 @@ impl FecSender {
             if self.has_pending_repair_work()
                 && let Some((block_id, symbol_id)) = self.next_extra_symbol(shared)
             {
-                if self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    continue;
-                }
-                self.log_tree_stats(shared, "pending_repair_send_wait");
-                if !shared.wait_for_signal(ctrl_rx, self).await {
-                    self.log_tree_stats(shared, "pending_repair_wait_aborted");
+                if !self.send_extra_symbol(shared, block_id, symbol_id).await {
+                    self.log_tree_stats(shared, "pending_repair_send_failed");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -505,8 +510,10 @@ impl FecSender {
             if self.phase == RoundPhase::WaitingForReports
                 && self.round_reports.len() == shared.active_quorum.active_members().len()
             {
-                self.finish_report_round(shared);
-                continue;
+                if !self.waiting_for_mettle_late_complete() {
+                    self.finish_report_round(shared);
+                    continue;
+                }
             }
 
             match shared
@@ -531,9 +538,10 @@ impl FecSender {
 
     /// Return the next source symbol to send in FEC mode.
     fn next_source_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
+        let source_phase_limit = self.source_phase_symbol_limit();
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if block.next_source_symbol < self.initial_symbol_count
+            if block.next_source_symbol < source_phase_limit
                 && self.phase == RoundPhase::SendingData
             {
                 return Some((block_id, block.next_source_symbol));
@@ -544,6 +552,9 @@ impl FecSender {
 
     /// Return the next extra fountain symbol requested by a receiver.
     fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
+        if self.scheme == FecScheme::Mettle {
+            return None;
+        }
         if self.total_emitted_extra_symbols() >= self.repair_window_symbols {
             return None;
         }
@@ -556,6 +567,13 @@ impl FecSender {
         None
     }
 
+    fn source_phase_symbol_limit(&self) -> u32 {
+        match self.scheme {
+            FecScheme::RaptorQ => self.initial_symbol_count,
+            FecScheme::Mettle => self.mettle_stream_symbol_limit,
+        }
+    }
+
     /// Encode and send one source symbol in FEC mode.
     async fn send_source_symbol(
         &mut self,
@@ -563,27 +581,29 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
-        let payload_started = Instant::now();
         let Some(payload) = self.source_symbol_payload(shared, block_id, symbol_id) else {
-            self.stats
-                .record_payload_build(SymbolKind::Source, payload_started.elapsed());
             return false;
         };
-        self.stats
-            .record_payload_build(SymbolKind::Source, payload_started.elapsed());
         shared.pace(payload.len()).await;
-        if !self.try_send_symbol(
-            shared,
-            block_id,
-            symbol_id,
-            payload.as_ref(),
-            SymbolKind::Source,
-        ) {
+        if !self
+            .send_symbol(
+                shared,
+                block_id,
+                symbol_id,
+                payload.as_ref(),
+                SymbolKind::Source,
+            )
+            .await
+        {
             return false;
         }
 
         if let Some(block) = fec_block_mut(self, block_id) {
-            block.next_source_symbol += 1;
+            let Some(next_symbol) = block.next_source_symbol.checked_add(1) else {
+                self.protocol_error = true;
+                return false;
+            };
+            block.next_source_symbol = next_symbol;
         }
         self.discard_sent_mettle_symbol(block_id, symbol_id);
         shared.mark_payload_emitted();
@@ -597,17 +617,15 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
-        let payload_started = Instant::now();
         let Some(payload) = self.extra_symbol_payload(shared, block_id, symbol_id) else {
-            self.stats
-                .record_payload_build(SymbolKind::Repair, payload_started.elapsed());
             self.protocol_error = true;
             return false;
         };
-        self.stats
-            .record_payload_build(SymbolKind::Repair, payload_started.elapsed());
         shared.pace(payload.len()).await;
-        if !self.try_send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair) {
+        if !self
+            .send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair)
+            .await
+        {
             return false;
         }
 
@@ -620,8 +638,8 @@ impl FecSender {
         true
     }
 
-    /// Try to emit one FEC symbol on the first tree that currently accepts it.
-    fn try_send_symbol(
+    /// Emit one FEC symbol through the processor ingress path.
+    async fn send_symbol(
         &mut self,
         shared: &mut super::SenderShared,
         block_id: u64,
@@ -629,15 +647,16 @@ impl FecSender {
         payload: &[u8],
         kind: SymbolKind,
     ) -> bool {
-        if self.tree_ids.is_empty() {
+        if self.tree_schedule.is_empty() {
             self.stats.record_stall(kind);
             self.maybe_log_progress(shared);
             return false;
         }
 
         let tree_count = self.tree_ids.len();
-        let start_idx = self.next_tree_rr;
-        let initial_tree_id = self.tree_ids[start_idx];
+        let schedule_count = self.tree_schedule.len();
+        let start_idx = self.next_tree_rr % schedule_count;
+        let initial_tree_id = self.tree_schedule[start_idx].tree_id;
         block_symbol_frame::encode_into(
             &mut self.frame_scratch,
             shared.session.session_id,
@@ -647,12 +666,27 @@ impl FecSender {
             payload,
         );
 
-        for offset in 0..tree_count {
-            let idx = (start_idx + offset) % tree_count;
-            let tree_id = self.tree_ids[idx];
-            if offset > 0 {
+        let mut await_idx = None;
+        let mut frame_tree_id = initial_tree_id;
+        let mut tried_mask = 0u128;
+        let mut tried_large = if tree_count > 128 {
+            Some(vec![false; tree_count])
+        } else {
+            None
+        };
+        let mut attempted_trees = 0usize;
+        for offset in 0..schedule_count {
+            let idx = (start_idx + offset) % schedule_count;
+            let slot = self.tree_schedule[idx];
+            if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
+                continue;
+            }
+            attempted_trees += 1;
+            let tree_id = slot.tree_id;
+            if tree_id != frame_tree_id {
                 block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                     .expect("encoded block symbol should accept tree-id patch");
+                frame_tree_id = tree_id;
             }
             self.stats.record_attempt(kind, tree_id);
             let submission = control::try_send_frame(
@@ -670,20 +704,19 @@ impl FecSender {
             self.stats.record_outcome(kind, tree_id, submission.outcome);
             match submission.outcome {
                 SendOutcome::Queued => {
-                    if self.stats.total_queued() == 1 {
-                        info!(
-                            session_id = shared.session.session_id,
-                            tree_id,
-                            block_id,
-                            symbol_id,
-                            "Lossless sender queued first FEC payload symbol"
-                        );
-                    }
-                    self.next_tree_rr = (idx + 1) % tree_count;
-                    self.maybe_log_progress(shared);
+                    self.note_queued_symbol(
+                        shared,
+                        block_id,
+                        symbol_id,
+                        tree_id,
+                        idx,
+                        schedule_count,
+                    );
                     return true;
                 }
-                SendOutcome::WouldBlock => {}
+                SendOutcome::WouldBlock => {
+                    await_idx.get_or_insert(idx);
+                }
                 SendOutcome::Closed => {
                     warn!(
                         session_id = shared.session.session_id,
@@ -692,11 +725,56 @@ impl FecSender {
                     );
                 }
             }
+            if attempted_trees == tree_count {
+                break;
+            }
         }
 
-        self.stats.record_stall(kind);
+        let Some(idx) = await_idx else {
+            self.stats.record_stall(kind);
+            self.maybe_log_progress(shared);
+            return false;
+        };
+        let tree_id = self.tree_schedule[idx].tree_id;
+        block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
+            .expect("encoded block symbol should accept tree-id patch");
+        self.stats.record_attempt(kind, tree_id);
+        control::send_frame(
+            &shared.processors,
+            control::FrameRoute {
+                session_id: shared.session.session_id,
+                tree_id: Some(tree_id),
+                src_ip: shared.route.src_ip,
+                src_port: shared.route.src_port,
+                dst_ip: shared.route.dst_ip,
+                dst_port: shared.route.dst_port,
+            },
+            &self.frame_scratch,
+        )
+        .await;
+        self.stats
+            .record_outcome(kind, tree_id, SendOutcome::Queued);
+        self.note_queued_symbol(shared, block_id, symbol_id, tree_id, idx, schedule_count);
+        true
+    }
+
+    fn note_queued_symbol(
+        &mut self,
+        shared: &super::SenderShared,
+        block_id: u64,
+        symbol_id: u32,
+        tree_id: u16,
+        idx: usize,
+        schedule_count: usize,
+    ) {
+        if self.stats.total_queued() == 1 {
+            info!(
+                session_id = shared.session.session_id,
+                tree_id, block_id, symbol_id, "Lossless sender queued first FEC payload symbol"
+            );
+        }
+        self.next_tree_rr = (idx + 1) % schedule_count;
         self.maybe_log_progress(shared);
-        false
     }
 
     /// Return the next initial data-phase symbol payload for one block.
@@ -745,20 +823,13 @@ impl FecSender {
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {
-                let encoder_started = Instant::now();
                 block.encoder = Encoder::from_block(params, source_block.as_ref());
-                self.stats
-                    .record_raptorq_encoder_build(encoder_started.elapsed());
             }
         }
 
-        let symbol_started = Instant::now();
-        let payload = fec_block_ref(self, block_id)
+        fec_block_ref(self, block_id)
             .and_then(|block| block.encoder.as_ref())
-            .and_then(|encoder| encoder.coded_symbol(symbol_id));
-        self.stats
-            .record_raptorq_coded_symbol(symbol_started.elapsed());
-        payload
+            .and_then(|encoder| encoder.coded_symbol(symbol_id))
     }
 
     fn mettle_symbol_payload(
@@ -776,6 +847,7 @@ impl FecSender {
                 self.geometry,
                 session_fec::block_seed(shared.session.session_id, block_id),
                 u64::from(self.symbols_per_block),
+                self.mettle_overhead,
             )?;
             let block = fec_block_mut(self, block_id)?;
             if block.mettle_stream.is_none() {
@@ -783,13 +855,9 @@ impl FecSender {
             }
         }
 
-        let request_started = Instant::now();
-        let payload = fec_block_mut(self, block_id)
+        fec_block_mut(self, block_id)
             .and_then(|block| block.mettle_stream.as_mut())
-            .and_then(|stream| stream.symbol_payload(&shared.source, symbol_id));
-        self.stats
-            .record_mettle_symbol_request(request_started.elapsed());
-        payload
+            .and_then(|stream| stream.symbol_payload(&shared.source, symbol_id))
     }
 
     fn discard_sent_mettle_symbol(&mut self, block_id: u64, symbol_id: u32) {
@@ -821,13 +889,15 @@ impl FecSender {
                 NeedReport::Complete => {}
                 NeedReport::Fec { blocks } => {
                     all_complete = false;
-                    for block in blocks {
-                        if let Some(entry) = self
-                            .blocks
-                            .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
-                        {
-                            entry.required_extra_symbols =
-                                entry.required_extra_symbols.max(block.deficit_symbols);
+                    if self.scheme != FecScheme::Mettle {
+                        for block in blocks {
+                            if let Some(entry) = self
+                                .blocks
+                                .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
+                            {
+                                entry.required_extra_symbols =
+                                    entry.required_extra_symbols.max(block.deficit_symbols);
+                            }
                         }
                     }
                 }
@@ -841,6 +911,19 @@ impl FecSender {
         if all_complete {
             self.round_complete = true;
             self.log_tree_stats(shared, "all_complete");
+            return;
+        }
+
+        if self.scheme == FecScheme::Mettle {
+            warn!(
+                session_id = shared.session.session_id,
+                round_id = self.current_round_id,
+                "Lossless METTLE finite stream was exhausted before every receiver decoded"
+            );
+            self.protocol_error = true;
+            self.round_reports.clear();
+            self.repair_window_symbols = 0;
+            shared.clear_quorum_feedback_wait();
             return;
         }
 
@@ -869,6 +952,9 @@ impl super::ModeHooks for FecSender {
         round_id: u32,
         report: NeedReport,
     ) {
+        if self.accept_mettle_early_complete(shared, peer_id, round_id, &report) {
+            return;
+        }
         if self.phase != RoundPhase::WaitingForReports {
             debug!(
                 session_id = shared.session.session_id,
@@ -891,6 +977,37 @@ impl super::ModeHooks for FecSender {
             return;
         }
         if let Some(existing) = self.round_reports.get(&peer_id) {
+            if self.scheme == FecScheme::Mettle {
+                match (existing, &report) {
+                    (NeedReport::Complete, NeedReport::Fec { .. }) => {
+                        debug!(
+                            session_id = shared.session.session_id,
+                            peer_id,
+                            round_id,
+                            "Lossless METTLE sender ignored a stale deficit after Complete"
+                        );
+                        return;
+                    }
+                    (NeedReport::Fec { .. }, NeedReport::Complete) => {
+                        self.round_reports.insert(peer_id, report.clone());
+                        shared
+                            .quorum_liveness
+                            .note_feedback_progress(tokio::time::Instant::now());
+                        if self
+                            .round_reports
+                            .values()
+                            .all(|status| matches!(status, NeedReport::Complete))
+                            && self.round_reports.len()
+                                == shared.active_quorum.active_members().len()
+                        {
+                            self.round_complete = true;
+                            self.log_tree_stats(shared, "all_complete");
+                        }
+                        return;
+                    }
+                    _ => {}
+                }
+            }
             if existing != &report {
                 warn!(
                     session_id = shared.session.session_id,
@@ -909,13 +1026,15 @@ impl super::ModeHooks for FecSender {
         match report {
             NeedReport::Complete => {}
             NeedReport::Fec { blocks } => {
-                for block in blocks {
-                    if let Some(entry) = self
-                        .blocks
-                        .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
-                    {
-                        entry.required_extra_symbols =
-                            entry.required_extra_symbols.max(block.deficit_symbols);
+                if self.scheme != FecScheme::Mettle {
+                    for block in blocks {
+                        if let Some(entry) = self
+                            .blocks
+                            .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
+                        {
+                            entry.required_extra_symbols =
+                                entry.required_extra_symbols.max(block.deficit_symbols);
+                        }
                     }
                 }
             }
@@ -934,6 +1053,9 @@ impl super::ModeHooks for FecSender {
         if self.round_reports.len() == shared.active_quorum.active_members().len()
             && !self.has_pending_repair_work()
         {
+            if self.waiting_for_mettle_late_complete() {
+                return;
+            }
             self.finish_report_round(shared);
         }
     }
@@ -950,10 +1072,65 @@ impl super::ModeHooks for FecSender {
 }
 
 impl FecSender {
+    fn accept_mettle_early_complete(
+        &mut self,
+        shared: &mut super::SenderShared,
+        peer_id: usize,
+        round_id: u32,
+        report: &NeedReport,
+    ) -> bool {
+        if self.scheme != FecScheme::Mettle
+            || self.phase != RoundPhase::SendingData
+            || !matches!(report, NeedReport::Complete)
+        {
+            return false;
+        }
+        if round_id > self.current_round_id {
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id,
+                round_id,
+                current_round_id = self.current_round_id,
+                "Lossless METTLE sender dropped early Complete for a future round"
+            );
+            return true;
+        }
+        if let Some(existing) = self.round_reports.get(&peer_id) {
+            if !matches!(existing, NeedReport::Complete) {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    round_id,
+                    "Lossless METTLE sender rejected changed early Complete from a quorum peer"
+                );
+                self.protocol_error = true;
+            }
+            return true;
+        }
+        self.round_reports.insert(peer_id, report.clone());
+        shared
+            .quorum_liveness
+            .note_feedback_progress(tokio::time::Instant::now());
+        if self.round_reports.len() == shared.active_quorum.active_members().len() {
+            self.round_complete = true;
+            self.log_tree_stats(shared, "all_complete");
+        }
+        true
+    }
+
     fn has_pending_repair_work(&self) -> bool {
         self.blocks
             .iter()
             .any(|block| block.emitted_extra_symbols < block.required_extra_symbols)
+    }
+
+    fn waiting_for_mettle_late_complete(&self) -> bool {
+        self.scheme == FecScheme::Mettle
+            && self.phase == RoundPhase::WaitingForReports
+            && self
+                .round_reports
+                .values()
+                .any(|report| !matches!(report, NeedReport::Complete))
     }
 
     fn total_required_extra_symbols(&self) -> u32 {
@@ -992,144 +1169,13 @@ impl FecSender {
         self.repair_window_symbols = speculative_window.min(total_required);
     }
 
-    fn maybe_log_progress(&mut self, shared: &super::SenderShared) {
-        let now = Instant::now();
-        let total_queued = self.stats.total_queued();
-        let total_attempts = self.stats.total_attempts();
-        let total_would_block = self.stats.total_would_block();
-        let queued_delta = total_queued.saturating_sub(self.stats.last_progress_queued);
-        let attempts_delta = total_attempts.saturating_sub(self.stats.last_progress_attempts);
-        let would_block_delta =
-            total_would_block.saturating_sub(self.stats.last_progress_would_block);
-        if attempts_delta == 0 {
-            return;
-        }
-        let interval_due =
-            now.duration_since(self.stats.last_progress_at) >= FEC_SENDER_PROGRESS_LOG_INTERVAL;
-        let symbol_due = queued_delta >= FEC_SENDER_PROGRESS_SYMBOL_INTERVAL;
-        if !interval_due && !symbol_due {
-            return;
-        }
-
-        info!(
-            session_id = shared.session.session_id,
-            round_id = self.current_round_id,
-            phase = ?self.phase,
-            source_queued = self.stats.source_queued,
-            source_would_block = self.stats.source_would_block,
-            repair_queued = self.stats.repair_queued,
-            repair_would_block = self.stats.repair_would_block,
-            source_send_stalls = self.stats.source_send_stalls,
-            repair_send_stalls = self.stats.repair_send_stalls,
-            source_payload_builds = self.stats.source_payload_builds,
-            source_payload_build_nanos =
-                saturating_u128_to_u64(self.stats.source_payload_build_nanos),
-            source_payload_avg_nanos = average_nanos(
-                self.stats.source_payload_build_nanos,
-                self.stats.source_payload_builds,
-            ),
-            repair_payload_builds = self.stats.repair_payload_builds,
-            repair_payload_build_nanos =
-                saturating_u128_to_u64(self.stats.repair_payload_build_nanos),
-            repair_payload_avg_nanos = average_nanos(
-                self.stats.repair_payload_build_nanos,
-                self.stats.repair_payload_builds,
-            ),
-            queued_delta,
-            attempts_delta,
-            would_block_delta,
-            repair_window_symbols = self.repair_window_symbols,
-            total_required_extra_symbols = self.total_required_extra_symbols(),
-            total_emitted_extra_symbols = self.total_emitted_extra_symbols(),
-            "Lossless FEC sender progress"
-        );
-
-        self.stats.last_progress_at = now;
-        self.stats.last_progress_queued = total_queued;
-        self.stats.last_progress_attempts = total_attempts;
-        self.stats.last_progress_would_block = total_would_block;
+    fn maybe_log_progress(&mut self, _shared: &super::SenderShared) {
+        // Intentionally empty: the per-symbol progress instrumentation is too
+        // expensive for WAN throughput measurements.
     }
 
-    fn log_tree_stats(&self, shared: &super::SenderShared, reason: &'static str) {
-        info!(
-            session_id = shared.session.session_id,
-            round_id = self.current_round_id,
-            phase = ?self.phase,
-            reason,
-            source_attempts = self.stats.source_attempts,
-            source_queued = self.stats.source_queued,
-            source_would_block = self.stats.source_would_block,
-            source_closed = self.stats.source_closed,
-            repair_attempts = self.stats.repair_attempts,
-            repair_queued = self.stats.repair_queued,
-            repair_would_block = self.stats.repair_would_block,
-            repair_closed = self.stats.repair_closed,
-            closed_symbols = self.stats.total_closed(),
-            source_send_stalls = self.stats.source_send_stalls,
-            repair_send_stalls = self.stats.repair_send_stalls,
-            source_payload_builds = self.stats.source_payload_builds,
-            source_payload_build_nanos =
-                saturating_u128_to_u64(self.stats.source_payload_build_nanos),
-            source_payload_avg_nanos = average_nanos(
-                self.stats.source_payload_build_nanos,
-                self.stats.source_payload_builds,
-            ),
-            repair_payload_builds = self.stats.repair_payload_builds,
-            repair_payload_build_nanos =
-                saturating_u128_to_u64(self.stats.repair_payload_build_nanos),
-            repair_payload_avg_nanos = average_nanos(
-                self.stats.repair_payload_build_nanos,
-                self.stats.repair_payload_builds,
-            ),
-            raptorq_encoder_builds = self.stats.raptorq_encoder_builds,
-            raptorq_encoder_build_nanos =
-                saturating_u128_to_u64(self.stats.raptorq_encoder_build_nanos),
-            raptorq_encoder_build_avg_nanos = average_nanos(
-                self.stats.raptorq_encoder_build_nanos,
-                self.stats.raptorq_encoder_builds,
-            ),
-            raptorq_coded_symbol_builds = self.stats.raptorq_coded_symbol_builds,
-            raptorq_coded_symbol_nanos =
-                saturating_u128_to_u64(self.stats.raptorq_coded_symbol_nanos),
-            raptorq_coded_symbol_avg_nanos = average_nanos(
-                self.stats.raptorq_coded_symbol_nanos,
-                self.stats.raptorq_coded_symbol_builds,
-            ),
-            mettle_symbol_requests = self.stats.mettle_symbol_requests,
-            mettle_symbol_request_nanos =
-                saturating_u128_to_u64(self.stats.mettle_symbol_request_nanos),
-            mettle_symbol_request_avg_nanos = average_nanos(
-                self.stats.mettle_symbol_request_nanos,
-                self.stats.mettle_symbol_requests,
-            ),
-            mettle_streams = %self.mettle_stream_summary(),
-            repair_window_symbols = self.repair_window_symbols,
-            total_required_extra_symbols = self.total_required_extra_symbols(),
-            total_emitted_extra_symbols = self.total_emitted_extra_symbols(),
-            tree_stats = %self.stats.tree_summary(),
-            "Lossless FEC sender per-tree stats"
-        );
-    }
-
-    fn mettle_stream_summary(&self) -> String {
-        self.blocks
-            .iter()
-            .enumerate()
-            .filter_map(|(block_id, block)| {
-                let stream = block.mettle_stream.as_ref()?;
-                Some(format!(
-                    "{}:next_src={},buf={},pushed={},bins={},adv={},fin={}",
-                    block_id,
-                    stream.next_source_id,
-                    stream.buffered_bins.len(),
-                    stream.source_symbols_pushed,
-                    stream.bins_buffered_total,
-                    stream.advance_calls,
-                    stream.finish_calls
-                ))
-            })
-            .collect::<Vec<_>>()
-            .join(";")
+    fn log_tree_stats(&self, _shared: &super::SenderShared, _reason: &'static str) {
+        // Intentionally empty: detailed tree stats were temporary instrumentation.
     }
 }
 
@@ -1151,17 +1197,6 @@ fn ensure_source_symbol_cache(
     let span = plan.block_span(block_id)?;
     fec.current_source_cache = Some((block_id, source.source_symbols(span, fec.geometry)));
     Some(())
-}
-
-fn saturating_u128_to_u64(value: u128) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-fn average_nanos(total_nanos: u128, count: u64) -> u64 {
-    if count == 0 {
-        return 0;
-    }
-    saturating_u128_to_u64(total_nanos / u128::from(count))
 }
 
 /// Borrow mutable FEC state for one block.
@@ -1191,6 +1226,46 @@ mod tests {
     use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
     use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
+
+    #[test]
+    fn fec_tree_schedule_keeps_round_robin_without_weights() {
+        let schedule = build_tree_schedule(&[7, 9, 11], &[]);
+
+        assert_eq!(
+            schedule,
+            vec![
+                TreeScheduleEntry {
+                    tree_id: 7,
+                    tree_index: 0,
+                },
+                TreeScheduleEntry {
+                    tree_id: 9,
+                    tree_index: 1,
+                },
+                TreeScheduleEntry {
+                    tree_id: 11,
+                    tree_index: 2,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn fec_tree_schedule_quantizes_solver_weights() {
+        let schedule = build_tree_schedule(&[7, 9], &[3.0, 1.0]);
+        let tree_7_slots = schedule.iter().filter(|entry| entry.tree_id == 7).count();
+        let tree_9_slots = schedule.iter().filter(|entry| entry.tree_id == 9).count();
+
+        assert_eq!(schedule.len(), WEIGHTED_TREE_SCHEDULE_SLOTS);
+        assert!(
+            tree_7_slots > tree_9_slots * 2,
+            "higher solver weight should receive proportionally more send slots"
+        );
+        assert!(
+            tree_9_slots > 0,
+            "each configured tree should remain reachable as a fallback"
+        );
+    }
 
     #[tokio::test]
     async fn fec_sender_drops_future_round_need() {
@@ -1315,17 +1390,145 @@ mod tests {
             block_size,
             total_bytes: u64::from(block_size),
             total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
+                k,
+                vec![7],
+                21,
+                20,
+            )),
         };
         let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
 
         let sender = FecSender::new(&manifest, plan).expect("large-K METTLE sender");
+        let expected_initial = mettle::block::BlockParams::with_overhead(
+            k as usize,
+            8192,
+            0,
+            mettle::OverheadRatio::new(1, 20).expect("valid overhead"),
+        )
+        .metadata()
+        .expect("large-K METTLE metadata")
+        .initial_symbol_count();
 
         assert_eq!(sender.symbols_per_block, k);
-        assert!(
-            sender.initial_symbol_count > k,
-            "METTLE initial phase should emit the finalized coded-bin prefix"
+        assert_eq!(
+            sender.initial_symbol_count as usize, expected_initial,
+            "METTLE keeps the configured coded-rate parameter for the stream graph"
         );
+    }
+
+    #[tokio::test]
+    async fn mettle_sender_data_phase_streams_until_completion() {
+        let k = 128u32;
+        let block_size = 8192u32;
+        let manifest = LosslessSessionManifest {
+            block_size,
+            total_bytes: u64::from(block_size),
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
+                k,
+                vec![7],
+                21,
+                20,
+            )),
+        };
+        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
+        let metadata = mettle::block::BlockParams::with_overhead(
+            k as usize,
+            64,
+            0,
+            mettle::OverheadRatio::new(1, 20).expect("valid overhead"),
+        )
+        .metadata()
+        .expect("METTLE metadata");
+        let expected_initial =
+            u32::try_from(metadata.initial_symbol_count()).expect("initial fits u32");
+        let expected_symbol_count =
+            u32::try_from(metadata.symbol_count()).expect("symbol count fits u32");
+
+        assert_eq!(sender.initial_symbol_count, expected_initial);
+        assert_eq!(sender.source_phase_symbol_limit(), expected_symbol_count);
+
+        sender.blocks[0].next_source_symbol = sender.initial_symbol_count;
+        let shared = test_sender_shared(manifest.clone());
+        assert_eq!(
+            sender.next_source_symbol(&shared),
+            Some((0, sender.initial_symbol_count)),
+            "METTLE should emit the paper-native finite-stream tail instead of stopping at a session window"
+        );
+
+        sender.blocks[0].next_source_symbol = sender.mettle_stream_symbol_limit;
+        assert_eq!(
+            sender.next_source_symbol(&shared),
+            None,
+            "METTLE should stop after the paper finite-stream symbol count"
+        );
+    }
+
+    #[tokio::test]
+    async fn mettle_sender_accepts_early_complete_while_sending_data() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+
+        sender.on_need(&mut shared, 22, 0, NeedReport::Complete);
+
+        assert!(sender.round_complete);
+        assert_eq!(sender.round_reports.get(&22), Some(&NeedReport::Complete));
+        assert!(!sender.protocol_error);
+    }
+
+    #[tokio::test]
+    async fn mettle_sender_waits_for_late_complete_after_finite_stream_exhaustion() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum = ActiveSessionQuorum::new([22, 23]);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.record_ready(23);
+        shared.active_quorum.freeze();
+        shared.start_quorum_feedback_wait();
+        sender.phase = RoundPhase::WaitingForReports;
+
+        let deficit = NeedReport::Fec {
+            blocks: vec![NeedBlock {
+                block_id: 0,
+                deficit_symbols: 1,
+            }],
+        };
+        sender.on_need(&mut shared, 22, 0, deficit.clone());
+        sender.on_need(&mut shared, 23, 0, deficit);
+
+        assert!(!sender.protocol_error);
+        assert!(!sender.round_complete);
+        assert_eq!(sender.phase, RoundPhase::WaitingForReports);
+        assert!(sender.waiting_for_mettle_late_complete());
+        assert!(
+            sender.round_reports.len() == 2,
+            "METTLE should not convert incomplete feedback into a session repair window"
+        );
+
+        sender.on_need(&mut shared, 22, 0, NeedReport::Complete);
+        assert!(!sender.round_complete);
+        sender.on_need(&mut shared, 23, 0, NeedReport::Complete);
+
+        assert!(sender.round_complete);
+        assert!(!sender.protocol_error);
     }
 
     #[tokio::test]
@@ -1368,6 +1571,35 @@ mod tests {
                 .expect("stream still present")
                 .buffered_bin_count(),
             0
+        );
+    }
+
+    #[tokio::test]
+    async fn mettle_sender_emits_finish_tail_after_real_object_prefix() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
+        let source = Bytes::from(vec![0xA5; 16]);
+        let shared = test_sender_shared_with_source(manifest, source);
+
+        let payload = sender
+            .source_symbol_payload(&shared, 0, 8)
+            .expect("finish-tail METTLE bin");
+
+        assert_eq!(payload.len(), 4);
+        let stream = sender.blocks[0]
+            .mettle_stream
+            .as_ref()
+            .expect("stream encoder should be initialized lazily");
+        assert_eq!(stream.next_source_id, stream.real_source_count);
+        assert!(
+            stream.finished,
+            "requesting a future bin should finish the terminated METTLE stream"
         );
     }
 

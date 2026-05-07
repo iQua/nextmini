@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Protocol version with 32-bit FEC `symbols_per_block` in manifests.
-pub const LOSSLESS_SESSION_VERSION: u8 = 6;
+/// Protocol version with explicit FEC coded-rate fields in manifests.
+pub const LOSSLESS_SESSION_VERSION: u8 = 7;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -72,6 +72,10 @@ pub struct LosslessSessionFecMode {
     /// Raw wire scheme identifier to preserve clean handling for unknown schemes.
     pub scheme: u8,
     pub symbols_per_block: u32,
+    /// Finite-stream coded-rate numerator. `1/1` means no finite prefix expansion.
+    pub coded_rate_num: u32,
+    /// Finite-stream coded-rate denominator.
+    pub coded_rate_den: u32,
     pub tree_ids: Vec<u16>,
 }
 
@@ -81,15 +85,29 @@ impl LosslessSessionFecMode {
         Self {
             scheme: FecScheme::RaptorQ.to_wire(),
             symbols_per_block,
+            coded_rate_num: 1,
+            coded_rate_den: 1,
             tree_ids,
         }
     }
 
     #[must_use]
     pub fn new_mettle(symbols_per_block: u32, tree_ids: Vec<u16>) -> Self {
+        Self::new_mettle_with_coded_rate(symbols_per_block, tree_ids, 1, 1)
+    }
+
+    #[must_use]
+    pub fn new_mettle_with_coded_rate(
+        symbols_per_block: u32,
+        tree_ids: Vec<u16>,
+        coded_rate_num: u32,
+        coded_rate_den: u32,
+    ) -> Self {
         Self {
             scheme: FecScheme::Mettle.to_wire(),
             symbols_per_block,
+            coded_rate_num,
+            coded_rate_den,
             tree_ids,
         }
     }
@@ -97,6 +115,11 @@ impl LosslessSessionFecMode {
     #[inline]
     pub fn scheme_kind(&self) -> Option<FecScheme> {
         FecScheme::from_wire(self.scheme)
+    }
+
+    #[inline]
+    pub const fn coded_rate_is_valid(&self) -> bool {
+        self.coded_rate_den != 0 && self.coded_rate_num >= self.coded_rate_den
     }
 }
 
@@ -166,6 +189,10 @@ pub enum LosslessSessionValidationError {
         scheme: u8,
     },
     ZeroSymbolsPerBlock,
+    InvalidFecCodedRate {
+        numerator: u32,
+        denominator: u32,
+    },
     FecTreeIdsEmpty,
     TooManyTreeIds {
         configured: usize,

@@ -1,5 +1,6 @@
 //! Background runtime that owns lossless sender and receiver session tasks.
 
+use std::fs::File;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, OnceLock};
 use std::time::Instant;
@@ -101,6 +102,8 @@ pub struct ReceiverRequest {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Optional file sink populated with completed blocks at their object offsets.
+    pub sink_file: Option<Arc<Mutex<File>>>,
     /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
 }
@@ -146,6 +149,8 @@ pub struct SenderConfig {
     pub pacing: Option<TokenBucketSpec>,
     /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
+    /// Optional solver-derived tree weights for FEC symbol scheduling.
+    pub fec_tree_weights: Vec<f64>,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
@@ -171,6 +176,8 @@ pub struct ReceiverConfig {
     pub local_node_id: usize,
     /// Optional in-memory sink populated with completed blocks.
     pub sink_buffer: Option<Arc<Mutex<Vec<u8>>>>,
+    /// Optional file sink populated with completed blocks at their object offsets.
+    pub sink_file: Option<Arc<Mutex<File>>>,
     /// Optional progress tracker updated when the first payload unit arrives.
     pub progress: Option<Arc<ReceiverProgress>>,
     /// Maximum time to keep a passive-complete receiver alive while waiting for later rounds.
@@ -429,18 +436,13 @@ impl LosslessRuntime {
         &mut self,
         req: SenderRequest,
     ) -> Result<LosslessSessionHandle, StartError> {
-        let sid = req.session.session_id;
+        let mut session = req.session;
+        let sid = session.session_id;
         if self.sessions.contains_key(&sid) {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
         }
         self.completed_receivers.remove(&sid);
 
-        let block_size = fec_policy::validate_block_size(req.session.block_size)?;
-        let plan = BlockPlan::new(req.total_bytes, req.session.block_size).map_err(|_| {
-            PreflightError::InvalidBlockSize {
-                value: req.session.block_size,
-            }
-        })?;
         let cloudcast = self.derive_cloudcast_config()?;
         let policy = if cloudcast.is_some() {
             fec_policy::SenderPolicy {
@@ -449,6 +451,21 @@ impl LosslessRuntime {
         } else {
             fec_policy::derive_sender_policy(&self.config)?
         };
+        if matches!(
+            &policy.mode,
+            lossless_session::LosslessSessionMode::Fec(fec)
+                if fec.scheme_kind() == Some(lossless_session::FecScheme::Mettle)
+        ) && req.total_bytes > 0
+        {
+            session.block_size = usize::try_from(req.total_bytes).unwrap_or(usize::MAX);
+        }
+
+        let block_size = fec_policy::validate_block_size(session.block_size)?;
+        let plan = BlockPlan::new(req.total_bytes, session.block_size).map_err(|_| {
+            PreflightError::InvalidBlockSize {
+                value: session.block_size,
+            }
+        })?;
         let manifest = LosslessSessionManifest {
             block_size,
             total_bytes: req.total_bytes,
@@ -456,10 +473,11 @@ impl LosslessRuntime {
             mode: policy.mode,
         };
         let mut cfg = SenderConfig {
-            session: req.session,
+            session,
             route: req.route,
             pacing: req.pacing,
             receiver_ids: req.receiver_ids,
+            fec_tree_weights: self.config.fec_default_tree_weights.clone(),
             source_buffer: req.source_buffer,
             manifest,
             ready_grace_ms: req.ready_grace_ms,
@@ -531,6 +549,7 @@ impl LosslessRuntime {
             route: req.route,
             local_node_id: req.local_node_id,
             sink_buffer: req.sink_buffer,
+            sink_file: req.sink_file,
             progress: req.progress,
             peer_report_timeout_ms: self.config.peer_report_timeout_ms,
             fec_enabled: self.config.fec_enabled,

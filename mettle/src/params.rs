@@ -11,6 +11,16 @@ pub struct OverheadRatio {
 }
 
 impl OverheadRatio {
+    /// Experimental zero-overhead setting for controlled measurements.
+    ///
+    /// `new` intentionally rejects zero because paper-style METTLE runs choose
+    /// a positive channel-dependent `c`. This constant lets integration
+    /// experiments isolate the cost of the finite-stream expansion.
+    pub const ZERO: Self = Self {
+        numerator: 0,
+        denominator: 1,
+    };
+
     /// Local convenience default used when callers do not specify `c`.
     ///
     /// The METTLE paper treats `c` as channel-dependent, so paper-oriented

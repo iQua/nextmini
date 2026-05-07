@@ -1,19 +1,17 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::time::{Duration, Instant};
 
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
 };
-use tracing::{info, warn};
+use tracing::warn;
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Decoder};
 use crate::node::session::plan::SymbolGeometry;
 
-const FEC_RECEIVER_PROGRESS_LOG_INTERVAL: Duration = Duration::from_secs(1);
-const FEC_RECEIVER_PROGRESS_SYMBOL_INTERVAL: u64 = 4096;
+const METTLE_DECODED_WRITE_BATCH_BYTES: usize = 1024 * 1024;
 
 /// Accumulated FEC symbols for one logical block.
 #[derive(Default)]
@@ -27,9 +25,6 @@ pub(super) struct FecBlockState {
 pub(super) struct MettleBlockDecodeState {
     decoder: mettle::stream::Decoder,
     source_symbols: usize,
-    initial_symbol_count: u32,
-    terminal_symbol_count: u32,
-    requested_repair_symbols: u32,
     decoded_source_count: usize,
 }
 
@@ -44,22 +39,22 @@ enum MettleDecodeOutcome {
 }
 
 impl MettleBlockDecodeState {
-    fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Option<Self> {
+    fn new(
+        source_symbols: usize,
+        symbol_size: usize,
+        seed: u64,
+        mettle_overhead: mettle::OverheadRatio,
+    ) -> Option<Self> {
         let source_symbol_bytes = NonZeroUsize::new(symbol_size)?;
-        let metadata = mettle::block::BlockParams::new(source_symbols, symbol_size, seed)
-            .metadata()
-            .ok()?;
+        let terminal_source_count = u64::try_from(source_symbols).ok()?;
         Some(Self {
             decoder: mettle::stream::Decoder::new_terminated(
-                mettle::MettleParams::new(mettle::OverheadRatio::DEFAULT),
+                mettle::MettleParams::new(mettle_overhead),
                 source_symbol_bytes,
                 seed,
-                source_symbols as u64,
+                terminal_source_count,
             ),
             source_symbols,
-            initial_symbol_count: u32::try_from(metadata.initial_symbol_count()).ok()?,
-            terminal_symbol_count: u32::try_from(metadata.symbol_count()).ok()?,
-            requested_repair_symbols: 0,
             decoded_source_count: 0,
         })
     }
@@ -72,7 +67,13 @@ impl MettleBlockDecodeState {
             let Ok(source_index) = usize::try_from(source_id) else {
                 return MettleDecodeOutcome::InvalidSymbol;
             };
-            if source_index != self.decoded_source_count || source_index >= self.source_symbols {
+            if source_index >= self.source_symbols {
+                if self.decoded_source_count == self.source_symbols {
+                    continue;
+                }
+                return MettleDecodeOutcome::InvalidSymbol;
+            }
+            if source_index != self.decoded_source_count {
                 return MettleDecodeOutcome::InvalidSymbol;
             }
             self.decoded_source_count += 1;
@@ -90,42 +91,17 @@ impl MettleBlockDecodeState {
         streaming_mettle_repair_deficit(
             self.source_symbols
                 .saturating_sub(self.decoded_source_count),
-            self.remaining_repair_symbols(),
         )
     }
-
-    fn remaining_repair_symbols(&self) -> u32 {
-        self.terminal_symbol_count
-            .saturating_sub(self.initial_symbol_count)
-            .saturating_sub(self.requested_repair_symbols)
-    }
-
-    fn record_repair_request(&mut self, requested: u16) {
-        self.requested_repair_symbols = self
-            .requested_repair_symbols
-            .saturating_add(u32::from(requested));
-    }
 }
 
-fn streaming_mettle_repair_deficit(remaining_sources: usize, remaining_repair_bins: u32) -> u16 {
-    if remaining_sources == 0 || remaining_repair_bins == 0 {
+fn streaming_mettle_repair_deficit(remaining_sources: usize) -> u16 {
+    if remaining_sources == 0 {
         return 0;
     }
-    let bounded = remaining_sources
-        .min(remaining_repair_bins as usize)
-        .min(usize::from(u16::MAX));
-    u16::try_from(bounded).unwrap_or(u16::MAX).max(1)
-}
-
-fn mettle_terminal_repair_budget(source_symbols: usize, symbol_size: usize, seed: u64) -> u32 {
-    let Ok(metadata) =
-        mettle::block::BlockParams::new(source_symbols, symbol_size, seed).metadata()
-    else {
-        return 0;
-    };
-    let total = metadata.symbol_count();
-    let initial = metadata.initial_symbol_count();
-    u32::try_from(total.saturating_sub(initial)).unwrap_or(u32::MAX)
+    // METTLE emits the paper finite stream once. A non-complete report is a
+    // completion probe response, not a request for session-estimated repairs.
+    1
 }
 
 /// FEC-mode receiver state machine.
@@ -140,7 +116,6 @@ pub(super) struct FecReceiver {
 
 #[derive(Debug)]
 struct FecReceiverStats {
-    per_tree: BTreeMap<u16, FecTreeReceiveStats>,
     accepted_symbols: u64,
     source_symbols: u64,
     repair_symbols: u64,
@@ -151,24 +126,10 @@ struct FecReceiverStats {
     decode_successes: u64,
     decode_insufficient_symbols: u64,
     decode_invalid_symbols: u64,
-    decode_nanos: u128,
     decoded_source_symbols: u64,
     mettle_decoder_pushes: u64,
     mettle_decoder_completions: u64,
     mettle_decoder_invalid_symbols: u64,
-    mettle_decoder_nanos: u128,
-    last_progress_at: Instant,
-    last_progress_accepted: u64,
-}
-
-#[derive(Debug, Default)]
-struct FecTreeReceiveStats {
-    accepted_symbols: u64,
-    source_symbols: u64,
-    repair_symbols: u64,
-    duplicate_symbols: u64,
-    complete_block_symbols: u64,
-    invalid_symbols: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -188,7 +149,6 @@ enum MettleDecodeStatus {
 impl FecReceiverStats {
     fn new() -> Self {
         Self {
-            per_tree: BTreeMap::new(),
             accepted_symbols: 0,
             source_symbols: 0,
             repair_symbols: 0,
@@ -199,51 +159,36 @@ impl FecReceiverStats {
             decode_successes: 0,
             decode_insufficient_symbols: 0,
             decode_invalid_symbols: 0,
-            decode_nanos: 0,
             decoded_source_symbols: 0,
             mettle_decoder_pushes: 0,
             mettle_decoder_completions: 0,
             mettle_decoder_invalid_symbols: 0,
-            mettle_decoder_nanos: 0,
-            last_progress_at: Instant::now(),
-            last_progress_accepted: 0,
         }
     }
 
-    fn record_invalid(&mut self, tree_id: u16) {
+    fn record_invalid(&mut self, _tree_id: u16) {
         self.invalid_symbols = self.invalid_symbols.saturating_add(1);
-        let tree = self.per_tree.entry(tree_id).or_default();
-        tree.invalid_symbols = tree.invalid_symbols.saturating_add(1);
     }
 
-    fn record_complete_block(&mut self, tree_id: u16) {
+    fn record_complete_block(&mut self, _tree_id: u16) {
         self.complete_block_symbols = self.complete_block_symbols.saturating_add(1);
-        let tree = self.per_tree.entry(tree_id).or_default();
-        tree.complete_block_symbols = tree.complete_block_symbols.saturating_add(1);
     }
 
-    fn record_duplicate(&mut self, tree_id: u16) {
+    fn record_duplicate(&mut self, _tree_id: u16) {
         self.duplicate_symbols = self.duplicate_symbols.saturating_add(1);
-        let tree = self.per_tree.entry(tree_id).or_default();
-        tree.duplicate_symbols = tree.duplicate_symbols.saturating_add(1);
     }
 
-    fn record_accepted(&mut self, tree_id: u16, symbol_id: u32, symbols_per_block: u32) {
+    fn record_accepted(&mut self, _tree_id: u16, symbol_id: u32, symbols_per_block: u32) {
         self.accepted_symbols = self.accepted_symbols.saturating_add(1);
-        let tree = self.per_tree.entry(tree_id).or_default();
-        tree.accepted_symbols = tree.accepted_symbols.saturating_add(1);
         if symbol_id < symbols_per_block {
             self.source_symbols = self.source_symbols.saturating_add(1);
-            tree.source_symbols = tree.source_symbols.saturating_add(1);
         } else {
             self.repair_symbols = self.repair_symbols.saturating_add(1);
-            tree.repair_symbols = tree.repair_symbols.saturating_add(1);
         }
     }
 
-    fn record_decode(&mut self, status: DecodeStatus, duration: Duration) {
+    fn record_decode(&mut self, status: DecodeStatus) {
         self.decode_attempts = self.decode_attempts.saturating_add(1);
-        self.decode_nanos = self.decode_nanos.saturating_add(duration.as_nanos());
         match status {
             DecodeStatus::Success => {
                 self.decode_successes = self.decode_successes.saturating_add(1);
@@ -264,16 +209,8 @@ impl FecReceiverStats {
             .saturating_add(u64::try_from(decoded_sources).unwrap_or(u64::MAX));
     }
 
-    fn record_mettle_decode(
-        &mut self,
-        status: MettleDecodeStatus,
-        decoded_sources: usize,
-        duration: Duration,
-    ) {
+    fn record_mettle_decode(&mut self, status: MettleDecodeStatus, decoded_sources: usize) {
         self.mettle_decoder_pushes = self.mettle_decoder_pushes.saturating_add(1);
-        self.mettle_decoder_nanos = self
-            .mettle_decoder_nanos
-            .saturating_add(duration.as_nanos());
         self.record_decoded_sources(decoded_sources);
         match status {
             MettleDecodeStatus::Pending => {}
@@ -285,25 +222,6 @@ impl FecReceiverStats {
                     self.mettle_decoder_invalid_symbols.saturating_add(1);
             }
         }
-    }
-
-    fn tree_summary(&self) -> String {
-        self.per_tree
-            .iter()
-            .map(|(tree_id, stats)| {
-                format!(
-                    "{}:acc={},src={},rep={},dup={},done={},invalid={}",
-                    tree_id,
-                    stats.accepted_symbols,
-                    stats.source_symbols,
-                    stats.repair_symbols,
-                    stats.duplicate_symbols,
-                    stats.complete_block_symbols,
-                    stats.invalid_symbols
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(";")
     }
 }
 
@@ -361,7 +279,14 @@ impl FecReceiver {
             let payload = payload.to_vec();
             self.accept_mettle_symbol(shared, &fec_mode, &symbol);
             let _ = self
-                .try_decode_mettle_symbol(shared, symbol.block_id, symbol.symbol_id, payload)
+                .try_decode_mettle_symbol(
+                    shared,
+                    &fec_mode,
+                    symbol.block_id,
+                    symbol.symbol_id,
+                    symbol.tree_id,
+                    payload,
+                )
                 .await;
         } else {
             if !self.accept_symbol(shared, &fec_mode, &symbol, payload.to_vec()) {
@@ -403,7 +328,6 @@ impl FecReceiver {
         shared.mark_first_payload_unit();
         self.stats
             .record_accepted(symbol.tree_id, symbol.symbol_id, fec_mode.symbols_per_block);
-        self.maybe_log_progress(shared);
     }
 
     /// Attempt to decode a complete-enough FEC block.
@@ -457,8 +381,8 @@ impl FecReceiver {
             if payload.len() != self.geometry.symbol_size() {
                 return false;
             }
-            // For METTLE this split is only the legacy lossless-session API
-            // boundary; both branches still map to coded bin ids.
+            // RaptorQ's initial ESI range is systematic source data; later
+            // ESIs are repair symbols from the same source block encoder.
             if symbol_id < fec_mode.symbols_per_block {
                 received.push(decoder.source_symbol(symbol_id, payload.clone()));
             } else {
@@ -466,15 +390,13 @@ impl FecReceiver {
             }
         }
 
-        let decode_started = Instant::now();
         let decode_result = decoder.decode(&received);
         let decode_status = match &decode_result {
             Ok(_) => DecodeStatus::Success,
             Err(session_fec::DecodeError::InsufficientSymbols) => DecodeStatus::InsufficientSymbols,
             Err(session_fec::DecodeError::InvalidSymbol) => DecodeStatus::InvalidSymbol,
         };
-        self.stats
-            .record_decode(decode_status, decode_started.elapsed());
+        self.stats.record_decode(decode_status);
         let Ok(output) = decode_result else {
             return false;
         };
@@ -514,8 +436,10 @@ impl FecReceiver {
     async fn try_decode_mettle_symbol(
         &mut self,
         shared: &mut super::ReceiverShared,
+        fec_mode: &nextmini_messages::lossless_session::LosslessSessionFecMode,
         block_id: u64,
         symbol_id: u32,
+        _tree_id: u16,
         payload: Vec<u8>,
     ) -> bool {
         let Some(plan) = shared.plan else {
@@ -524,68 +448,65 @@ impl FecReceiver {
         if plan.block_span(block_id).is_none() {
             return false;
         }
-        let Some(manifest) = shared.manifest.as_ref() else {
-            return false;
-        };
-        let LosslessSessionMode::Fec(fec_mode) = &manifest.mode else {
-            return false;
-        };
         let Ok(source_symbols) = usize::try_from(fec_mode.symbols_per_block) else {
             return false;
         };
-        let Some(state) = self.blocks.get_mut(&block_id) else {
-            return false;
-        };
-        if state.mettle.is_none() {
+        let needs_mettle = self
+            .blocks
+            .get(&block_id)
+            .map(|state| state.mettle.is_none())
+            .unwrap_or(false);
+        if needs_mettle {
+            let Some(mettle_overhead) = session_fec::mettle_overhead_from_fec_mode(fec_mode) else {
+                self.stats
+                    .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
+                return false;
+            };
             let Some(mettle) = MettleBlockDecodeState::new(
                 source_symbols,
                 self.geometry.symbol_size(),
                 session_fec::block_seed(shared.session_id, block_id),
+                mettle_overhead,
             ) else {
-                self.stats.record_mettle_decode(
-                    MettleDecodeStatus::InvalidSymbol,
-                    0,
-                    Duration::ZERO,
-                );
+                self.stats
+                    .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
+                return false;
+            };
+            let Some(state) = self.blocks.get_mut(&block_id) else {
                 return false;
             };
             state.mettle = Some(mettle);
         }
 
-        let decode_started = Instant::now();
-        let outcome = state
+        let Some(state) = self.blocks.get_mut(&block_id) else {
+            return false;
+        };
+        let mettle = state
             .mettle
             .as_mut()
-            .expect("METTLE decoder just initialized")
-            .push_symbol(symbol_id, payload);
-        let decode_elapsed = decode_started.elapsed();
+            .expect("METTLE decoder just initialized");
+        let outcome = mettle.push_symbol(symbol_id, payload);
         match outcome {
             MettleDecodeOutcome::Pending { decoded_sources } => {
                 let decoded_count = decoded_sources.len();
-                self.stats.record_mettle_decode(
-                    MettleDecodeStatus::Pending,
-                    decoded_count,
-                    decode_elapsed,
-                );
+                self.stats
+                    .record_mettle_decode(MettleDecodeStatus::Pending, decoded_count);
+                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await;
                 false
             }
             MettleDecodeOutcome::InvalidSymbol => {
-                self.stats.record_mettle_decode(
-                    MettleDecodeStatus::InvalidSymbol,
-                    0,
-                    decode_elapsed,
-                );
+                self.stats
+                    .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
+                self.maybe_log_progress(shared);
                 false
             }
             MettleDecodeOutcome::Complete { decoded_sources } => {
                 let decoded_count = decoded_sources.len();
-                self.stats.record_mettle_decode(
-                    MettleDecodeStatus::Complete,
-                    decoded_count,
-                    decode_elapsed,
-                );
+                self.stats
+                    .record_mettle_decode(MettleDecodeStatus::Complete, decoded_count);
+                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await;
                 self.complete_mettle_block(shared, block_id).await;
@@ -600,9 +521,33 @@ impl FecReceiver {
         block_id: u64,
         decoded_sources: Vec<(usize, Vec<u8>)>,
     ) {
+        let mut run_start = None;
+        let mut expected_source_index = None;
+        let mut run_payload = Vec::new();
+
         for (source_index, payload) in decoded_sources {
+            let continues_run = expected_source_index == Some(source_index);
+            let fits_batch =
+                run_payload.len().saturating_add(payload.len()) <= METTLE_DECODED_WRITE_BATCH_BYTES;
+            if !continues_run || !fits_batch {
+                if let Some(start) = run_start.take() {
+                    shared
+                        .write_symbol_run(block_id, self.geometry, start, &run_payload)
+                        .await;
+                    run_payload.clear();
+                }
+            }
+
+            if run_start.is_none() {
+                run_start = Some(source_index);
+            }
+            run_payload.extend_from_slice(&payload);
+            expected_source_index = Some(source_index.saturating_add(1));
+        }
+
+        if let Some(start) = run_start {
             shared
-                .write_symbol(block_id, self.geometry, source_index, &payload)
+                .write_symbol_run(block_id, self.geometry, start, &run_payload)
                 .await;
         }
     }
@@ -613,7 +558,20 @@ impl FecReceiver {
         if shared.has_all_blocks() {
             shared.mark_object_complete();
             self.log_tree_stats(shared, "object_complete");
+            self.report_mettle_complete(shared).await;
         }
+    }
+
+    async fn report_mettle_complete(&mut self, shared: &super::ReceiverShared) {
+        if self.complete_reported {
+            return;
+        }
+        let round_id = self.last_source_done_round_id.unwrap_or(0);
+        let report = NeedReport::Complete;
+        self.last_source_done_round_id = Some(round_id);
+        self.last_round_need = Some(report.clone());
+        shared.send_fec_need(round_id, &report).await;
+        self.complete_reported = true;
     }
 
     async fn complete_block(
@@ -651,16 +609,7 @@ impl FecReceiver {
                 .get(&block_id)
                 .and_then(|state| state.mettle.as_ref())
                 .map(MettleBlockDecodeState::repair_deficit)
-                .unwrap_or_else(|| {
-                    streaming_mettle_repair_deficit(
-                        total,
-                        mettle_terminal_repair_budget(
-                            total,
-                            self.geometry.symbol_size(),
-                            session_fec::block_seed(shared.session_id, block_id),
-                        ),
-                    )
-                });
+                .unwrap_or_else(|| streaming_mettle_repair_deficit(total));
         }
         let present = self
             .blocks
@@ -684,9 +633,19 @@ impl FecReceiver {
             if shared.complete_blocks.contains(&block_id) {
                 continue;
             }
+            let deficit_symbols = self.block_deficit(shared, block_id);
+            if deficit_symbols == 0 {
+                warn!(
+                    session_id = shared.session_id,
+                    local_node_id = shared.local_node_id,
+                    block_id,
+                    "Lossless FEC block is incomplete but no repair budget remains"
+                );
+                return None;
+            }
             blocks.push(NeedBlock {
                 block_id,
-                deficit_symbols: self.block_deficit(shared, block_id),
+                deficit_symbols,
             });
         }
         Some(NeedReport::Fec { blocks })
@@ -741,6 +700,9 @@ impl FecReceiver {
         let Ok(source_symbols) = usize::try_from(fec_mode.symbols_per_block) else {
             return;
         };
+        let Some(mettle_overhead) = session_fec::mettle_overhead_from_fec_mode(fec_mode) else {
+            return;
+        };
         for block in blocks {
             let state = self.blocks.entry(block.block_id).or_default();
             if state.mettle.is_none() {
@@ -748,14 +710,13 @@ impl FecReceiver {
                     source_symbols,
                     self.geometry.symbol_size(),
                     session_fec::block_seed(shared.session_id, block.block_id),
+                    mettle_overhead,
                 ) else {
                     continue;
                 };
                 state.mettle = Some(mettle);
             }
-            if let Some(mettle) = state.mettle.as_mut() {
-                mettle.record_repair_request(block.deficit_symbols);
-            }
+            let _ = block.deficit_symbols;
         }
     }
 
@@ -763,96 +724,14 @@ impl FecReceiver {
         self.complete_reported
     }
 
-    fn maybe_log_progress(&mut self, shared: &super::ReceiverShared) {
-        let now = Instant::now();
-        let accepted_delta = self
-            .stats
-            .accepted_symbols
-            .saturating_sub(self.stats.last_progress_accepted);
-        if accepted_delta == 0 {
-            return;
-        }
-        let interval_due =
-            now.duration_since(self.stats.last_progress_at) >= FEC_RECEIVER_PROGRESS_LOG_INTERVAL;
-        let symbol_due = accepted_delta >= FEC_RECEIVER_PROGRESS_SYMBOL_INTERVAL;
-        if !interval_due && !symbol_due {
-            return;
-        }
-
-        info!(
-            session_id = shared.session_id,
-            local_node_id = shared.local_node_id,
-            accepted_symbols = self.stats.accepted_symbols,
-            source_symbols = self.stats.source_symbols,
-            repair_symbols = self.stats.repair_symbols,
-            duplicate_symbols = self.stats.duplicate_symbols,
-            complete_block_symbols = self.stats.complete_block_symbols,
-            invalid_symbols = self.stats.invalid_symbols,
-            decode_attempts = self.stats.decode_attempts,
-            decode_successes = self.stats.decode_successes,
-            decode_insufficient_symbols = self.stats.decode_insufficient_symbols,
-            decode_invalid_symbols = self.stats.decode_invalid_symbols,
-            decode_nanos = saturating_u128_to_u64(self.stats.decode_nanos),
-            decode_avg_nanos = average_nanos(self.stats.decode_nanos, self.stats.decode_attempts),
-            decoded_source_symbols = self.stats.decoded_source_symbols,
-            mettle_decoder_pushes = self.stats.mettle_decoder_pushes,
-            mettle_decoder_completions = self.stats.mettle_decoder_completions,
-            mettle_decoder_invalid_symbols = self.stats.mettle_decoder_invalid_symbols,
-            mettle_decoder_nanos = saturating_u128_to_u64(self.stats.mettle_decoder_nanos),
-            mettle_decoder_avg_nanos = average_nanos(
-                self.stats.mettle_decoder_nanos,
-                self.stats.mettle_decoder_pushes
-            ),
-            accepted_delta,
-            tree_stats = %self.stats.tree_summary(),
-            "Lossless FEC receiver per-tree progress"
-        );
-
-        self.stats.last_progress_at = now;
-        self.stats.last_progress_accepted = self.stats.accepted_symbols;
+    fn maybe_log_progress(&mut self, _shared: &super::ReceiverShared) {
+        // Intentionally empty: the receiver progress log was temporary
+        // instrumentation and adds work on every accepted METTLE bin.
     }
 
-    fn log_tree_stats(&self, shared: &super::ReceiverShared, reason: &'static str) {
-        info!(
-            session_id = shared.session_id,
-            local_node_id = shared.local_node_id,
-            reason,
-            accepted_symbols = self.stats.accepted_symbols,
-            source_symbols = self.stats.source_symbols,
-            repair_symbols = self.stats.repair_symbols,
-            duplicate_symbols = self.stats.duplicate_symbols,
-            complete_block_symbols = self.stats.complete_block_symbols,
-            invalid_symbols = self.stats.invalid_symbols,
-            decode_attempts = self.stats.decode_attempts,
-            decode_successes = self.stats.decode_successes,
-            decode_insufficient_symbols = self.stats.decode_insufficient_symbols,
-            decode_invalid_symbols = self.stats.decode_invalid_symbols,
-            decode_nanos = saturating_u128_to_u64(self.stats.decode_nanos),
-            decode_avg_nanos = average_nanos(self.stats.decode_nanos, self.stats.decode_attempts),
-            decoded_source_symbols = self.stats.decoded_source_symbols,
-            mettle_decoder_pushes = self.stats.mettle_decoder_pushes,
-            mettle_decoder_completions = self.stats.mettle_decoder_completions,
-            mettle_decoder_invalid_symbols = self.stats.mettle_decoder_invalid_symbols,
-            mettle_decoder_nanos = saturating_u128_to_u64(self.stats.mettle_decoder_nanos),
-            mettle_decoder_avg_nanos = average_nanos(
-                self.stats.mettle_decoder_nanos,
-                self.stats.mettle_decoder_pushes
-            ),
-            tree_stats = %self.stats.tree_summary(),
-            "Lossless FEC receiver per-tree stats"
-        );
+    fn log_tree_stats(&self, _shared: &super::ReceiverShared, _reason: &'static str) {
+        // Intentionally empty: detailed tree stats were temporary instrumentation.
     }
-}
-
-fn saturating_u128_to_u64(value: u128) -> u64 {
-    u64::try_from(value).unwrap_or(u64::MAX)
-}
-
-fn average_nanos(total_nanos: u128, count: u64) -> u64 {
-    if count == 0 {
-        return 0;
-    }
-    saturating_u128_to_u64(total_nanos / u128::from(count))
 }
 
 fn systematic_block_payload(

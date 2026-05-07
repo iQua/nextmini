@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
+use mettle::OverheadRatio;
 use tokio::sync::{Mutex, mpsc};
 use tokio::time::timeout;
 
@@ -26,10 +27,9 @@ const DST_PORT: u16 = 4800;
 const PEER_REPORT_TIMEOUT_MS: u64 = 30_000;
 const RECEIVER_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const PAPER_SCALE_METTLE_K: usize = 2400;
-const INITIAL_CODED_DROP_MODULUS: usize = 97;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_flow() {
+async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
     let mut sender_harness = common::packet_capture(
         SENDER_NODE_ID,
         RECEIVER_NODE_ID,
@@ -52,12 +52,13 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
     let session_id = 0x4D45_5454_1E01;
     let k = PAPER_SCALE_METTLE_K;
     let source_bytes = patterned_source_bytes(k);
-    // Fixed coded-bin erasure pattern under the METTLE paper graph. The real
-    // Need, repair, Complete, and sink-byte assertions below catch drift.
+    // Lossless-session METTLE now uses c=0, so the initial finite stream has
+    // exactly K bins. This test verifies the runtime completes without repair
+    // when all initial bins arrive through the real sender/receiver path.
     let symbols_per_block = u32::try_from(k).expect("paper-scale METTLE K fits u32");
-    let initial_symbol_count = MettleBlockParams::new(k, 1, 0)
+    let initial_symbol_count = MettleBlockParams::with_overhead(k, 1, 0, OverheadRatio::ZERO)
         .metadata()
-        .expect("paper-scale METTLE metadata")
+        .expect("zero-overhead METTLE metadata")
         .initial_symbol_count();
     let manifest = LosslessSessionManifest {
         block_size: k as u32,
@@ -75,6 +76,7 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         route: receiver_harness.route(),
         local_node_id: RECEIVER_NODE_ID,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: PEER_REPORT_TIMEOUT_MS,
         fec_enabled: true,
@@ -101,6 +103,7 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         peer_report_timeout_ms: PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
         cloudcast: None,
+        fec_tree_weights: Vec::new(),
     };
     let (sender_ctrl_tx, sender_ctrl_rx) = mpsc::channel::<InboundFrame>(4096);
     let sender_task = tokio::spawn(sender::run(
@@ -136,7 +139,6 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
         .expect("READY should enqueue at sender");
 
     let mut delivered_initial_symbols = 0usize;
-    let mut dropped_initial_symbols = 0usize;
     loop {
         let packet = common::recv_packet(&mut sender_harness.packet_rx).await;
         let payload = packet
@@ -146,11 +148,9 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
             match control {
                 LosslessSessionControl::SourceDone { round_id } => {
                     assert_eq!(round_id, 0);
-                    assert!(dropped_initial_symbols > 0, "test must drop coded bins");
                     assert_eq!(
-                        delivered_initial_symbols,
-                        initial_symbol_count - dropped_initial_symbols,
-                        "test must deliver every non-dropped initial coded symbol"
+                        delivered_initial_symbols, initial_symbol_count,
+                        "test must deliver the full zero-overhead METTLE initial stream"
                     );
                     receiver_tx
                         .send(inbound_from_packet(packet, SENDER_NODE_ID))
@@ -175,102 +175,11 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
             symbol.symbol_id < initial_symbol_count as u32,
             "future coded symbol appeared before receiver Need: {symbol:?}"
         );
-        if (symbol.symbol_id as usize).is_multiple_of(INITIAL_CODED_DROP_MODULUS) {
-            dropped_initial_symbols += 1;
-        } else {
-            delivered_initial_symbols += 1;
-            receiver_tx
-                .send(inbound_from_packet(packet, SENDER_NODE_ID))
-                .await
-                .expect("initial coded symbol should enqueue at receiver");
-        }
-    }
-
-    let need_packet = recv_receiver_control_packet(&mut receiver_harness.packet_rx).await;
-    let need = decode_control(&need_packet);
-    let LosslessSessionControl::Need {
-        round_id: 0,
-        report: NeedReport::Fec { blocks },
-    } = need
-    else {
-        panic!("receiver should request METTLE repair after SourceDone(0): {need:?}");
-    };
-    assert_eq!(blocks.len(), 1);
-    assert_eq!(blocks[0].block_id, 0);
-    assert!(
-        blocks[0].deficit_symbols > 0,
-        "METTLE deficit should be finite and positive"
-    );
-    sender_ctrl_tx
-        .send(inbound_from_packet(need_packet, RECEIVER_NODE_ID))
-        .await
-        .expect("FEC Need should enqueue at sender");
-
-    let mut saw_repair_symbol = false;
-    loop {
-        let packet = common::recv_packet(&mut sender_harness.packet_rx).await;
-        let payload = packet
-            .tcp_payload()
-            .expect("captured sender packet should include TCP payload");
-        if let Some((_, control)) = lossless_session::decode_control(payload) {
-            match control {
-                LosslessSessionControl::SourceDone { round_id } => {
-                    if round_id == 0 {
-                        receiver_tx
-                            .send(inbound_from_packet(packet, SENDER_NODE_ID))
-                            .await
-                            .expect("duplicate SourceDone(0) should enqueue at receiver");
-                        let duplicate_need =
-                            recv_receiver_control_packet(&mut receiver_harness.packet_rx).await;
-                        assert_eq!(
-                            decode_control(&duplicate_need),
-                            LosslessSessionControl::Need {
-                                round_id: 0,
-                                report: NeedReport::Fec {
-                                    blocks: blocks.clone(),
-                                },
-                            },
-                            "receiver should replay the same round-0 FEC Need"
-                        );
-                        sender_ctrl_tx
-                            .send(inbound_from_packet(duplicate_need, RECEIVER_NODE_ID))
-                            .await
-                            .expect("duplicate FEC Need should enqueue at sender");
-                        continue;
-                    }
-                    assert_eq!(round_id, 1);
-                    assert!(
-                        saw_repair_symbol,
-                        "test must observe at least one METTLE repair symbol before completion"
-                    );
-                    receiver_tx
-                        .send(inbound_from_packet(packet, SENDER_NODE_ID))
-                        .await
-                        .expect("SourceDone(1) should enqueue at receiver");
-                    break;
-                }
-                LosslessSessionControl::Manifest { .. } => {
-                    receiver_tx
-                        .send(inbound_from_packet(packet, SENDER_NODE_ID))
-                        .await
-                        .expect("duplicate manifest should enqueue at receiver");
-                }
-                other => panic!("unexpected sender control during repair round: {other:?}"),
-            }
-            continue;
-        }
-
-        let symbol = decode_symbol(payload);
-        assert_eq!(symbol.block_id, 0);
-        assert!(
-            symbol.symbol_id >= initial_symbol_count as u32,
-            "sender retransmitted an initial coded symbol instead of later METTLE bin: {symbol:?}"
-        );
-        saw_repair_symbol = true;
+        delivered_initial_symbols += 1;
         receiver_tx
             .send(inbound_from_packet(packet, SENDER_NODE_ID))
             .await
-            .expect("repair symbol should enqueue at receiver");
+            .expect("initial coded symbol should enqueue at receiver");
     }
 
     let complete_packet = recv_receiver_control_packet(&mut receiver_harness.packet_rx).await;
@@ -278,10 +187,10 @@ async fn mettle_lossless_session_repairs_dropped_source_through_sender_receiver_
     assert_eq!(
         complete,
         LosslessSessionControl::Need {
-            round_id: 1,
+            round_id: 0,
             report: NeedReport::Complete,
         },
-        "receiver should complete only after the METTLE repair round"
+        "receiver should complete after the zero-overhead initial stream"
     );
     sender_ctrl_tx
         .send(inbound_from_packet(complete_packet, RECEIVER_NODE_ID))

@@ -48,6 +48,25 @@ fn explicit_overhead_changes_finite_repair_budget() {
 }
 
 #[test]
+fn initial_prefix_advances_with_coded_rate() {
+    let k = 4096usize;
+    let zero = BlockParams::with_overhead(k, 1, 0, OverheadRatio::ZERO)
+        .metadata()
+        .expect("zero-overhead metadata");
+    let paper =
+        BlockParams::with_overhead(k, 1, 0, OverheadRatio::new(1, 20).expect("valid overhead"))
+            .metadata()
+            .expect("paper-overhead metadata");
+
+    assert_eq!(zero.initial_symbol_count(), k);
+    assert_eq!(paper.initial_symbol_count(), k * 21 / 20);
+    assert_eq!(
+        paper.repair_bin_id(0).expect("first repair bin"),
+        paper.initial_symbol_count() as u128
+    );
+}
+
+#[test]
 fn small_k_prefix_loss_can_require_a_large_repair_burst() {
     let params = BlockParams::new(64, 1, 0x1234_5678);
     let metadata = params.metadata().expect("metadata");

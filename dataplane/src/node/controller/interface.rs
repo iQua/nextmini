@@ -956,7 +956,7 @@ impl ControllerToDataplaneReceiver {
             return;
         }
 
-        if !self.group_directory_installed || self.group_ip_by_id.is_empty() {
+        if !self.group_directory_installed {
             info!(
                 node_id = self.config.node_id,
                 group_directory_installed = self.group_directory_installed,

@@ -96,15 +96,18 @@ impl BlockMetadata {
         })
     }
 
-    /// Returns the number of coded bins emitted before feedback is needed in
-    /// the lossless session protocol's initial data phase.
+    /// Returns the number of bins emitted before the lossless session protocol
+    /// opens its first feedback round.
     #[must_use]
     pub fn initial_symbol_count(&self) -> usize {
-        self.params
-            .mettle_params()
-            .departure_frontier_after_source_count(self.params.source_symbols as u64)
-            .try_into()
-            .expect("validated METTLE initial symbol count fits usize")
+        let source_count =
+            u64::try_from(self.params.source_symbols).expect("validated source count fits u64");
+        usize::try_from(
+            self.params
+                .mettle_params()
+                .departure_frontier_after_source_count(source_count),
+        )
+        .expect("validated initial symbol count fits usize")
     }
 
     /// Returns the finite number of coded bins for this terminated stream.
@@ -117,14 +120,13 @@ impl BlockMetadata {
     #[must_use]
     pub fn repair_symbol_count(&self) -> usize {
         self.coded_symbol_count
-            .saturating_sub(self.params.source_symbols)
+            .saturating_sub(self.initial_symbol_count())
     }
 
     /// Returns the METTLE repair bin id represented by an adapter repair index.
     pub fn repair_bin_id(&self, repair_index: usize) -> Result<u128, BlockError> {
         let bin_id = self
-            .params
-            .source_symbols
+            .initial_symbol_count()
             .checked_add(repair_index)
             .ok_or(BlockError::RepairIndexOutOfRange)?;
         if bin_id >= self.coded_symbol_count {

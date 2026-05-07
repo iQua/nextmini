@@ -209,6 +209,7 @@ impl LosslessUnicastFlowManager {
                 route,
                 local_node_id: cfg.node_id,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
             };
 

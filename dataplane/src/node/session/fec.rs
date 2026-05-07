@@ -1,9 +1,9 @@
-//! Thin, wire-agnostic adapter between session logic and FEC primitives.
+//! Thin, wire-agnostic bridge between session logic and FEC primitives.
 //!
 //! The lossless session subsystem can use this module without taking a direct
 //! dependency on frame layout or transport metadata.
 
-use nextmini_messages::lossless_session::FecScheme;
+use nextmini_messages::lossless_session::{FecScheme, LosslessSessionFecMode};
 use raptorq::{
     EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBlockDecoder,
     SourceBlockEncoder,
@@ -11,6 +11,29 @@ use raptorq::{
 
 const FEC_BLOCK_SEED_SESSION_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+
+/// Convert the configured METTLE coded-rate knob into the overhead ratio `c`.
+///
+/// `1/1` maps to `c=0`; `21/20` maps to `c=1/20`.
+pub(crate) fn mettle_overhead_from_coded_rate(
+    numerator: u32,
+    denominator: u32,
+) -> Option<mettle::OverheadRatio> {
+    if denominator == 0 || numerator < denominator {
+        return None;
+    }
+    if numerator == denominator {
+        return Some(mettle::OverheadRatio::ZERO);
+    }
+    mettle::OverheadRatio::new(numerator - denominator, denominator).ok()
+}
+
+/// Return the METTLE overhead encoded in the session manifest.
+pub(crate) fn mettle_overhead_from_fec_mode(
+    fec_mode: &LosslessSessionFecMode,
+) -> Option<mettle::OverheadRatio> {
+    mettle_overhead_from_coded_rate(fec_mode.coded_rate_num, fec_mode.coded_rate_den)
+}
 
 /// Deterministically derives the FEC block seed shared by sender and receiver.
 #[must_use]
@@ -271,38 +294,48 @@ pub fn repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = 
 /// Return the number of symbols to emit before opening the first FEC feedback
 /// round for the selected scheme.
 #[must_use]
-pub fn initial_symbol_count(params: BlockParams) -> Option<u32> {
+pub fn initial_symbol_count(
+    params: BlockParams,
+    mettle_overhead: mettle::OverheadRatio,
+) -> Option<u32> {
     match params.scheme {
         FecScheme::RaptorQ => u32::try_from(params.source_symbols).ok(),
-        FecScheme::Mettle => {
-            mettle::block::BlockParams::new(params.source_symbols, params.symbol_size, params.seed)
-                .metadata()
-                .ok()
-                .and_then(|metadata| u32::try_from(metadata.initial_symbol_count()).ok())
-        }
+        FecScheme::Mettle => mettle::block::BlockParams::with_overhead(
+            params.source_symbols,
+            params.symbol_size,
+            params.seed,
+            mettle_overhead,
+        )
+        .metadata()
+        .ok()
+        .and_then(|metadata| u32::try_from(metadata.initial_symbol_count()).ok()),
     }
 }
 
 #[allow(dead_code)]
 fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
-    let Ok(metadata) =
-        mettle::block::BlockParams::new(params.source_symbols, params.symbol_size, params.seed)
-            .metadata()
-    else {
+    let Ok(metadata) = mettle::block::BlockParams::with_overhead(
+        params.source_symbols,
+        params.symbol_size,
+        params.seed,
+        mettle::OverheadRatio::ZERO,
+    )
+    .metadata() else {
         return 1;
     };
 
-    let mut sources = Vec::new();
+    let initial_symbol_count = metadata.initial_symbol_count();
+    let mut initial_bins = Vec::new();
     let mut repairs = Vec::new();
     for symbol_id in symbol_ids {
-        if (symbol_id as usize) < params.source_symbols {
-            sources.push(symbol_id as usize);
+        if (symbol_id as usize) < initial_symbol_count {
+            initial_bins.push(symbol_id as usize);
         } else {
-            repairs.push(symbol_id.saturating_sub(params.source_symbols as u32) as usize);
+            repairs.push(symbol_id.saturating_sub(initial_symbol_count as u32) as usize);
         }
     }
 
-    let additional = match metadata.estimate_repair_deficit(sources, repairs) {
+    let additional = match metadata.estimate_repair_deficit(initial_bins, repairs) {
         Ok(Some(additional)) => additional,
         _ => return 1,
     };

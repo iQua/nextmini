@@ -12,8 +12,8 @@ mod plain;
 
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
+use std::io::{Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
-use std::time::Duration;
 
 use tokio::sync::{mpsc, oneshot};
 use tracing::{debug, info, warn};
@@ -34,8 +34,6 @@ use crate::node::session::timing;
 use self::cloudcast::CloudcastReceiver;
 use self::fec::FecReceiver;
 use self::plain::PlainReceiver;
-
-const METTLE_SOURCE_DONE_DATA_IDLE: Duration = Duration::from_millis(500);
 
 /// Run one receiver session until the transfer is complete or the channel closes.
 #[allow(dead_code)]
@@ -239,38 +237,15 @@ impl SessionReceiver {
             return frame;
         }
 
+        if matches!(self.mode, Some(ReceiverMode::Fec(_))) {
+            return frame;
+        }
+
         if let Ok(data_frame) = data_rx.try_recv() {
             self.pending_control_frames.push_front(frame);
             return data_frame;
         }
-
-        if self.should_wait_for_mettle_source_done_data() {
-            match tokio::time::timeout(METTLE_SOURCE_DONE_DATA_IDLE, data_rx.recv()).await {
-                Ok(Some(data_frame)) => {
-                    self.pending_control_frames.push_front(frame);
-                    return data_frame;
-                }
-                Ok(None) | Err(_) => {}
-            }
-        }
         frame
-    }
-
-    fn should_wait_for_mettle_source_done_data(&self) -> bool {
-        if self.object_complete() || self.reported_complete() {
-            return false;
-        }
-        if !matches!(self.mode, Some(ReceiverMode::Fec(_))) {
-            return false;
-        }
-        self.shared
-            .manifest
-            .as_ref()
-            .and_then(|manifest| match &manifest.mode {
-                LosslessSessionMode::Fec(fec) => fec.scheme_kind(),
-                LosslessSessionMode::Plain => None,
-            })
-            == Some(FecScheme::Mettle)
     }
 
     fn reported_complete(&self) -> bool {
@@ -598,31 +573,46 @@ impl ReceiverShared {
         let Some(span) = plan.block_span(block_id) else {
             return;
         };
-        let Some(sink) = &self.cfg.sink_buffer else {
+        let copy_len = payload.len().min(span.len());
+        if copy_len == 0 {
             return;
-        };
-
-        let mut guard = sink.lock().await;
-        let Some(object_len) = plan.total_bytes_usize() else {
-            return;
-        };
-        if guard.len() < object_len {
-            guard.resize(object_len, 0);
         }
 
-        let start = usize::try_from(span.offset()).unwrap_or(0);
-        let end = start + payload.len().min(span.len());
-        if end <= guard.len() {
-            guard[start..end].copy_from_slice(&payload[..end - start]);
+        if let Some(sink) = &self.cfg.sink_buffer {
+            let mut guard = sink.lock().await;
+            let Some(object_len) = plan.total_bytes_usize() else {
+                return;
+            };
+            if guard.len() < object_len {
+                guard.resize(object_len, 0);
+            }
+
+            let start = usize::try_from(span.offset()).unwrap_or(0);
+            let end = start + copy_len;
+            if end <= guard.len() {
+                guard[start..end].copy_from_slice(&payload[..copy_len]);
+            }
+        }
+
+        if let Some(sink) = &self.cfg.sink_file {
+            let mut guard = sink.lock().await;
+            if guard.seek(SeekFrom::Start(span.offset())).is_err()
+                || guard.write_all(&payload[..copy_len]).is_err()
+            {
+                warn!(
+                    session_id = self.session_id,
+                    block_id, "Lossless receiver failed to write block to sink file"
+                );
+            }
         }
     }
 
-    /// Copy one decoded source symbol into the optional sink buffer.
-    pub(super) async fn write_symbol(
+    /// Copy one contiguous run of decoded source symbols into the optional sinks.
+    pub(super) async fn write_symbol_run(
         &self,
         block_id: u64,
         geometry: SymbolGeometry,
-        source_index: usize,
+        first_source_index: usize,
         payload: &[u8],
     ) {
         let Some(plan) = self.plan else {
@@ -631,20 +621,17 @@ impl ReceiverShared {
         let Some(span) = plan.block_span(block_id) else {
             return;
         };
-        let Some(sink) = &self.cfg.sink_buffer else {
-            return;
-        };
 
-        let Some(symbol_offset) = source_index.checked_mul(geometry.symbol_size()) else {
+        let Some(symbol_offset) = first_source_index.checked_mul(geometry.symbol_size()) else {
             return;
         };
         if symbol_offset >= span.len() {
             return;
         }
-        let copy_len = payload
-            .len()
-            .min(geometry.symbol_size())
-            .min(span.len() - symbol_offset);
+        let copy_len = payload.len().min(span.len() - symbol_offset);
+        if copy_len == 0 {
+            return;
+        }
         let Some(start) = usize::try_from(span.offset())
             .ok()
             .and_then(|offset| offset.checked_add(symbol_offset))
@@ -655,29 +642,63 @@ impl ReceiverShared {
             return;
         };
 
-        let mut guard = sink.lock().await;
-        if end <= guard.len() {
-            guard[start..end].copy_from_slice(&payload[..copy_len]);
+        if let Some(sink) = &self.cfg.sink_buffer {
+            let mut guard = sink.lock().await;
+            if end <= guard.len() {
+                guard[start..end].copy_from_slice(&payload[..copy_len]);
+            }
+        }
+
+        if let Some(sink) = &self.cfg.sink_file {
+            let Some(file_offset) = u64::try_from(symbol_offset)
+                .ok()
+                .and_then(|offset| span.offset().checked_add(offset))
+            else {
+                return;
+            };
+            let mut guard = sink.lock().await;
+            if guard.seek(SeekFrom::Start(file_offset)).is_err()
+                || guard.write_all(&payload[..copy_len]).is_err()
+            {
+                warn!(
+                    session_id = self.session_id,
+                    block_id,
+                    first_source_index,
+                    bytes = copy_len,
+                    "Lossless receiver failed to write symbol run to sink file"
+                );
+            }
         }
     }
 
-    /// Ensure the optional sink buffer is large enough for the full object.
+    /// Ensure optional sinks are large enough for the full object.
     async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
-        let Some(sink) = &self.cfg.sink_buffer else {
-            return true;
-        };
-        let mut guard = sink.lock().await;
-        if guard.len() < object_len {
-            let additional = object_len - guard.len();
-            if guard.try_reserve_exact(additional).is_err() {
+        if let Some(sink) = &self.cfg.sink_buffer {
+            let mut guard = sink.lock().await;
+            if guard.len() < object_len {
+                let additional = object_len - guard.len();
+                if guard.try_reserve_exact(additional).is_err() {
+                    warn!(
+                        session_id = self.session_id,
+                        object_len, "Lossless receiver failed to reserve sink buffer for manifest"
+                    );
+                    return false;
+                }
+                guard.resize(object_len, 0);
+            }
+        }
+
+        if let Some(sink) = &self.cfg.sink_file {
+            let guard = sink.lock().await;
+            if guard.set_len(object_len as u64).is_err() {
                 warn!(
                     session_id = self.session_id,
-                    object_len, "Lossless receiver failed to reserve sink buffer for manifest"
+                    object_len, "Lossless receiver failed to size sink file for manifest"
                 );
                 return false;
             }
-            guard.resize(object_len, 0);
         }
+
         true
     }
 
@@ -860,6 +881,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
@@ -927,6 +949,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
@@ -980,6 +1003,7 @@ mod tests {
                     },
                     local_node_id: 1,
                     sink_buffer: None,
+                    sink_file: None,
                     progress: None,
                     peer_report_timeout_ms: 200,
                     fec_enabled: false,
@@ -1042,6 +1066,7 @@ mod tests {
                 route,
                 local_node_id: RECEIVER_NODE_ID,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
@@ -1077,24 +1102,72 @@ mod tests {
             "METTLE should stream bins into the decoder without retaining session payload entries"
         );
         assert!(state.mettle.is_some());
-        let metadata = mettle::block::BlockParams::new(
-            k as usize,
-            geometry.symbol_size(),
-            crate::node::session::fec::block_seed(shared.session_id, 0),
-        )
-        .metadata()
-        .expect("large METTLE metadata");
-        let tail_budget = metadata
-            .symbol_count()
-            .saturating_sub(metadata.initial_symbol_count());
-        let expected_deficit = u16::try_from(tail_budget.min((k - 1) as usize))
-            .unwrap_or(u16::MAX)
-            .max(1);
-        assert_eq!(receiver.block_deficit(&shared, 0), expected_deficit);
+        assert_eq!(
+            receiver.block_deficit(&shared, 0),
+            1,
+            "METTLE's finite stream reports incomplete as a completion probe, not a session repair budget"
+        );
     }
 
     #[tokio::test]
-    async fn mettle_receiver_defers_source_done_until_late_data_is_idle() {
+    async fn mettle_receiver_reports_complete_as_soon_as_decoder_finishes() {
+        let (mut receiver, mut packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+        let geometry = receiver
+            .shared
+            .plan
+            .expect("test receiver has a plan")
+            .symbol_geometry(4)
+            .expect("valid geometry");
+        receiver.shared.manifest = Some(LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
+        });
+        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
+
+        let source_symbol_bytes =
+            std::num::NonZeroUsize::new(geometry.symbol_size()).expect("non-zero symbol size");
+        let mut encoder = mettle::stream::Encoder::new_terminated(
+            mettle::MettleParams::new(mettle::OverheadRatio::ZERO),
+            source_symbol_bytes,
+            crate::node::session::fec::block_seed(receiver.shared.session_id, 0),
+            4,
+        );
+        let mut bins = Vec::new();
+        for source_id in 0..4u8 {
+            let source = [source_id, source_id + 1];
+            bins.extend(encoder.push_source(&source));
+        }
+        bins.extend(encoder.finish());
+
+        for bin in bins {
+            let (bin_id, payload) = bin.into_parts();
+            receiver
+                .handle_block_symbol_frame(InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(
+                        receiver.shared.session_id,
+                        0,
+                        u32::try_from(bin_id).expect("small test bin id"),
+                        0,
+                        &payload,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                })
+                .await;
+            if receiver.is_complete() {
+                break;
+            }
+        }
+
+        assert!(receiver.shared.has_all_blocks());
+        assert_eq!(recv_fec_need(&mut packet_rx).await, NeedReport::Complete);
+        assert!(receiver.is_complete());
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_processes_source_done_without_waiting_for_late_data() {
         let (mut receiver, _packet_rx) =
             fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
         let geometry = receiver
@@ -1142,22 +1215,22 @@ mod tests {
             receiver.next_frame(&mut control_rx, &mut data_rx),
         )
         .await
-        .expect("timed out waiting for deferred data")
-        .expect("receiver should return late data");
-        assert!(
-            lossless_session::decode_block_symbol(&first.bytes).is_some(),
-            "METTLE SourceDone must yield to late data before feedback"
-        );
-        assert_eq!(receiver.pending_control_frames.len(), 1);
+        .expect("timed out waiting for SourceDone")
+        .expect("receiver should return SourceDone before late data");
+        assert_eq!(source_done_round(&first), Some(0));
+        assert_eq!(receiver.pending_control_frames.len(), 0);
 
         let second = timeout(
             Duration::from_secs(1),
             receiver.next_frame(&mut control_rx, &mut data_rx),
         )
         .await
-        .expect("timed out waiting for deferred SourceDone")
-        .expect("receiver should return SourceDone after data goes idle");
-        assert_eq!(source_done_round(&second), Some(0));
+        .expect("timed out waiting for late data")
+        .expect("receiver should return late data after SourceDone");
+        assert!(
+            lossless_session::decode_block_symbol(&second.bytes).is_some(),
+            "FEC SourceDone must not wait behind late data before feedback"
+        );
     }
 
     #[tokio::test]
@@ -1535,6 +1608,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 sink_buffer: None,
+                sink_file: None,
                 progress: Some(progress.clone()),
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
@@ -1578,6 +1652,7 @@ mod tests {
                 },
                 local_node_id: 1,
                 sink_buffer: None,
+                sink_file: None,
                 progress: Some(progress.clone()),
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
@@ -1597,6 +1672,83 @@ mod tests {
         shared.mark_object_complete();
 
         assert!(progress.object_complete_at().is_some());
+    }
+
+    #[tokio::test]
+    async fn write_symbol_run_updates_contiguous_sink_region() {
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
+            dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
+            src_port: 1,
+            dst_port: 2,
+        };
+        let tmp_path = std::env::temp_dir().join(format!(
+            "nextmini-symbol-run-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock should be after epoch")
+                .as_nanos()
+        ));
+        let sink_buffer = Arc::new(tokio::sync::Mutex::new(vec![0; 10]));
+        let sink_file = Arc::new(tokio::sync::Mutex::new(
+            std::fs::OpenOptions::new()
+                .create(true)
+                .truncate(true)
+                .read(true)
+                .write(true)
+                .open(&tmp_path)
+                .expect("temp sink file should open"),
+        ));
+        let shared = ReceiverShared {
+            session_id: 9,
+            route,
+            local_node_id: 1,
+            cfg: ReceiverConfig {
+                session_id: 9,
+                route,
+                local_node_id: 1,
+                sink_buffer: Some(sink_buffer.clone()),
+                sink_file: Some(sink_file.clone()),
+                progress: None,
+                peer_report_timeout_ms: 200,
+                fec_enabled: false,
+                cloudcast: None,
+            },
+            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
+            manifest: Some(LosslessSessionManifest {
+                block_size: 10,
+                total_bytes: 10,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Plain,
+            }),
+            plan: BlockPlan::new(10, 10).ok(),
+            complete_blocks: BTreeSet::new(),
+        };
+
+        shared
+            .write_symbol_run(
+                0,
+                SymbolGeometry::new(10, 4).expect("valid symbol geometry"),
+                1,
+                &[4, 5, 6, 7, 8, 9, 10, 11, 12],
+            )
+            .await;
+
+        assert_eq!(
+            sink_buffer.lock().await.as_slice(),
+            &[0, 0, 0, 4, 5, 6, 7, 8, 9, 10]
+        );
+        sink_file
+            .lock()
+            .await
+            .sync_all()
+            .expect("temp sink file should sync");
+        assert_eq!(
+            std::fs::read(&tmp_path).expect("temp sink file should read"),
+            vec![0, 0, 0, 4, 5, 6, 7, 8, 9, 10]
+        );
+        let _ = std::fs::remove_file(tmp_path);
     }
 
     #[tokio::test]
@@ -1647,6 +1799,7 @@ mod tests {
                     route,
                     local_node_id: RECEIVER_NODE_ID,
                     sink_buffer: None,
+                    sink_file: None,
                     progress: None,
                     peer_report_timeout_ms: 200,
                     fec_enabled: true,
@@ -1764,6 +1917,7 @@ mod tests {
                 route,
                 local_node_id: RECEIVER_NODE_ID,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
@@ -1916,6 +2070,7 @@ mod tests {
                 route,
                 local_node_id: RECEIVER_NODE_ID,
                 sink_buffer: None,
+                sink_file: None,
                 progress: None,
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
@@ -2070,6 +2225,7 @@ mod tests {
                         route,
                         local_node_id: RECEIVER_NODE_ID,
                         sink_buffer: None,
+                        sink_file: None,
                         progress: None,
                         peer_report_timeout_ms: 200,
                         fec_enabled: false,
@@ -2158,6 +2314,7 @@ mod tests {
                         route,
                         local_node_id: RECEIVER_NODE_ID,
                         sink_buffer: None,
+                        sink_file: None,
                         progress: None,
                         peer_report_timeout_ms: 200,
                         fec_enabled: true,

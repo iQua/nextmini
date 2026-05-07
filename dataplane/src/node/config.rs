@@ -727,6 +727,14 @@ pub struct LosslessConfig {
     #[serde(default)]
     pub fec_default_tree_weights: Vec<f64>,
 
+    /// METTLE coded-rate numerator used to derive the stream overhead parameter.
+    #[serde(default = "default_mettle_default_coded_rate_num")]
+    pub mettle_default_coded_rate_num: u32,
+
+    /// METTLE coded-rate denominator used to derive the stream overhead parameter.
+    #[serde(default = "default_mettle_default_coded_rate_den")]
+    pub mettle_default_coded_rate_den: u32,
+
     /// Number of Cloudcast stripes/partitions used to quantize tree weights.
     #[serde(default)]
     pub cloudcast_stripes: usize,
@@ -774,6 +782,8 @@ impl Default for LosslessConfig {
             fec_default_scheme: LosslessFecScheme::RaptorQ,
             fec_default_tree_ids: vec![0],
             fec_default_tree_weights: Vec::new(),
+            mettle_default_coded_rate_num: 1,
+            mettle_default_coded_rate_den: 1,
             cloudcast_stripes: 0,
             cloudcast_stripe_tree_ids: Vec::new(),
             ingress_feature: Feature::Sequential,
@@ -803,6 +813,14 @@ const fn default_fec_default_symbols_per_block() -> u32 {
 
 fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
+}
+
+const fn default_mettle_default_coded_rate_num() -> u32 {
+    1
+}
+
+const fn default_mettle_default_coded_rate_den() -> u32 {
+    1
 }
 
 #[allow(dead_code)]
@@ -1063,6 +1081,8 @@ mod tests {
         assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert!(lossless.fec_default_tree_weights.is_empty());
+        assert_eq!(lossless.mettle_default_coded_rate_num, 1);
+        assert_eq!(lossless.mettle_default_coded_rate_den, 1);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,
@@ -1099,6 +1119,8 @@ mod tests {
             fec_default_scheme: LosslessFecScheme::Mettle,
             fec_default_tree_ids: vec![5, 1, 5, 3],
             fec_default_tree_weights: vec![2.0, 1.0],
+            mettle_default_coded_rate_num: 21,
+            mettle_default_coded_rate_den: 20,
             ..Default::default()
         };
 
@@ -1106,6 +1128,8 @@ mod tests {
         assert_eq!(cfg.fec_default_scheme, LosslessFecScheme::Mettle);
         assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
         assert_eq!(cfg.fec_default_tree_weights, vec![2.0, 1.0]);
+        assert_eq!(cfg.mettle_default_coded_rate_num, 21);
+        assert_eq!(cfg.mettle_default_coded_rate_den, 20);
     }
 
     #[test]

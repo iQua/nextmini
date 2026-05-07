@@ -264,6 +264,7 @@ async fn run_receiver(
             },
             local_node_id: config.node_id,
             sink_buffer: sink.clone(),
+            sink_file: None,
             progress: Some(progress.clone()),
         })
         .await
