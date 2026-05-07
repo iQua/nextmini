@@ -68,7 +68,8 @@ fn decode_stream(
             decoder
                 .push_bin(bin_id, payload)
                 .into_iter()
-                .map(mettle::stream::DecodedSource::into_parts),
+                .map(mettle::stream::DecodedSource::into_parts)
+                .map(|(source_id, payload)| (source_id, payload.as_slice().to_vec())),
         );
     }
 

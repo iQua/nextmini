@@ -2,24 +2,35 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use crate::MettleParams;
 use crate::encoder::MettleBin;
 
+/// Shared, refcounted view of a decoded source payload.
+///
+/// The decoder needs to hold each decoded source's bytes until the coupling
+/// window slides past them so future bins can XOR them out. The caller also
+/// receives the bytes via `DecodedSource`. We share both views through `Arc`
+/// so the decoder does not have to clone the payload on release; the cost
+/// drops from one `symbol_size`-byte memcpy per decoded source to a
+/// reference-count bump.
+pub(crate) type DecodedPayload = Arc<Vec<u8>>;
+
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct DecodedSource {
     source_id: u64,
-    payload: Vec<u8>,
+    payload: DecodedPayload,
 }
 
 impl DecodedSource {
-    pub(crate) fn into_parts(self) -> (u64, Vec<u8>) {
+    pub(crate) fn into_parts(self) -> (u64, DecodedPayload) {
         (self.source_id, self.payload)
     }
 
     #[cfg(test)]
     pub(super) fn as_parts(&self) -> (u64, &[u8]) {
-        (self.source_id, &self.payload)
+        (self.source_id, self.payload.as_slice())
     }
 }
 
@@ -319,8 +330,8 @@ pub(crate) struct MettleDecoder {
     seed: u64,
     terminal_source_count: Option<u64>,
     decoded_prefix_start_source_id: u64,
-    decoded_prefix_equation_payloads: VecDeque<Vec<u8>>,
-    decoded_future_equation_payloads: BTreeMap<u64, Vec<u8>>,
+    decoded_prefix_equation_payloads: VecDeque<DecodedPayload>,
+    decoded_future_equation_payloads: BTreeMap<u64, DecodedPayload>,
     seen_bin_ids: SeenBinIds,
     received_bins: ReceivedBins,
     ready_bin_ids: VecDeque<u128>,
@@ -552,8 +563,9 @@ impl MettleDecoder {
         equation_payload: Vec<u8>,
     ) -> Vec<DecodedSource> {
         self.apply_decoded_source_edges(source_id, &equation_payload);
+        let shared: DecodedPayload = Arc::new(equation_payload);
         if source_id == self.next_decoded_source_id {
-            let mut released = vec![self.release_prefix_source(source_id, equation_payload)];
+            let mut released = vec![self.release_prefix_source(source_id, shared)];
             while let Some(equation_payload) = self
                 .decoded_future_equation_payloads
                 .remove(&self.next_decoded_source_id)
@@ -565,16 +577,16 @@ impl MettleDecoder {
         }
 
         self.decoded_future_equation_payloads
-            .insert(source_id, equation_payload);
+            .insert(source_id, shared);
         Vec::new()
     }
 
     fn release_prefix_source(
         &mut self,
         source_id: u64,
-        equation_payload: Vec<u8>,
+        equation_payload: DecodedPayload,
     ) -> DecodedSource {
-        self.push_decoded_prefix_equation_payload(equation_payload.clone());
+        self.push_decoded_prefix_equation_payload(Arc::clone(&equation_payload));
         self.next_decoded_source_id += 1;
         self.drop_bins_closed_by_prefix();
         DecodedSource {
@@ -684,7 +696,7 @@ impl MettleDecoder {
         }
     }
 
-    fn push_decoded_prefix_equation_payload(&mut self, payload: Vec<u8>) {
+    fn push_decoded_prefix_equation_payload(&mut self, payload: DecodedPayload) {
         self.decoded_prefix_equation_payloads.push_back(payload);
         if self.decoded_prefix_equation_payloads.len() > Self::DECODED_PREFIX_WINDOW {
             self.decoded_prefix_equation_payloads.pop_front();
@@ -697,14 +709,14 @@ impl MettleDecoder {
         let index = usize::try_from(offset).ok()?;
         self.decoded_prefix_equation_payloads
             .get(index)
-            .map(Vec::as_slice)
+            .map(|payload| payload.as_slice())
     }
 
     fn decoded_equation_payload(&self, source_id: u64) -> Option<&[u8]> {
         self.decoded_prefix_equation_payload(source_id).or_else(|| {
             self.decoded_future_equation_payloads
                 .get(&source_id)
-                .map(Vec::as_slice)
+                .map(|payload| payload.as_slice())
         })
     }
 
@@ -788,6 +800,7 @@ fn precompute_graph(params: MettleParams, seed: u64, terminal_source_count: u64)
 mod tests {
     use std::collections::VecDeque;
     use std::num::NonZeroUsize;
+    use std::sync::Arc;
 
     use crate::encoder::MettleEncoder;
     use crate::{MettleParams, OverheadRatio};
@@ -851,7 +864,7 @@ mod tests {
             decoded,
             vec![DecodedSource {
                 source_id: 0,
-                payload: vec![1, 2, 3, 4],
+                payload: Arc::new(vec![1, 2, 3, 4]),
             }]
         );
         assert_eq!(decoder.next_decoded_source_id, 1);
@@ -877,11 +890,11 @@ mod tests {
             vec![
                 DecodedSource {
                     source_id: 0,
-                    payload: vec![1, 2, 3, 4],
+                    payload: Arc::new(vec![1, 2, 3, 4]),
                 },
                 DecodedSource {
                     source_id: 1,
-                    payload: vec![5, 6, 7, 8],
+                    payload: Arc::new(vec![5, 6, 7, 8]),
                 },
             ]
         );
@@ -902,7 +915,7 @@ mod tests {
         let mut decoder = MettleDecoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
         decoder.next_decoded_source_id = source_id;
         decoder.decoded_prefix_equation_payloads =
-            VecDeque::from(vec![vec![0]; source_id as usize]);
+            VecDeque::from(vec![Arc::new(vec![0u8]); source_id as usize]);
 
         assert!(
             decoder
@@ -919,7 +932,7 @@ mod tests {
             decoded,
             vec![DecodedSource {
                 source_id,
-                payload: vec![0b1010_0000],
+                payload: Arc::new(vec![0b1010_0000]),
             }]
         );
         assert_eq!(decoder.next_decoded_source_id, source_id + 1);
@@ -936,7 +949,7 @@ mod tests {
             decoder.push_bin(MettleBin::new(0, vec![1, 2, 3, 4])),
             vec![DecodedSource {
                 source_id: 0,
-                payload: vec![1, 2, 3, 4],
+                payload: Arc::new(vec![1, 2, 3, 4]),
             }]
         );
 
@@ -949,7 +962,7 @@ mod tests {
             decoder
                 .decoded_prefix_equation_payloads
                 .iter()
-                .cloned()
+                .map(|payload| payload.as_slice().to_vec())
                 .collect::<Vec<_>>(),
             vec![vec![1, 2, 3, 4]]
         );
@@ -1010,15 +1023,15 @@ mod tests {
             vec![
                 DecodedSource {
                     source_id: 0,
-                    payload: vec![1, 2],
+                    payload: Arc::new(vec![1, 2]),
                 },
                 DecodedSource {
                     source_id: 1,
-                    payload: vec![3, 4],
+                    payload: Arc::new(vec![3, 4]),
                 },
                 DecodedSource {
                     source_id: 2,
-                    payload: vec![5, 6],
+                    payload: Arc::new(vec![5, 6]),
                 },
             ]
         );
@@ -1028,7 +1041,7 @@ mod tests {
             decoder
                 .decoded_prefix_equation_payloads
                 .iter()
-                .cloned()
+                .map(|payload| payload.as_slice().to_vec())
                 .collect::<Vec<_>>(),
             sources
         );
@@ -1126,6 +1139,7 @@ mod tests {
             .into_iter()
             .flat_map(|bin| decoder.push_bin(bin))
             .map(DecodedSource::into_parts)
+            .map(|(source_id, payload)| (source_id, payload.as_slice().to_vec()))
             .collect::<Vec<_>>();
         let expected = sources
             .into_iter()
@@ -1146,7 +1160,7 @@ mod tests {
             decoder.push_bin(MettleBin::new(params.tle_bin_id(0), vec![0b1010_0000])),
             vec![DecodedSource {
                 source_id: 0,
-                payload: vec![0b1010_0000],
+                payload: Arc::new(vec![0b1010_0000]),
             }]
         );
         assert!(
@@ -1206,15 +1220,15 @@ mod tests {
             vec![
                 DecodedSource {
                     source_id: 0,
-                    payload: vec![1, 2],
+                    payload: Arc::new(vec![1, 2]),
                 },
                 DecodedSource {
                     source_id: 1,
-                    payload: vec![3, 4],
+                    payload: Arc::new(vec![3, 4]),
                 },
                 DecodedSource {
                     source_id: 2,
-                    payload: vec![5, 6],
+                    payload: Arc::new(vec![5, 6]),
                 },
             ]
         );

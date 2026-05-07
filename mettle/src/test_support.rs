@@ -126,6 +126,7 @@ impl Decoder {
             .push_bin(MettleBin::new(bin_id, payload))
             .into_iter()
             .map(DecodedSource::into_parts)
+            .map(|(source_id, payload)| (source_id, payload.as_slice().to_vec()))
             .collect()
     }
 

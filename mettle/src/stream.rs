@@ -4,6 +4,7 @@
 //! order and receive finalized coded bins in increasing bin-id order.
 
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use crate::MettleParams;
 use crate::decoder::{DecodedSource as InnerDecodedSource, MettleDecoder};
@@ -38,10 +39,15 @@ impl From<MettleBin> for EncodedBin {
 }
 
 /// One decoded METTLE source packet released by the streaming peeling decoder.
+///
+/// The payload is held behind an `Arc` so the decoder can share the same
+/// byte buffer between its coupling-window prefix (used to XOR future bins)
+/// and the value handed back to the consumer. Cloning a `DecodedSource` is a
+/// reference-count bump, not an `O(symbol_size)` memcpy.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedSource {
     source_id: u64,
-    payload: Vec<u8>,
+    payload: Arc<Vec<u8>>,
 }
 
 impl DecodedSource {
@@ -51,9 +57,14 @@ impl DecodedSource {
         self.source_id
     }
 
-    /// Consume the decoded packet into its source id and payload.
+    /// Consume the decoded packet into its source id and refcounted payload.
+    ///
+    /// The returned `Arc<Vec<u8>>` may still be referenced by the decoder's
+    /// internal coupling-window prefix; callers should treat the bytes as
+    /// read-only and access them via `as_slice()` / deref. To take an owned
+    /// `Vec<u8>` (incurring one memcpy), use `(*payload).clone()`.
     #[must_use]
-    pub fn into_parts(self) -> (u64, Vec<u8>) {
+    pub fn into_parts(self) -> (u64, Arc<Vec<u8>>) {
         (self.source_id, self.payload)
     }
 }

@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
@@ -30,10 +31,10 @@ pub(super) struct MettleBlockDecodeState {
 
 enum MettleDecodeOutcome {
     Pending {
-        decoded_sources: Vec<(usize, Vec<u8>)>,
+        decoded_sources: Vec<(usize, Arc<Vec<u8>>)>,
     },
     Complete {
-        decoded_sources: Vec<(usize, Vec<u8>)>,
+        decoded_sources: Vec<(usize, Arc<Vec<u8>>)>,
     },
     InvalidSymbol,
 }
@@ -519,7 +520,7 @@ impl FecReceiver {
         &self,
         shared: &super::ReceiverShared,
         block_id: u64,
-        decoded_sources: Vec<(usize, Vec<u8>)>,
+        decoded_sources: Vec<(usize, Arc<Vec<u8>>)>,
     ) {
         let mut run_start = None;
         let mut expected_source_index = None;
@@ -541,7 +542,7 @@ impl FecReceiver {
             if run_start.is_none() {
                 run_start = Some(source_index);
             }
-            run_payload.extend_from_slice(&payload);
+            run_payload.extend_from_slice(payload.as_slice());
             expected_source_index = Some(source_index.saturating_add(1));
         }
 
