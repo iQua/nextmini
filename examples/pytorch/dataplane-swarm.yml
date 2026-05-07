@@ -54,9 +54,9 @@ services:
         /var/nextmini/nextmini ws://<CONTROLLER_IP>:3000 &
         echo \"Node 1 is now running.\" &&
         sleep 15 &&
-        ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts &&
-        ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts &&
-        ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts &&
+        (ssh-keyscan -H 10.0.0.2 >> /root/.ssh/known_hosts 2>/dev/null || true) &&
+        (ssh-keyscan -H 10.0.0.3 >> /root/.ssh/known_hosts 2>/dev/null || true) &&
+        (ssh-keyscan -H 10.0.0.4 >> /root/.ssh/known_hosts 2>/dev/null || true) &&
         sleep infinity
       "
     deploy:

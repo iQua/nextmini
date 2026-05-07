@@ -5,7 +5,7 @@ volumes:
 
 services:
   postgres:
-    image: postgres:alpine
+    image: postgres:18-alpine
     hostname: postgres
     environment:
       POSTGRES_USER: pgusr
@@ -19,7 +19,7 @@ services:
       timeout: 3s
       retries: 30
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - postgres-data:/var/lib/postgresql
       - ../../controller/init.sql:/docker-entrypoint-initdb.d/init.sql
     restart: always
 
