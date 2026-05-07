@@ -9,7 +9,7 @@ This example uses the files in `examples/sba-swarm/` to run distributed workload
 - `dataplane-swarm.yml` deploys `node1` (manager) and `node2` (worker) through Docker Swarm.
 - `run-test.sh` and `train_*.sh` run OpenMPI-based verification and model training.
 
-For complete walkthroughs centered on workload goals, see [Distributed PyTorch Trainers on Sim, Boston and Arbutus](/docs/examples/distributed/pytorch-sba) and [Distributed ring all-reduce on Sim, Boston and Arbutus](/docs/examples/distributed/ring_allreduce-sba).
+For complete walkthroughs centered on workload goals, see [Distributed PyTorch Trainers on a Multi-VM Docker Swarm](/docs/examples/distributed/pytorch) and [Distributed ring all-reduce on Sim, Boston and Arbutus](/docs/examples/distributed/ring_allreduce-sba).
 
 ## Prerequisites
 
