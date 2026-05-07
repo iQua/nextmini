@@ -134,6 +134,14 @@ impl Decoder {
     }
 
     /// Construct a decoder for a finite source prefix of known length.
+    ///
+    /// Pre-computes the dense Tanner graph (source-to-bins and bin-to-sources)
+    /// up front. This is identical, paper-faithful XOR-edge information that
+    /// the rolling-graph path would otherwise rebuild lazily inside a BTreeMap
+    /// keyed by bin id. For finite streams the upfront cost is `O(N * l)` and
+    /// the per-bin lookup drops from `O(log B)` BTreeMap probes to a single
+    /// `Vec` index, which matters in WAN throughput experiments where many
+    /// bins are received within the receive task's tokio loop.
     #[must_use]
     pub fn new_terminated(
         params: MettleParams,
@@ -142,7 +150,7 @@ impl Decoder {
         terminal_source_count: u64,
     ) -> Self {
         Self {
-            inner: MettleDecoder::new_terminated(
+            inner: MettleDecoder::new_terminated_with_precomputed_graph(
                 params,
                 source_symbol_bytes,
                 seed,

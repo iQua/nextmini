@@ -157,43 +157,6 @@ impl BlockSource {
         Bytes::from(padded)
     }
 
-    /// Materialize one fixed-width source symbol without padding the full block.
-    fn source_symbol_payload(
-        &self,
-        span: BlockSpan,
-        geometry: SymbolGeometry,
-        source_index: usize,
-    ) -> Option<Vec<u8>> {
-        if source_index >= geometry.source_symbols() {
-            return None;
-        }
-
-        let symbol_size = geometry.symbol_size();
-        let symbol_offset = source_index.checked_mul(symbol_size)?;
-        let mut out = vec![0; symbol_size];
-        if symbol_offset >= span.len() {
-            return Some(out);
-        }
-
-        let absolute_offset = usize::try_from(span.offset())
-            .ok()?
-            .checked_add(symbol_offset)?;
-        if self.synthetic {
-            fill_synthetic_payload(absolute_offset as u64, self.total_bytes, &mut out);
-            return Some(out);
-        }
-        if absolute_offset >= self.bytes.len() {
-            return Some(out);
-        }
-
-        let block_remaining = span.len() - symbol_offset;
-        let copy_len = symbol_size
-            .min(block_remaining)
-            .min(self.bytes.len() - absolute_offset);
-        out[..copy_len].copy_from_slice(&self.bytes[absolute_offset..absolute_offset + copy_len]);
-        Some(out)
-    }
-
     /// Partition one logical block into reusable fixed-size source symbols.
     fn source_symbols(&self, span: BlockSpan, geometry: SymbolGeometry) -> Vec<Bytes> {
         let padded = self.padded_symbol_bytes(span, geometry);

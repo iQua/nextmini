@@ -84,6 +84,14 @@ struct MettleSymbolStream {
     next_source_id: u64,
     finished: bool,
     buffered_bins: BTreeMap<u32, Vec<u8>>,
+    /// Reusable refcounted view of the source symbols, materialized lazily on
+    /// the first call to `advance` so that subsequent pushes pass `&[u8]`
+    /// straight through to the paper encoder without re-allocating a fresh
+    /// `Vec<u8>` per source. The Bytes share their backing buffer with
+    /// `BlockSource::bytes` (or its synthetic-padded equivalent), so the
+    /// total memory footprint stays at one source-image copy regardless of
+    /// stream length.
+    source_cache: Option<Vec<Bytes>>,
     advance_calls: u64,
     source_symbols_pushed: u64,
     bins_buffered_total: u64,
@@ -111,6 +119,7 @@ impl MettleSymbolStream {
             next_source_id: 0,
             finished: false,
             buffered_bins: BTreeMap::new(),
+            source_cache: None,
             advance_calls: 0,
             source_symbols_pushed: 0,
             bins_buffered_total: 0,
@@ -134,15 +143,25 @@ impl MettleSymbolStream {
         self.advance_calls = self.advance_calls.saturating_add(1);
         let bins = if self.next_source_id < self.real_source_count {
             let source_index = usize::try_from(self.next_source_id).ok()?;
-            let payload = source.source_symbol_payload(self.span, self.geometry, source_index)?;
+            let cache = self
+                .source_cache
+                .get_or_insert_with(|| source.source_symbols(self.span, self.geometry));
+            let payload = cache.get(source_index)?;
             self.next_source_id += 1;
             self.source_symbols_pushed = self.source_symbols_pushed.saturating_add(1);
-            self.encoder.as_mut()?.push_source(&payload)
+            // `Bytes` derefs to `&[u8]`; the encoder reads it without taking
+            // ownership, so refcount-only sharing replaces the per-source
+            // 8KB allocate+memcpy from `BlockSource::source_symbol_payload`.
+            self.encoder.as_mut()?.push_source(payload.as_ref())
         } else {
             if self.finished {
                 return Some(false);
             }
             self.finished = true;
+            // Drop the source cache once we've consumed all real sources;
+            // the finish-tail emits zero-touched bins which do not depend on
+            // any source payload.
+            self.source_cache = None;
             self.encoder.take()?.finish()
         };
         self.buffer_bins(bins)?;
