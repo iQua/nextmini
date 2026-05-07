@@ -11,33 +11,27 @@ Though Nextmini runs natively on Linux, the easiest way to get started with Next
 
 The following diagram shows the high-level structure of the repository and how the major runtime pieces interact.
 
-```mermaid
-flowchart LR
-  subgraph Repo[Nextmini Repository]
-    direction TB
-    M[messages crate]
-    C[controller crate]
-    D[dataplane crate]
-    P[python-api crate]
-    G[cert-gen crate]
-    T[tools / examples / docs]
-  end
+<figure className="my-6">
+  <img
+    src="/images/birds-eye-view.svg"
+    alt="Nextmini architecture overview: application workloads, control plane, dataplane runtime, and shared protocol"
+    className="block w-full"
+  />
+  <figcaption className="mt-2 text-center text-sm text-fd-muted-foreground">
+    Bird's-eye view of Nextmini's architectural design.
+  </figcaption>
+</figure>
 
-  W[Workloads and applications] -->|TUN-backed virtual network| D
-  C -->|topology, routes, flow policy| D
-  D -->|flow metrics and status| C
-  D -->|inter-node transport tcp/udp/quic| DP[peer dataplanes]
-  P -->|embedded dataplane APIs| D
-
-  M --> C
-  M --> D
-  M --> P
-
-  T -->|orchestration and experiments| C
-  T -->|orchestration and experiments| D
-  G -->|TLS and certificates| C
-  G -->|TLS and certificates| D
-```
+<figure className="my-6">
+  <img
+    src="/images/dataplane-firstcut.svg"
+    alt="Nextmini dataplane: Controller/Network/Local/UserSpaceFlows interfaces feed Processor + routing table, Scheduler, and Network Interface to next hop"
+    className="block w-full"
+  />
+  <figcaption className="mt-2 text-center text-sm text-fd-muted-foreground">
+    Designing Nextmini: a first-cut starting point — interfaces feed processor tasks (with routing tables) into the scheduler and out to the next hop.
+  </figcaption>
+</figure>
 
 Thanks to the Rust programming language, Nextmini provides three core features, capable of satisfying modern network emulation needs:
 

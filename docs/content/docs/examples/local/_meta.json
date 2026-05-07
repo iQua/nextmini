@@ -4,11 +4,9 @@
     "simple",
     "simple-flow",
     "simple-max",
-    "simple-scheduler",
     "smoltcp-test",
     "splice-test",
     "curl",
-    "wget",
     "routes",
     "routing"
   ]
