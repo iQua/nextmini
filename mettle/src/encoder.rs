@@ -30,7 +30,6 @@ pub(crate) struct MettleEncoder {
     seed: u64,
     terminal_source_count: Option<u64>,
     open_bins: VecDeque<Option<Vec<u8>>>,
-    source_scratch: Vec<u8>,
 }
 
 impl MettleEncoder {
@@ -66,7 +65,6 @@ impl MettleEncoder {
             seed,
             terminal_source_count,
             open_bins: VecDeque::new(),
-            source_scratch: vec![0; source_symbol_bytes.get()],
         }
     }
 
@@ -76,14 +74,17 @@ impl MettleEncoder {
             assert!(self.next_source_id < terminal_source_count);
         }
 
-        self.source_scratch.fill(0);
-        self.source_scratch[..payload.len()].copy_from_slice(payload);
+        // Each touched bin is initialized to all-zero `source_symbol_bytes`,
+        // so XORing the (possibly shorter-than-symbol) payload directly is
+        // equivalent to first zero-padding it: bytes beyond `payload.len()`
+        // contribute zero on either side. This avoids a per-source scratch
+        // buffer that would cost an extra `2 * symbol_size` of memory traffic.
         let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer(self.next_source_id);
         for &bin_id in &edge_bin_ids[..edge_count] {
             let slot_index = self.ensure_open_bin_slot(bin_id);
             let entry = self.open_bins[slot_index]
                 .get_or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
-            xor_payload(entry, &self.source_scratch);
+            xor_payload(entry, payload);
         }
 
         self.next_source_id += 1;

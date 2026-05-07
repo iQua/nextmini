@@ -123,7 +123,11 @@ impl MettleSymbolStream {
                 break;
             }
         }
-        self.buffered_bins.get(&symbol_id).cloned()
+        // Sends are strictly increasing in `symbol_id` and each successful send
+        // is followed by `discard_through(symbol_id)`, so the just-fetched bin
+        // will never be needed again. Take it instead of cloning to save one
+        // `symbol_size`-byte allocation+memcpy per send on the WAN hot path.
+        self.buffered_bins.remove(&symbol_id)
     }
 
     fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
@@ -1561,7 +1565,10 @@ mod tests {
             stream.next_source_id, 1,
             "requesting bin 0 should not scan or materialize the whole block"
         );
-        assert_eq!(stream.buffered_bin_count(), 1);
+        // `symbol_payload` removes the just-fetched bin from the buffer to avoid
+        // an unnecessary `symbol_size`-byte clone on the WAN hot path; the
+        // sender owns the returned `Vec<u8>` directly.
+        assert_eq!(stream.buffered_bin_count(), 0);
 
         sender.discard_sent_mettle_symbol(0, 0);
         assert_eq!(
