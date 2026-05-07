@@ -103,7 +103,6 @@ async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
         peer_report_timeout_ms: PEER_REPORT_TIMEOUT_MS,
         topology_ready: None,
         cloudcast: None,
-        fec_tree_weights: Vec::new(),
     };
     let (sender_ctrl_tx, sender_ctrl_rx) = mpsc::channel::<InboundFrame>(4096);
     let sender_task = tokio::spawn(sender::run(

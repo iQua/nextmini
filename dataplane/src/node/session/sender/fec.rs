@@ -30,8 +30,6 @@ enum SymbolKind {
     Repair,
 }
 
-const WEIGHTED_TREE_SCHEDULE_SLOTS: usize = 256;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TreeScheduleEntry {
     tree_id: u16,
@@ -274,85 +272,19 @@ impl FecSenderStats {
     }
 }
 
-fn build_tree_schedule(tree_ids: &[u16], tree_weights: &[f64]) -> Vec<TreeScheduleEntry> {
-    if tree_ids.is_empty() {
-        return Vec::new();
-    }
-    if tree_weights.len() != tree_ids.len() {
-        return unweighted_tree_schedule(tree_ids);
-    }
-
-    let weights = tree_weights
-        .iter()
-        .map(|weight| {
-            if weight.is_finite() && *weight > 0.0 {
-                *weight
-            } else {
-                1.0
-            }
-        })
-        .collect::<Vec<_>>();
-    let total_weight = weights.iter().sum::<f64>();
-    if !total_weight.is_finite() || total_weight <= 0.0 {
-        return unweighted_tree_schedule(tree_ids);
-    }
-
-    let schedule_len = tree_ids.len().max(WEIGHTED_TREE_SCHEDULE_SLOTS);
-    let mut slot_counts = vec![1usize; tree_ids.len()];
-    let remaining_slots = schedule_len.saturating_sub(tree_ids.len());
-    let mut assigned_slots = 0usize;
-    let mut remainders = Vec::with_capacity(tree_ids.len());
-    for (idx, weight) in weights.iter().enumerate() {
-        let exact = (*weight / total_weight) * remaining_slots as f64;
-        let base = exact.floor() as usize;
-        slot_counts[idx] += base;
-        assigned_slots += base;
-        remainders.push((idx, exact - base as f64, *weight));
-    }
-    remainders.sort_by(|left, right| {
-        right
-            .1
-            .total_cmp(&left.1)
-            .then_with(|| right.2.total_cmp(&left.2))
-            .then_with(|| left.0.cmp(&right.0))
-    });
-    for idx in 0..remaining_slots.saturating_sub(assigned_slots) {
-        let tree_index = remainders[idx % remainders.len()].0;
-        slot_counts[tree_index] += 1;
-    }
-
-    interleave_tree_slots(tree_ids, &slot_counts)
-}
-
+/// Build a one-slot-per-tree round-robin schedule for FEC symbol striping.
+///
+/// METTLE/RaptorQ FEC symbols are striped across `tree_ids` in flat
+/// round-robin order; the sender advances `next_tree_rr` modulo the schedule
+/// length per send. This is paper-faithful for METTLE (no notion of weighted
+/// trees in the spec) and matches the RaptorQ reference behavior in this
+/// codebase.
 fn unweighted_tree_schedule(tree_ids: &[u16]) -> Vec<TreeScheduleEntry> {
     tree_ids
         .iter()
         .copied()
         .enumerate()
         .map(|(tree_index, tree_id)| TreeScheduleEntry {
-            tree_id,
-            tree_index,
-        })
-        .collect()
-}
-
-fn interleave_tree_slots(tree_ids: &[u16], slot_counts: &[usize]) -> Vec<TreeScheduleEntry> {
-    let total_slots = slot_counts.iter().sum();
-    let mut positioned = Vec::with_capacity(total_slots);
-    for (tree_index, (&tree_id, &slot_count)) in tree_ids.iter().zip(slot_counts).enumerate() {
-        for slot_idx in 0..slot_count {
-            let position = (slot_idx as f64 + 0.5) / slot_count as f64;
-            positioned.push((position, tree_index, tree_id));
-        }
-    }
-    positioned.sort_by(|left, right| {
-        left.0
-            .total_cmp(&right.0)
-            .then_with(|| left.1.cmp(&right.1))
-    });
-    positioned
-        .into_iter()
-        .map(|(_, tree_index, tree_id)| TreeScheduleEntry {
             tree_id,
             tree_index,
         })
@@ -387,19 +319,14 @@ fn mark_tree_attempted(
 
 impl FecSender {
     /// Build the initial FEC sender state for a validated manifest.
-    #[cfg(test)]
+    ///
+    /// FEC symbols are striped across `manifest.fec.tree_ids` in flat
+    /// round-robin order. The sender does not consume solver-derived tree
+    /// weights: METTLE has no notion of weighted trees in the paper, and the
+    /// RaptorQ path here matches that behavior.
     pub(super) fn new(
         manifest: &LosslessSessionManifest,
         plan: BlockPlan,
-    ) -> Result<Self, &'static str> {
-        Self::new_with_tree_weights(manifest, plan, &[])
-    }
-
-    /// Build FEC sender state using optional solver-derived tree weights.
-    pub(super) fn new_with_tree_weights(
-        manifest: &LosslessSessionManifest,
-        plan: BlockPlan,
-        tree_weights: &[f64],
     ) -> Result<Self, &'static str> {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build fec sender for plain manifest");
@@ -438,7 +365,7 @@ impl FecSender {
         if scheme == FecScheme::Mettle && block_count > 1 {
             return Err("paper-native METTLE requires one logical object stream");
         }
-        let tree_schedule = build_tree_schedule(&fec.tree_ids, tree_weights);
+        let tree_schedule = unweighted_tree_schedule(&fec.tree_ids);
 
         Ok(Self {
             blocks: (0..block_count)
@@ -1251,8 +1178,8 @@ mod tests {
     use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
 
     #[test]
-    fn fec_tree_schedule_keeps_round_robin_without_weights() {
-        let schedule = build_tree_schedule(&[7, 9, 11], &[]);
+    fn fec_tree_schedule_is_one_slot_per_tree_round_robin() {
+        let schedule = unweighted_tree_schedule(&[7, 9, 11]);
 
         assert_eq!(
             schedule,
@@ -1270,23 +1197,6 @@ mod tests {
                     tree_index: 2,
                 },
             ]
-        );
-    }
-
-    #[test]
-    fn fec_tree_schedule_quantizes_solver_weights() {
-        let schedule = build_tree_schedule(&[7, 9], &[3.0, 1.0]);
-        let tree_7_slots = schedule.iter().filter(|entry| entry.tree_id == 7).count();
-        let tree_9_slots = schedule.iter().filter(|entry| entry.tree_id == 9).count();
-
-        assert_eq!(schedule.len(), WEIGHTED_TREE_SCHEDULE_SLOTS);
-        assert!(
-            tree_7_slots > tree_9_slots * 2,
-            "higher solver weight should receive proportionally more send slots"
-        );
-        assert!(
-            tree_9_slots > 0,
-            "each configured tree should remain reachable as a fallback"
         );
     }
 

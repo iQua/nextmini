@@ -149,8 +149,6 @@ pub struct SenderConfig {
     pub pacing: Option<TokenBucketSpec>,
     /// Receiver node IDs expected to provide lossless feedback.
     pub receiver_ids: Vec<usize>,
-    /// Optional solver-derived tree weights for FEC symbol scheduling.
-    pub fec_tree_weights: Vec<f64>,
     /// Source bytes used to build payload blocks.
     pub source_buffer: Bytes,
     /// Validated manifest emitted during the READY handshake.
@@ -477,7 +475,6 @@ impl LosslessRuntime {
             route: req.route,
             pacing: req.pacing,
             receiver_ids: req.receiver_ids,
-            fec_tree_weights: self.config.fec_default_tree_weights.clone(),
             source_buffer: req.source_buffer,
             manifest,
             ready_grace_ms: req.ready_grace_ms,

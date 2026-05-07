@@ -210,9 +210,9 @@ impl SessionSender {
             } else {
                 match &manifest.mode {
                     LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-                    LosslessSessionMode::Fec(_) => SenderMode::Fec(
-                        FecSender::new_with_tree_weights(&manifest, plan, &cfg.fec_tree_weights)?,
-                    ),
+                    LosslessSessionMode::Fec(_) => {
+                        SenderMode::Fec(FecSender::new(&manifest, plan)?)
+                    }
                 }
             };
 
@@ -819,7 +819,6 @@ mod tests {
             },
             pacing: None,
             receiver_ids: vec![22, 23],
-            fec_tree_weights: Vec::new(),
             source_buffer: Bytes::new(),
             manifest: LosslessSessionManifest {
                 block_size: 4,
@@ -894,7 +893,6 @@ mod tests {
             },
             pacing: None,
             receiver_ids: vec![22],
-            fec_tree_weights: Vec::new(),
             source_buffer: Bytes::new(),
             manifest: LosslessSessionManifest {
                 block_size: 4,
