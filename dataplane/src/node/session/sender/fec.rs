@@ -605,107 +605,90 @@ impl FecSender {
 
         let tree_count = self.tree_ids.len();
         let schedule_count = self.tree_schedule.len();
-        let start_idx = self.next_tree_rr % schedule_count;
-        let initial_tree_id = self.tree_schedule[start_idx].tree_id;
-        block_symbol_frame::encode_into(
-            &mut self.frame_scratch,
-            shared.session.session_id,
-            block_id,
-            symbol_id,
-            initial_tree_id,
-            payload,
-        );
-
-        let mut await_idx = None;
-        let mut frame_tree_id = initial_tree_id;
-        let mut tried_mask = 0u128;
-        let mut tried_large = if tree_count > 128 {
-            Some(vec![false; tree_count])
-        } else {
-            None
-        };
-        let mut attempted_trees = 0usize;
-        for offset in 0..schedule_count {
-            let idx = (start_idx + offset) % schedule_count;
-            let slot = self.tree_schedule[idx];
-            if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
-                continue;
-            }
-            attempted_trees += 1;
-            let tree_id = slot.tree_id;
-            if tree_id != frame_tree_id {
-                block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
-                    .expect("encoded block symbol should accept tree-id patch");
-                frame_tree_id = tree_id;
-            }
-            self.stats.record_attempt(kind, tree_id);
-            let submission = control::try_send_frame(
-                &shared.processors,
-                control::FrameRoute {
-                    session_id: shared.session.session_id,
-                    tree_id: Some(tree_id),
-                    src_ip: shared.route.src_ip,
-                    src_port: shared.route.src_port,
-                    dst_ip: shared.route.dst_ip,
-                    dst_port: shared.route.dst_port,
-                },
-                &self.frame_scratch,
+        loop {
+            let start_idx = self.next_tree_rr % schedule_count;
+            let initial_tree_id = self.tree_schedule[start_idx].tree_id;
+            block_symbol_frame::encode_into(
+                &mut self.frame_scratch,
+                shared.session.session_id,
+                block_id,
+                symbol_id,
+                initial_tree_id,
+                payload,
             );
-            self.stats.record_outcome(kind, tree_id, submission.outcome);
-            match submission.outcome {
-                SendOutcome::Queued => {
-                    self.note_queued_symbol(
-                        shared,
-                        block_id,
-                        symbol_id,
-                        tree_id,
-                        idx,
-                        schedule_count,
-                    );
-                    return true;
-                }
-                SendOutcome::WouldBlock => {
-                    await_idx.get_or_insert(idx);
-                }
-                SendOutcome::Closed => {
-                    warn!(
-                        session_id = shared.session.session_id,
-                        tree_id,
-                        "Lossless sender observed closed processor ingress while sending FEC symbol"
-                    );
-                }
-            }
-            if attempted_trees == tree_count {
-                break;
-            }
-        }
 
-        let Some(idx) = await_idx else {
-            self.stats.record_stall(kind);
-            self.maybe_log_progress(shared);
-            return false;
-        };
-        let tree_id = self.tree_schedule[idx].tree_id;
-        block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
-            .expect("encoded block symbol should accept tree-id patch");
-        self.stats.record_attempt(kind, tree_id);
-        control::send_frame(
-            &shared.processors,
-            control::FrameRoute {
-                session_id: shared.session.session_id,
-                tree_id: Some(tree_id),
-                src_ip: shared.route.src_ip,
-                src_port: shared.route.src_port,
-                dst_ip: shared.route.dst_ip,
-                dst_port: shared.route.dst_port,
-            },
-            &self.frame_scratch,
-        )
-        .await;
-        self.stats
-            .record_outcome(kind, tree_id, SendOutcome::Queued);
-        self.note_queued_symbol(shared, block_id, symbol_id, tree_id, idx, schedule_count);
-        true
+            let mut saw_would_block = false;
+            let mut frame_tree_id = initial_tree_id;
+            let mut tried_mask = 0u128;
+            let mut tried_large = if tree_count > 128 {
+                Some(vec![false; tree_count])
+            } else {
+                None
+            };
+            let mut attempted_trees = 0usize;
+            for offset in 0..schedule_count {
+                let idx = (start_idx + offset) % schedule_count;
+                let slot = self.tree_schedule[idx];
+                if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
+                    continue;
+                }
+                attempted_trees += 1;
+                let tree_id = slot.tree_id;
+                if tree_id != frame_tree_id {
+                    block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
+                        .expect("encoded block symbol should accept tree-id patch");
+                    frame_tree_id = tree_id;
+                }
+                self.stats.record_attempt(kind, tree_id);
+                let submission = control::try_send_frame(
+                    &shared.processors,
+                    control::FrameRoute {
+                        session_id: shared.session.session_id,
+                        tree_id: Some(tree_id),
+                        src_ip: shared.route.src_ip,
+                        src_port: shared.route.src_port,
+                        dst_ip: shared.route.dst_ip,
+                        dst_port: shared.route.dst_port,
+                    },
+                    &self.frame_scratch,
+                );
+                self.stats.record_outcome(kind, tree_id, submission.outcome);
+                match submission.outcome {
+                    SendOutcome::Queued => {
+                        self.note_queued_symbol(
+                            shared,
+                            block_id,
+                            symbol_id,
+                            tree_id,
+                            idx,
+                            schedule_count,
+                        );
+                        return true;
+                    }
+                    SendOutcome::WouldBlock => {
+                        saw_would_block = true;
+                    }
+                    SendOutcome::Closed => {
+                        warn!(
+                            session_id = shared.session.session_id,
+                            tree_id,
+                            "Lossless sender observed closed processor ingress while sending FEC symbol"
+                        );
+                    }
+                }
+                if attempted_trees == tree_count {
+                    break;
+                }
+            }
+
+            if !saw_would_block {
+                self.stats.record_stall(kind);
+                self.maybe_log_progress(shared);
+                return false;
+            }
+
+            tokio::task::yield_now().await;
+        }
     }
 
     fn note_queued_symbol(
