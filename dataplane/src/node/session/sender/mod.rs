@@ -201,20 +201,17 @@ impl SessionSender {
             Duration::from_millis(cfg.peer_report_timeout_ms),
         );
         let cloudcast = cfg.cloudcast.clone();
-        let mode =
-            if let Some(cloudcast) = cloudcast.as_ref() {
-                if !matches!(manifest.mode, LosslessSessionMode::Plain) {
-                    return Err("cloudcast sender requires a plain manifest");
-                }
-                SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
-            } else {
-                match &manifest.mode {
-                    LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-                    LosslessSessionMode::Fec(_) => {
-                        SenderMode::Fec(FecSender::new(&manifest, plan)?)
-                    }
-                }
-            };
+        let mode = if let Some(cloudcast) = cloudcast.as_ref() {
+            if !matches!(manifest.mode, LosslessSessionMode::Plain) {
+                return Err("cloudcast sender requires a plain manifest");
+            }
+            SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
+        } else {
+            match &manifest.mode {
+                LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
+                LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+            }
+        };
 
         Ok(Self {
             shared: SenderShared {

@@ -434,7 +434,7 @@ impl LosslessRuntime {
         &mut self,
         req: SenderRequest,
     ) -> Result<LosslessSessionHandle, StartError> {
-        let mut session = req.session;
+        let session = req.session;
         let sid = session.session_id;
         if self.sessions.contains_key(&sid) {
             return Err(StartError::SessionAlreadyActive { session_id: sid });
@@ -449,15 +449,6 @@ impl LosslessRuntime {
         } else {
             fec_policy::derive_sender_policy(&self.config)?
         };
-        if matches!(
-            &policy.mode,
-            lossless_session::LosslessSessionMode::Fec(fec)
-                if fec.scheme_kind() == Some(lossless_session::FecScheme::Mettle)
-        ) && req.total_bytes > 0
-        {
-            session.block_size = usize::try_from(req.total_bytes).unwrap_or(usize::MAX);
-        }
-
         let block_size = fec_policy::validate_block_size(session.block_size)?;
         let plan = BlockPlan::new(req.total_bytes, session.block_size).map_err(|_| {
             PreflightError::InvalidBlockSize {

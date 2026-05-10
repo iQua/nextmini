@@ -207,6 +207,55 @@ async fn start_sender_accepts_small_experimental_mettle_symbols_per_block() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_accepts_16gb_mettle_with_configured_block_size() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_scheme = LosslessFecScheme::Mettle;
+    runtime_cfg.fec_default_symbols_per_block = 131_072;
+    runtime_cfg.fec_default_tree_ids = vec![1];
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
+    let processors = ProcessorHandle::new(cfg.clone());
+    let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
+    runtime.set_topology_ready(true).await;
+
+    let session = runtime
+        .start_sender(SenderRequest {
+            session: SessionConfig {
+                session_id: 0x0FEC_2007,
+                block_size: 1_073_741_824,
+            },
+            route: TransportRoute {
+                src_ip: cfg
+                    .node_id
+                    .ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                dst_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                src_port: 4410,
+                dst_port: 5410,
+            },
+            pacing: None,
+            receiver_ids: vec![2],
+            total_bytes: 16_393_000_960,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            peer_report_timeout_ms,
+        })
+        .await
+        .expect("16GB METTLE should keep the configured 1GiB block size");
+
+    assert_eq!(session.id(), 0x0FEC_2007);
+    drop(session);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
     let cfg = LocalConfig {
         node_id: 1,

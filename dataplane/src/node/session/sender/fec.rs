@@ -362,9 +362,6 @@ impl FecSender {
         };
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
-        if scheme == FecScheme::Mettle && block_count > 1 {
-            return Err("paper-native METTLE requires one logical object stream");
-        }
         let tree_schedule = unweighted_tree_schedule(&fec.tree_ids);
 
         Ok(Self {
@@ -1330,6 +1327,29 @@ mod tests {
         assert_eq!(
             sender.initial_symbol_count as usize, expected_initial,
             "METTLE keeps the configured coded-rate parameter for the stream graph"
+        );
+    }
+
+    #[test]
+    fn mettle_sender_accepts_large_multiblock_objects() {
+        let k = 131_072u32;
+        let block_size = 1_073_741_824u32;
+        let total_blocks = 16u64;
+        let manifest = LosslessSessionManifest {
+            block_size,
+            total_bytes: u64::from(block_size) * total_blocks,
+            total_blocks,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
+        };
+        let plan = BlockPlan::new(manifest.total_bytes, block_size as usize).expect("valid plan");
+
+        let sender = FecSender::new(&manifest, plan).expect("multiblock METTLE sender");
+
+        assert_eq!(sender.blocks.len(), total_blocks as usize);
+        assert_eq!(sender.symbols_per_block, k);
+        assert_eq!(
+            sender.source_phase_symbol_limit(),
+            sender.mettle_stream_symbol_limit
         );
     }
 
