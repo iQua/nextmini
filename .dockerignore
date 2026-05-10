@@ -5,8 +5,10 @@
 target/
 
 # Generated artifacts / caches
+.codex-local/
 .multidc_cache/
 examples/multicast-docker/artifacts/
+output/
 tensors/
 
 # Python

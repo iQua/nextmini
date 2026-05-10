@@ -16,6 +16,7 @@ use std::io::{Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
 
 use tokio::sync::{mpsc, oneshot};
+use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
@@ -64,6 +65,7 @@ struct SessionReceiver {
     shared: ReceiverShared,
     mode: Option<ReceiverMode>,
     lifecycle: ReceiverLifecycle,
+    passive_complete_deadline: Option<Instant>,
     pending_control_frames: VecDeque<InboundFrame>,
 }
 
@@ -109,6 +111,7 @@ impl SessionReceiver {
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
         }
     }
@@ -177,15 +180,17 @@ impl SessionReceiver {
         }
 
         let maybe_frame = if self.is_passive_complete() {
-            let passive_timeout = timing::session_finish_timeout_for(
-                tokio::time::Duration::from_millis(self.shared.cfg.peer_report_timeout_ms),
-            );
+            let passive_deadline = self.passive_complete_deadline();
+            if passive_deadline <= Instant::now() {
+                self.finish_session("session_finish_timeout");
+                return None;
+            }
             tokio::select! {
                 biased;
                 maybe_frame = control_rx.recv() => maybe_frame
                     .map(|frame| self.coalesce_control_frame(frame, control_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
-                _ = tokio::time::sleep(passive_timeout) => {
+                _ = tokio::time::sleep_until(passive_deadline) => {
                     self.finish_session("session_finish_timeout");
                     return None;
                 }
@@ -272,6 +277,7 @@ impl SessionReceiver {
 
     fn finish_session(&mut self, reason: &'static str) {
         self.lifecycle = ReceiverLifecycle::SessionFinished;
+        self.passive_complete_deadline = None;
         debug!(
             session_id = self.shared.session_id,
             reason,
@@ -286,11 +292,28 @@ impl SessionReceiver {
         }
         self.shared.mark_object_complete();
         self.lifecycle = ReceiverLifecycle::PassiveComplete;
+        self.passive_complete_deadline = Some(self.compute_passive_complete_deadline());
         debug!(
             session_id = self.shared.session_id,
             object_complete = self.object_complete(),
             "Lossless receiver entered passive-complete state"
         );
+    }
+
+    fn passive_complete_deadline(&mut self) -> Instant {
+        if let Some(deadline) = self.passive_complete_deadline {
+            return deadline;
+        }
+        let deadline = self.compute_passive_complete_deadline();
+        self.passive_complete_deadline = Some(deadline);
+        deadline
+    }
+
+    fn compute_passive_complete_deadline(&self) -> Instant {
+        Instant::now()
+            + timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
+                self.shared.cfg.peer_report_timeout_ms,
+            ))
     }
 
     /// Handle one inbound control frame.
@@ -1021,6 +1044,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
         };
 
@@ -1822,6 +1846,7 @@ mod tests {
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
             lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
         };
 
@@ -2243,6 +2268,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
+                passive_complete_deadline: None,
                 pending_control_frames: VecDeque::new(),
             },
             packet_rx,
@@ -2337,6 +2363,7 @@ mod tests {
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,
+                passive_complete_deadline: None,
                 pending_control_frames: VecDeque::new(),
             },
             packet_rx,

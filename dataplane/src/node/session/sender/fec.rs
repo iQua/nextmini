@@ -5,7 +5,7 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedReport,
+    FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport,
 };
 
 use crate::node::processor::SendOutcome;
@@ -64,8 +64,8 @@ pub(super) struct FecSender {
 struct FecBlockState {
     next_source_symbol: u32,
     next_fountain_symbol: u32,
-    required_extra_symbols: u16,
-    emitted_extra_symbols: u16,
+    required_extra_symbols: u32,
+    emitted_extra_symbols: u32,
     encoder: Option<Encoder>,
     mettle_stream: Option<MettleSymbolStream>,
 }
@@ -368,7 +368,11 @@ impl FecSender {
             blocks: (0..block_count)
                 .map(|_| FecBlockState {
                     next_source_symbol: 0,
-                    next_fountain_symbol: initial_symbol_count,
+                    next_fountain_symbol: if scheme == FecScheme::Mettle {
+                        0
+                    } else {
+                        initial_symbol_count
+                    },
                     required_extra_symbols: 0,
                     emitted_extra_symbols: 0,
                     encoder: None,
@@ -457,10 +461,8 @@ impl FecSender {
             if self.phase == RoundPhase::WaitingForReports
                 && self.round_reports.len() == shared.active_quorum.active_members().len()
             {
-                if !self.waiting_for_mettle_late_complete() {
-                    self.finish_report_round(shared);
-                    continue;
-                }
+                self.finish_report_round(shared);
+                continue;
             }
 
             match shared
@@ -499,15 +501,17 @@ impl FecSender {
 
     /// Return the next extra fountain symbol requested by a receiver.
     fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
-        if self.scheme == FecScheme::Mettle {
-            return None;
-        }
         if self.total_emitted_extra_symbols() >= self.repair_window_symbols {
             return None;
         }
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
             if block.emitted_extra_symbols < block.required_extra_symbols {
+                if self.scheme == FecScheme::Mettle
+                    && block.next_fountain_symbol >= self.mettle_stream_symbol_limit
+                {
+                    continue;
+                }
                 return Some((block_id, block.next_fountain_symbol));
             }
         }
@@ -813,23 +817,14 @@ impl FecSender {
 
     fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
         let mut all_complete = true;
+        let reports: Vec<_> = self.round_reports.values().cloned().collect();
 
-        for status in self.round_reports.values() {
+        for status in reports {
             match status {
                 NeedReport::Complete => {}
                 NeedReport::Fec { blocks } => {
                     all_complete = false;
-                    if self.scheme != FecScheme::Mettle {
-                        for block in blocks {
-                            if let Some(entry) = self
-                                .blocks
-                                .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
-                            {
-                                entry.required_extra_symbols =
-                                    entry.required_extra_symbols.max(block.deficit_symbols);
-                            }
-                        }
-                    }
+                    self.record_requested_repairs(&blocks);
                 }
                 NeedReport::Plain { .. } => {
                     self.protocol_error = true;
@@ -841,19 +836,6 @@ impl FecSender {
         if all_complete {
             self.round_complete = true;
             self.log_tree_stats(shared, "all_complete");
-            return;
-        }
-
-        if self.scheme == FecScheme::Mettle {
-            warn!(
-                session_id = shared.session.session_id,
-                round_id = self.current_round_id,
-                "Lossless METTLE finite stream was exhausted before every receiver decoded"
-            );
-            self.protocol_error = true;
-            self.round_reports.clear();
-            self.repair_window_symbols = 0;
-            shared.clear_quorum_feedback_wait();
             return;
         }
 
@@ -956,17 +938,7 @@ impl super::ModeHooks for FecSender {
         match report {
             NeedReport::Complete => {}
             NeedReport::Fec { blocks } => {
-                if self.scheme != FecScheme::Mettle {
-                    for block in blocks {
-                        if let Some(entry) = self
-                            .blocks
-                            .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
-                        {
-                            entry.required_extra_symbols =
-                                entry.required_extra_symbols.max(block.deficit_symbols);
-                        }
-                    }
-                }
+                self.record_requested_repairs(&blocks);
             }
             NeedReport::Plain { .. } => {
                 warn!(
@@ -983,9 +955,6 @@ impl super::ModeHooks for FecSender {
         if self.round_reports.len() == shared.active_quorum.active_members().len()
             && !self.has_pending_repair_work()
         {
-            if self.waiting_for_mettle_late_complete() {
-                return;
-            }
             self.finish_report_round(shared);
         }
     }
@@ -1054,27 +1023,53 @@ impl FecSender {
             .any(|block| block.emitted_extra_symbols < block.required_extra_symbols)
     }
 
-    fn waiting_for_mettle_late_complete(&self) -> bool {
-        self.scheme == FecScheme::Mettle
-            && self.phase == RoundPhase::WaitingForReports
-            && self
-                .round_reports
-                .values()
-                .any(|report| !matches!(report, NeedReport::Complete))
-    }
-
     fn total_required_extra_symbols(&self) -> u32 {
         self.blocks
             .iter()
-            .map(|block| u32::from(block.required_extra_symbols))
+            .map(|block| block.required_extra_symbols)
             .sum()
     }
 
     fn total_emitted_extra_symbols(&self) -> u32 {
         self.blocks
             .iter()
-            .map(|block| u32::from(block.emitted_extra_symbols))
+            .map(|block| block.emitted_extra_symbols)
             .sum()
+    }
+
+    fn record_requested_repairs(&mut self, blocks: &[NeedBlock]) {
+        if self.scheme == FecScheme::Mettle {
+            for block in blocks {
+                self.schedule_mettle_repair_pass(block.block_id);
+            }
+            return;
+        }
+
+        for block in blocks {
+            if let Some(entry) = self
+                .blocks
+                .get_mut(usize::try_from(block.block_id).ok().unwrap_or(usize::MAX))
+            {
+                entry.required_extra_symbols = entry
+                    .required_extra_symbols
+                    .max(u32::from(block.deficit_symbols));
+            }
+        }
+    }
+
+    fn schedule_mettle_repair_pass(&mut self, block_id: u64) {
+        let symbol_limit = self.mettle_stream_symbol_limit;
+        let Some(block) = fec_block_mut(self, block_id) else {
+            return;
+        };
+        if block.next_fountain_symbol == 0 || block.next_fountain_symbol >= symbol_limit {
+            block.next_fountain_symbol = 0;
+            block.mettle_stream = None;
+        }
+        if symbol_limit == 0 {
+            return;
+        }
+        block.required_extra_symbols = block.required_extra_symbols.max(symbol_limit);
     }
 
     fn recalculate_repair_window(&mut self, shared: &super::SenderShared) {
@@ -1424,7 +1419,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mettle_sender_waits_for_late_complete_after_finite_stream_exhaustion() {
+    async fn mettle_sender_opens_retransmission_pass_after_deficit() {
         let manifest = LosslessSessionManifest {
             block_size: 16,
             total_bytes: 16,
@@ -1453,18 +1448,100 @@ mod tests {
         assert!(!sender.protocol_error);
         assert!(!sender.round_complete);
         assert_eq!(sender.phase, RoundPhase::WaitingForReports);
-        assert!(sender.waiting_for_mettle_late_complete());
         assert!(
             sender.round_reports.len() == 2,
-            "METTLE should not convert incomplete feedback into a session repair window"
+            "METTLE should retain the incomplete quorum feedback for this round"
+        );
+        assert_eq!(
+            sender.next_extra_symbol(&shared),
+            Some((0, 0)),
+            "METTLE repair should restart the finite stream so lost bins can be retransmitted"
+        );
+
+        sender.blocks[0].emitted_extra_symbols = sender.mettle_stream_symbol_limit;
+        sender.blocks[0].next_fountain_symbol = sender.mettle_stream_symbol_limit;
+        sender.finish_report_round(&mut shared);
+
+        assert_eq!(sender.phase, RoundPhase::SendingData);
+        assert_eq!(sender.current_round_id, 1);
+        assert!(!sender.protocol_error);
+
+        sender.phase = RoundPhase::WaitingForReports;
+        sender.current_round_id = 1;
+        sender.round_reports.clear();
+        sender.on_need(
+            &mut shared,
+            22,
+            1,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        );
+
+        assert_eq!(
+            sender.next_extra_symbol(&shared),
+            Some((0, 0)),
+            "a later incomplete round should start another retransmission pass"
         );
 
         sender.on_need(&mut shared, 22, 0, NeedReport::Complete);
         assert!(!sender.round_complete);
-        sender.on_need(&mut shared, 23, 0, NeedReport::Complete);
+        sender.on_need(&mut shared, 23, 1, NeedReport::Complete);
 
-        assert!(sender.round_complete);
+        assert!(!sender.round_complete);
         assert!(!sender.protocol_error);
+    }
+
+    #[tokio::test]
+    async fn mettle_retransmission_pass_rebuilds_exhausted_stream() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+        sender.phase = RoundPhase::WaitingForReports;
+
+        let last_symbol = sender.mettle_stream_symbol_limit - 1;
+        sender
+            .source_symbol_payload(&shared, 0, last_symbol)
+            .expect("last finite-stream symbol");
+        assert!(
+            sender.blocks[0]
+                .mettle_stream
+                .as_ref()
+                .is_some_and(|stream| stream.finished),
+            "the data phase should leave an exhausted finite stream"
+        );
+
+        sender.on_need(
+            &mut shared,
+            22,
+            0,
+            NeedReport::Fec {
+                blocks: vec![NeedBlock {
+                    block_id: 0,
+                    deficit_symbols: 1,
+                }],
+            },
+        );
+
+        assert!(
+            sender.blocks[0].mettle_stream.is_none(),
+            "retransmission starts from bin zero with a fresh METTLE stream"
+        );
+        let payload = sender
+            .extra_symbol_payload(&shared, 0, 0)
+            .expect("retransmitted first bin");
+        assert_eq!(payload.len(), 4);
     }
 
     #[tokio::test]
