@@ -1,6 +1,7 @@
 {
   "name": "fuma",
   "private": true,
+  "license": "AGPL-3.0-only",
   "type": "module",
   "sideEffects": false,
   "scripts": {
