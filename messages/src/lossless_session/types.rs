@@ -189,6 +189,15 @@ pub enum LosslessSessionValidationError {
         scheme: u8,
     },
     ZeroSymbolsPerBlock,
+    FecSymbolPayloadTooLarge {
+        symbol_size: u32,
+        max: u32,
+    },
+    FecSymbolPayloadCeilingUnrepresentable,
+    FecPaddedBlockSizeOverflow {
+        source_symbols: u32,
+        symbol_size: u32,
+    },
     InvalidFecCodedRate {
         numerator: u32,
         denominator: u32,

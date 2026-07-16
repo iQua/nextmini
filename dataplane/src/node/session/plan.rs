@@ -3,20 +3,32 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use nextmini_messages::lossless_session::{WireFecGeometry, WireFecGeometryError};
+
 /// Construction or derivation failures for shared block geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanError {
     BlockSizeZero,
+    BlockSizeTooLarge,
     SymbolsPerBlockZero,
     SymbolsPerBlockTooLarge,
+    SymbolPayloadTooLarge,
+    PaddedBlockSizeTooLarge,
 }
 
 impl Display for PlanError {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::BlockSizeZero => write!(f, "block_size must be >= 1"),
+            Self::BlockSizeTooLarge => write!(f, "block_size does not fit the wire geometry"),
             Self::SymbolsPerBlockZero => write!(f, "symbols_per_block must be >= 1"),
             Self::SymbolsPerBlockTooLarge => write!(f, "symbols_per_block does not fit usize"),
+            Self::SymbolPayloadTooLarge => {
+                write!(f, "symbol payload exceeds the lossless packet envelope")
+            }
+            Self::PaddedBlockSizeTooLarge => {
+                write!(f, "padded FEC block does not fit the local address space")
+            }
         }
     }
 }
@@ -28,6 +40,7 @@ impl Error for PlanError {}
 pub struct BlockPlan {
     total_bytes: u64,
     block_size: usize,
+    block_size_u64: u64,
     total_blocks: u64,
 }
 
@@ -37,16 +50,18 @@ impl BlockPlan {
         if block_size == 0 {
             return Err(PlanError::BlockSizeZero);
         }
+        let block_size_u64 = u64::try_from(block_size).map_err(|_| PlanError::BlockSizeTooLarge)?;
 
         let total_blocks = if total_bytes == 0 {
             0
         } else {
-            total_bytes.div_ceil(block_size as u64)
+            total_bytes.div_ceil(block_size_u64)
         };
 
         Ok(Self {
             total_bytes,
             block_size,
+            block_size_u64,
             total_blocks,
         })
     }
@@ -77,7 +92,7 @@ impl BlockPlan {
             return None;
         }
 
-        block_id.checked_mul(self.block_size as u64)
+        block_id.checked_mul(self.block_size_u64)
     }
 
     /// Return the payload length for `block_id`, trimming the final block as needed.
@@ -91,7 +106,7 @@ impl BlockPlan {
             return Some(self.block_size);
         }
 
-        let tail = (self.total_bytes % self.block_size as u64) as usize;
+        let tail = usize::try_from(self.total_bytes % self.block_size_u64).ok()?;
         if tail == 0 {
             Some(self.block_size)
         } else {
@@ -138,26 +153,42 @@ pub struct SymbolGeometry {
     symbols_per_block: u32,
     source_symbols: usize,
     symbol_size: usize,
+    padded_block_size: usize,
 }
 
 impl SymbolGeometry {
     /// Construct source-symbol geometry for one block size and symbol count.
     pub fn new(block_size: usize, symbols_per_block: u32) -> Result<Self, PlanError> {
-        if block_size == 0 {
-            return Err(PlanError::BlockSizeZero);
-        }
-        if symbols_per_block == 0 {
-            return Err(PlanError::SymbolsPerBlockZero);
-        }
+        let block_size = u32::try_from(block_size).map_err(|_| PlanError::BlockSizeTooLarge)?;
+        let wire =
+            WireFecGeometry::new(block_size, symbols_per_block).map_err(|err| match err {
+                WireFecGeometryError::ZeroBlockSize => PlanError::BlockSizeZero,
+                WireFecGeometryError::ZeroSourceSymbols => PlanError::SymbolsPerBlockZero,
+                WireFecGeometryError::SymbolPayloadTooLarge { .. }
+                | WireFecGeometryError::SymbolPayloadCeilingUnrepresentable => {
+                    PlanError::SymbolPayloadTooLarge
+                }
+                WireFecGeometryError::PaddedBlockSizeOverflow { .. } => {
+                    PlanError::PaddedBlockSizeTooLarge
+                }
+            })?;
+        Self::from_wire(wire)
+    }
 
-        let source_symbols =
-            usize::try_from(symbols_per_block).map_err(|_| PlanError::SymbolsPerBlockTooLarge)?;
-        let symbol_size = block_size.div_ceil(source_symbols);
+    /// Convert validated wire geometry into host-sized indexes.
+    pub fn from_wire(wire: WireFecGeometry) -> Result<Self, PlanError> {
+        let source_symbols = usize::try_from(wire.source_symbols())
+            .map_err(|_| PlanError::SymbolsPerBlockTooLarge)?;
+        let symbol_size =
+            usize::try_from(wire.symbol_size()).map_err(|_| PlanError::SymbolPayloadTooLarge)?;
+        let padded_block_size = usize::try_from(wire.padded_block_size())
+            .map_err(|_| PlanError::PaddedBlockSizeTooLarge)?;
 
         Ok(Self {
-            symbols_per_block,
+            symbols_per_block: wire.source_symbols(),
             source_symbols,
             symbol_size,
+            padded_block_size,
         })
     }
 
@@ -169,6 +200,11 @@ impl SymbolGeometry {
     /// Return the fixed on-the-wire symbol size in bytes.
     pub const fn symbol_size(&self) -> usize {
         self.symbol_size
+    }
+
+    /// Return the checked host-sized padded block length (`K*T`).
+    pub const fn padded_block_size(&self) -> usize {
+        self.padded_block_size
     }
 }
 

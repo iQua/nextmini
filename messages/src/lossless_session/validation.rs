@@ -1,7 +1,8 @@
 use super::{
     LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionControl,
     LosslessSessionManifest, LosslessSessionMode, LosslessSessionValidationError,
-    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, NeedReport,
+    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, NeedReport, WireFecGeometry,
+    WireFecGeometryError,
 };
 
 impl NeedReport {
@@ -117,9 +118,32 @@ impl LosslessSessionManifest {
                     scheme: fec.scheme,
                 });
             }
-            if fec.symbols_per_block == 0 {
-                return Err(LosslessSessionValidationError::ZeroSymbolsPerBlock);
-            }
+            WireFecGeometry::new(self.block_size, fec.symbols_per_block).map_err(
+                |err| match err {
+                    WireFecGeometryError::ZeroBlockSize => {
+                        LosslessSessionValidationError::ZeroBlockSize
+                    }
+                    WireFecGeometryError::ZeroSourceSymbols => {
+                        LosslessSessionValidationError::ZeroSymbolsPerBlock
+                    }
+                    WireFecGeometryError::SymbolPayloadTooLarge { symbol_size, max } => {
+                        LosslessSessionValidationError::FecSymbolPayloadTooLarge {
+                            symbol_size,
+                            max,
+                        }
+                    }
+                    WireFecGeometryError::PaddedBlockSizeOverflow {
+                        source_symbols,
+                        symbol_size,
+                    } => LosslessSessionValidationError::FecPaddedBlockSizeOverflow {
+                        source_symbols,
+                        symbol_size,
+                    },
+                    WireFecGeometryError::SymbolPayloadCeilingUnrepresentable => {
+                        LosslessSessionValidationError::FecSymbolPayloadCeilingUnrepresentable
+                    }
+                },
+            )?;
             if !fec.coded_rate_is_valid() {
                 return Err(LosslessSessionValidationError::InvalidFecCodedRate {
                     numerator: fec.coded_rate_num,
@@ -369,6 +393,24 @@ mod tests {
             Err(LosslessSessionValidationError::InvalidFecCodedRate {
                 numerator: 19,
                 denominator: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn manifest_validation_rejects_audit_geometry_before_codec_construction() {
+        let manifest = LosslessSessionManifest {
+            block_size: 2_097_152,
+            total_bytes: 2_097_152,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(32, vec![1])),
+        };
+
+        assert_eq!(
+            manifest.validate(),
+            Err(LosslessSessionValidationError::FecSymbolPayloadTooLarge {
+                symbol_size: 65_536,
+                max: 65_443,
             })
         );
     }

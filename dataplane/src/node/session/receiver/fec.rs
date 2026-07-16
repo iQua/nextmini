@@ -375,7 +375,10 @@ impl FecReceiver {
             session_fec::block_seed(shared.session_id, block_id),
             scheme,
         );
-        let decoder = Decoder::from_block(params);
+        let Ok(decoder) = Decoder::from_block(params) else {
+            self.stats.record_decode(DecodeStatus::InvalidSymbol);
+            return false;
+        };
         let mut received = Vec::with_capacity(block_state.symbols.len());
 
         for (&symbol_id, payload) in &block_state.symbols {

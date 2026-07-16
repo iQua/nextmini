@@ -1,6 +1,7 @@
 use super::{
-    LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION, LosslessSessionBlockData,
-    LosslessSessionBlockSymbol, LosslessSessionHeader, LosslessSessionKind,
+    LOSSLESS_BLOCK_SYMBOL_METADATA_LEN, LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION,
+    LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionHeader,
+    LosslessSessionKind,
 };
 
 /// Encode a `BlockData` frame into a fresh `Vec<u8>`.
@@ -23,7 +24,6 @@ pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<
     out
 }
 
-const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
 #[cfg(test)]
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
@@ -49,7 +49,7 @@ fn encode_block_symbol_into<'a>(
     tree_id: u16,
     payload: &[u8],
 ) -> &'a [u8] {
-    let body_len = BLOCK_SYMBOL_FIXED_BODY_LEN + payload.len();
+    let body_len = LOSSLESS_BLOCK_SYMBOL_METADATA_LEN + payload.len();
     let frame_len = LosslessSessionHeader::LEN + body_len;
     buf.resize(frame_len, 0);
     LosslessSessionHeader {
@@ -82,7 +82,8 @@ fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
     if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.body_len < BLOCK_SYMBOL_FIXED_BODY_LEN as u32 || buf.len() < off + hdr.body_len as usize
+    if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32
+        || buf.len() < off + hdr.body_len as usize
     {
         return None;
     }
@@ -125,7 +126,7 @@ pub fn decode_block_symbol(
     if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.body_len < BLOCK_SYMBOL_FIXED_BODY_LEN as u32 {
+    if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32 {
         return None;
     }
     let payload_end = off + hdr.body_len as usize;

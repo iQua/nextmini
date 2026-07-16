@@ -7,6 +7,7 @@ use nextmini_messages::lossless_session::{
 };
 
 use crate::node::config::{LosslessConfig, LosslessFecScheme};
+use crate::node::session::fec::{self, FecError};
 
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,6 +19,7 @@ pub enum PreflightError {
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
     InvalidMettleCodedRate { numerator: u32, denominator: u32 },
+    InvalidFecGeometry { reason: FecError },
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -38,6 +40,7 @@ pub(super) fn validate_block_size(block_size: usize) -> Result<u32, PreflightErr
 /// Derive the sender's transfer mode from the local runtime configuration.
 pub(super) fn derive_sender_policy(
     runtime_config: &LosslessConfig,
+    block_size: u32,
 ) -> Result<SenderPolicy, PreflightError> {
     if !runtime_config.fec_enabled {
         return Ok(SenderPolicy {
@@ -52,10 +55,10 @@ pub(super) fn derive_sender_policy(
 
     let tree_ids = derive_sender_tree_ids(runtime_config)?;
 
-    let mode = match runtime_config.fec_default_scheme {
-        LosslessFecScheme::RaptorQ => LosslessSessionMode::Fec(
-            LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids),
-        ),
+    let fec_mode = match runtime_config.fec_default_scheme {
+        LosslessFecScheme::RaptorQ => {
+            LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids)
+        }
         LosslessFecScheme::Mettle => {
             let numerator = runtime_config.mettle_default_coded_rate_num;
             let denominator = runtime_config.mettle_default_coded_rate_den;
@@ -65,16 +68,20 @@ pub(super) fn derive_sender_policy(
                     denominator,
                 });
             }
-            LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
+            LosslessSessionFecMode::new_mettle_with_coded_rate(
                 symbols_per_block,
                 tree_ids,
                 numerator,
                 denominator,
-            ))
+            )
         }
     };
+    fec::validate_fec_geometry(block_size, &fec_mode)
+        .map_err(|reason| PreflightError::InvalidFecGeometry { reason })?;
 
-    Ok(SenderPolicy { mode })
+    Ok(SenderPolicy {
+        mode: LosslessSessionMode::Fec(fec_mode),
+    })
 }
 
 /// Resolve and validate the tree set used for FEC symbol striping.
@@ -136,6 +143,9 @@ impl Display for PreflightError {
                 f,
                 "mettle_default_coded_rate_num/den must describe a rate >= 1 with non-zero denominator (got {numerator}/{denominator})"
             ),
+            Self::InvalidFecGeometry { reason } => {
+                write!(f, "invalid FEC geometry: {reason}")
+            }
         }
     }
 }

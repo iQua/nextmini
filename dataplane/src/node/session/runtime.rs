@@ -442,14 +442,14 @@ impl LosslessRuntime {
         self.completed_receivers.remove(&sid);
 
         let cloudcast = self.derive_cloudcast_config()?;
+        let block_size = fec_policy::validate_block_size(session.block_size)?;
         let policy = if cloudcast.is_some() {
             fec_policy::SenderPolicy {
                 mode: lossless_session::LosslessSessionMode::Plain,
             }
         } else {
-            fec_policy::derive_sender_policy(&self.config)?
+            fec_policy::derive_sender_policy(&self.config, block_size)?
         };
-        let block_size = fec_policy::validate_block_size(session.block_size)?;
         let plan = BlockPlan::new(req.total_bytes, session.block_size).map_err(|_| {
             PreflightError::InvalidBlockSize {
                 value: session.block_size,

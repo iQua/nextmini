@@ -1,8 +1,8 @@
 use nextmini_messages::lossless_session::{
-    LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION, LosslessSessionHeader, LosslessSessionKind,
+    LOSSLESS_BLOCK_SYMBOL_METADATA_LEN, LOSSLESS_SESSION_MAGIC, LOSSLESS_SESSION_VERSION,
+    LosslessSessionHeader, LosslessSessionKind,
 };
 
-const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
 pub(super) fn encode_into(
@@ -13,7 +13,7 @@ pub(super) fn encode_into(
     tree_id: u16,
     payload: &[u8],
 ) {
-    let body_len = BLOCK_SYMBOL_FIXED_BODY_LEN + payload.len();
+    let body_len = LOSSLESS_BLOCK_SYMBOL_METADATA_LEN + payload.len();
     let frame_len = LosslessSessionHeader::LEN + body_len;
     buf.resize(frame_len, 0);
     LosslessSessionHeader {
@@ -43,7 +43,8 @@ pub(super) fn patch_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
     if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.body_len < BLOCK_SYMBOL_FIXED_BODY_LEN as u32 || buf.len() < off + hdr.body_len as usize
+    if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32
+        || buf.len() < off + hdr.body_len as usize
     {
         return None;
     }

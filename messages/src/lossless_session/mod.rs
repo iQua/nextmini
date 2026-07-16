@@ -6,6 +6,7 @@
 
 mod block_frames;
 mod control_frames;
+mod fec_geometry;
 mod header;
 #[cfg(test)]
 mod test_support;
@@ -16,5 +17,6 @@ pub use block_frames::{
     decode_block_data, decode_block_symbol, encode_block_data, encode_block_symbol,
 };
 pub use control_frames::{decode_control, encode_control};
+pub use fec_geometry::*;
 pub use header::{LosslessSessionHeader, LosslessSessionRawHeader, peek_header};
 pub use types::*;

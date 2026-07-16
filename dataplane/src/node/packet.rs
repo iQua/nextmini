@@ -6,13 +6,18 @@ use byteorder::{BigEndian, ByteOrder};
 use bytes::{Bytes, BytesMut};
 use once_cell::sync::Lazy;
 
+use nextmini_messages::lossless_session::{
+    LOSSLESS_IPV4_HEADER_LEN, LOSSLESS_TCP_BASE_HEADER_LEN, LOSSLESS_TCP_META_OPTION_LEN,
+    MAX_IPV4_PACKET_LEN,
+};
+
 use crate::node::flow;
 use crate::node::{FlowId, RECEIVE_BUF_SIZE};
 
 static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(Vec::new()));
 
 /// Maximum serialized IPv4 packet size supported by the packet envelope.
-pub(crate) const MAX_FRAMED_PACKET_SIZE: usize = u16::MAX as usize;
+pub(crate) const MAX_FRAMED_PACKET_SIZE: usize = MAX_IPV4_PACKET_LEN;
 
 /// A reusable packet buffer backed by a global pool.
 #[derive(Debug)]
@@ -153,10 +158,10 @@ pub struct LosslessTransportMeta {
 }
 
 impl Packet {
-    const IP_HLEN: usize = 20;
-    const TCP_BASE_HLEN: usize = 20;
+    const IP_HLEN: usize = LOSSLESS_IPV4_HEADER_LEN;
+    const TCP_BASE_HLEN: usize = LOSSLESS_TCP_BASE_HEADER_LEN;
     const LOSSLESS_META_OPTION_KIND: u8 = 30;
-    const LOSSLESS_META_OPTION_LEN: usize = 16;
+    const LOSSLESS_META_OPTION_LEN: usize = LOSSLESS_TCP_META_OPTION_LEN;
 
     pub fn new(packet_size: usize, mut buffer: PacketBuf) -> Self {
         if buffer.len() > packet_size {

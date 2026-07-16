@@ -334,11 +334,11 @@ impl FecSender {
         let scheme = fec
             .scheme_kind()
             .ok_or("unsupported fec scheme for fec sender")?;
-        let geometry = plan
-            .symbol_geometry(fec.symbols_per_block)
+        let validated_geometry = session_fec::validate_fec_geometry(manifest.block_size, fec)
+            .map_err(|_| "invalid codec geometry for fec sender")?;
+        let geometry = SymbolGeometry::from_wire(validated_geometry.wire())
             .map_err(|_| "invalid symbol geometry for fec sender")?;
-        let source_symbols = usize::try_from(fec.symbols_per_block)
-            .map_err(|_| "symbols_per_block does not fit this host")?;
+        let source_symbols = geometry.source_symbols();
         let mettle_overhead = session_fec::mettle_overhead_from_fec_mode(fec)
             .ok_or("invalid METTLE coded rate in fec sender manifest")?;
         let initial_symbol_count = session_fec::initial_symbol_count(
@@ -346,20 +346,9 @@ impl FecSender {
             mettle_overhead,
         )
         .ok_or("invalid initial fec symbol count")?;
-        let mettle_stream_symbol_limit = if scheme == FecScheme::Mettle {
-            mettle::block::BlockParams::with_overhead(
-                source_symbols,
-                geometry.symbol_size(),
-                0,
-                mettle_overhead,
-            )
-            .metadata()
-            .ok()
-            .and_then(|metadata| u32::try_from(metadata.symbol_count()).ok())
-            .ok_or("invalid METTLE finite stream symbol count")?
-        } else {
-            0
-        };
+        let mettle_stream_symbol_limit = validated_geometry
+            .mettle_stream_symbol_limit()
+            .unwrap_or_default();
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
         let tree_schedule = unweighted_tree_schedule(&fec.tree_ids);
@@ -757,7 +746,7 @@ impl FecSender {
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {
-                block.encoder = Encoder::from_block(params, source_block.as_ref());
+                block.encoder = Encoder::from_block(params, source_block.as_ref()).ok();
             }
         }
 

@@ -389,6 +389,9 @@ impl SessionReceiver {
             return;
         }
 
+        if manifest.validate().is_err() {
+            return;
+        }
         if manifest.mode.is_fec() && !self.shared.cfg.fec_enabled {
             warn!(
                 session_id = self.shared.session_id,
@@ -417,7 +420,17 @@ impl SessionReceiver {
                 }
             }
             LosslessSessionMode::Fec(fec) => {
-                let Some(geometry) = plan.symbol_geometry(fec.symbols_per_block).ok() else {
+                let Ok(validated_geometry) =
+                    crate::node::session::fec::validate_fec_geometry(manifest.block_size, fec)
+                else {
+                    warn!(
+                        session_id = self.shared.session_id,
+                        "Lossless receiver rejected manifest with invalid codec geometry"
+                    );
+                    return;
+                };
+                let Some(geometry) = SymbolGeometry::from_wire(validated_geometry.wire()).ok()
+                else {
                     return;
                 };
                 ReceiverMode::Fec(FecReceiver::new(geometry))

@@ -150,7 +150,7 @@ impl BlockSource {
     /// Materialize one padded block image sized for fixed-width source symbols.
     fn padded_symbol_bytes(&self, span: BlockSpan, geometry: SymbolGeometry) -> Bytes {
         let block = self.block_payload(span);
-        let total_symbol_bytes = geometry.source_symbols() * geometry.symbol_size();
+        let total_symbol_bytes = geometry.padded_block_size();
         let mut padded = vec![0u8; total_symbol_bytes];
         let copy_len = block.len().min(total_symbol_bytes);
         padded[..copy_len].copy_from_slice(&block[..copy_len]);

@@ -3,7 +3,10 @@
 //! The lossless session subsystem can use this module without taking a direct
 //! dependency on frame layout or transport metadata.
 
-use nextmini_messages::lossless_session::{FecScheme, LosslessSessionFecMode};
+use nextmini_messages::lossless_session::{
+    FecScheme, LosslessSessionFecMode, MAX_FEC_SYMBOL_PAYLOAD, WireFecGeometry,
+    WireFecGeometryError,
+};
 use raptorq::{
     EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBlockDecoder,
     SourceBlockEncoder,
@@ -11,6 +14,200 @@ use raptorq::{
 
 const FEC_BLOCK_SEED_SESSION_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+
+/// RFC 6330 maximum source symbols in one source block.
+pub(crate) const RAPTORQ_MAX_SOURCE_SYMBOLS: u32 = 56_403;
+
+/// Checked FEC construction and adapter failures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FecError {
+    WireGeometry(WireFecGeometryError),
+    UnknownScheme {
+        scheme: u8,
+    },
+    UnsupportedAdapterScheme {
+        scheme: FecScheme,
+    },
+    RaptorQSourceSymbolsOutOfRange {
+        source_symbols: u32,
+        max: u32,
+    },
+    RaptorQSymbolSizeOutOfRange {
+        symbol_size: u32,
+    },
+    SourceSymbolsDoNotFitHost {
+        source_symbols: u32,
+    },
+    SymbolSizeDoesNotFitHost {
+        symbol_size: u32,
+    },
+    PaddedBlockSizeDoesNotFitHost {
+        padded_block_size: u64,
+    },
+    InvalidMettleCodedRate {
+        numerator: u32,
+        denominator: u32,
+    },
+    InvalidMettleGeometry,
+    MettleStreamTooLong {
+        symbol_count: u128,
+        max: u32,
+    },
+    PaddedBlockSizeOverflow {
+        source_symbols: usize,
+        symbol_size: usize,
+    },
+    SourceBlockLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+}
+
+impl std::fmt::Display for FecError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WireGeometry(err) => std::fmt::Display::fmt(err, f),
+            Self::UnknownScheme { scheme } => write!(f, "unknown FEC scheme {scheme}"),
+            Self::UnsupportedAdapterScheme { scheme } => {
+                write!(f, "{scheme:?} does not use the RaptorQ block adapter")
+            }
+            Self::RaptorQSourceSymbolsOutOfRange {
+                source_symbols,
+                max,
+            } => write!(
+                f,
+                "RaptorQ source-symbol count {source_symbols} is outside 1..={max}"
+            ),
+            Self::RaptorQSymbolSizeOutOfRange { symbol_size } => write!(
+                f,
+                "RaptorQ symbol size {symbol_size} does not fit its 16-bit OTI field"
+            ),
+            Self::SourceSymbolsDoNotFitHost { source_symbols } => write!(
+                f,
+                "source-symbol count {source_symbols} does not fit this host"
+            ),
+            Self::SymbolSizeDoesNotFitHost { symbol_size } => {
+                write!(f, "symbol size {symbol_size} does not fit this host")
+            }
+            Self::PaddedBlockSizeDoesNotFitHost { padded_block_size } => write!(
+                f,
+                "padded block size {padded_block_size} does not fit this host"
+            ),
+            Self::InvalidMettleCodedRate {
+                numerator,
+                denominator,
+            } => write!(f, "invalid METTLE coded rate {numerator}/{denominator}"),
+            Self::InvalidMettleGeometry => write!(f, "invalid terminated METTLE geometry"),
+            Self::MettleStreamTooLong { symbol_count, max } => write!(
+                f,
+                "terminated METTLE symbol count {symbol_count} exceeds wire limit {max}"
+            ),
+            Self::PaddedBlockSizeOverflow {
+                source_symbols,
+                symbol_size,
+            } => write!(
+                f,
+                "padded block size overflows for K={source_symbols}, T={symbol_size}"
+            ),
+            Self::SourceBlockLengthMismatch { expected, actual } => write!(
+                f,
+                "source block length {actual} does not match checked padded length {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for FecError {}
+
+impl From<WireFecGeometryError> for FecError {
+    fn from(value: WireFecGeometryError) -> Self {
+        Self::WireGeometry(value)
+    }
+}
+
+/// Codec-validated geometry derived from a syntactically valid manifest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ValidatedFecGeometry {
+    wire: WireFecGeometry,
+    mettle_stream_symbol_limit: Option<u32>,
+}
+
+impl ValidatedFecGeometry {
+    pub(crate) const fn wire(self) -> WireFecGeometry {
+        self.wire
+    }
+
+    pub(crate) const fn mettle_stream_symbol_limit(self) -> Option<u32> {
+        self.mettle_stream_symbol_limit
+    }
+}
+
+/// Apply codec-specific constraints after dependency-free wire validation.
+pub(crate) fn validate_fec_geometry(
+    block_size: u32,
+    fec_mode: &LosslessSessionFecMode,
+) -> Result<ValidatedFecGeometry, FecError> {
+    let wire = WireFecGeometry::new(block_size, fec_mode.symbols_per_block)?;
+    let scheme = fec_mode.scheme_kind().ok_or(FecError::UnknownScheme {
+        scheme: fec_mode.scheme,
+    })?;
+
+    let mettle_stream_symbol_limit = match scheme {
+        FecScheme::RaptorQ => {
+            if wire.source_symbols() > RAPTORQ_MAX_SOURCE_SYMBOLS {
+                return Err(FecError::RaptorQSourceSymbolsOutOfRange {
+                    source_symbols: wire.source_symbols(),
+                    max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+                });
+            }
+            u16::try_from(wire.symbol_size()).map_err(|_| {
+                FecError::RaptorQSymbolSizeOutOfRange {
+                    symbol_size: wire.symbol_size(),
+                }
+            })?;
+            None
+        }
+        FecScheme::Mettle => {
+            let overhead = mettle_overhead_from_fec_mode(fec_mode).ok_or(
+                FecError::InvalidMettleCodedRate {
+                    numerator: fec_mode.coded_rate_num,
+                    denominator: fec_mode.coded_rate_den,
+                },
+            )?;
+            let source_symbols = usize::try_from(wire.source_symbols()).map_err(|_| {
+                FecError::SourceSymbolsDoNotFitHost {
+                    source_symbols: wire.source_symbols(),
+                }
+            })?;
+            let symbol_size = usize::try_from(wire.symbol_size()).map_err(|_| {
+                FecError::SymbolSizeDoesNotFitHost {
+                    symbol_size: wire.symbol_size(),
+                }
+            })?;
+            usize::try_from(wire.padded_block_size()).map_err(|_| {
+                FecError::PaddedBlockSizeDoesNotFitHost {
+                    padded_block_size: wire.padded_block_size(),
+                }
+            })?;
+            let metadata =
+                mettle::block::BlockParams::with_overhead(source_symbols, symbol_size, 0, overhead)
+                    .metadata()
+                    .map_err(|_| FecError::InvalidMettleGeometry)?;
+            let symbol_count = u32::try_from(metadata.symbol_count()).map_err(|_| {
+                FecError::MettleStreamTooLong {
+                    symbol_count: u128::try_from(metadata.symbol_count()).unwrap_or(u128::MAX),
+                    max: u32::MAX,
+                }
+            })?;
+            Some(symbol_count)
+        }
+    };
+
+    Ok(ValidatedFecGeometry {
+        wire,
+        mettle_stream_symbol_limit,
+    })
+}
 
 /// Convert the configured METTLE coded-rate knob into the overhead ratio `c`.
 ///
@@ -76,14 +273,54 @@ impl BlockParams {
     }
 
     /// Build the RFC 6330 Object Transmission Information for this block.
-    fn oti(&self) -> ObjectTransmissionInformation {
-        ObjectTransmissionInformation::new(
-            (self.source_symbols * self.symbol_size) as u64,
-            self.symbol_size as u16,
+    fn oti(&self) -> Result<ObjectTransmissionInformation, FecError> {
+        if self.scheme != FecScheme::RaptorQ {
+            return Err(FecError::UnsupportedAdapterScheme {
+                scheme: self.scheme,
+            });
+        }
+        let source_symbols = u32::try_from(self.source_symbols).map_err(|_| {
+            FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols: u32::MAX,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            }
+        })?;
+        if source_symbols == 0 || source_symbols > RAPTORQ_MAX_SOURCE_SYMBOLS {
+            return Err(FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            });
+        }
+        let symbol_size =
+            u32::try_from(self.symbol_size).map_err(|_| FecError::RaptorQSymbolSizeOutOfRange {
+                symbol_size: u32::MAX,
+            })?;
+        let symbol_size_usize = usize::try_from(symbol_size)
+            .map_err(|_| FecError::SymbolSizeDoesNotFitHost { symbol_size })?;
+        if symbol_size == 0 || symbol_size_usize > MAX_FEC_SYMBOL_PAYLOAD {
+            return Err(FecError::RaptorQSymbolSizeOutOfRange { symbol_size });
+        }
+        let symbol_size = u16::try_from(symbol_size)
+            .map_err(|_| FecError::RaptorQSymbolSizeOutOfRange { symbol_size })?;
+        let transfer_length = u64::try_from(self.source_symbols)
+            .ok()
+            .and_then(|source_symbols| {
+                u64::try_from(self.symbol_size)
+                    .ok()
+                    .and_then(|symbol_size| source_symbols.checked_mul(symbol_size))
+            })
+            .ok_or(FecError::PaddedBlockSizeOverflow {
+                source_symbols: self.source_symbols,
+                symbol_size: self.symbol_size,
+            })?;
+
+        Ok(ObjectTransmissionInformation::new(
+            transfer_length,
+            symbol_size,
             1, // source_blocks
             1, // sub_blocks
             1, // alignment — use 1 to avoid sub-symbol interleaving
-        )
+        ))
     }
 }
 
@@ -132,21 +369,32 @@ enum EncoderInner {
 
 impl Encoder {
     /// Constructs an encoder from one padded block image.
-    #[must_use]
-    pub fn from_block(params: BlockParams, source_block: &[u8]) -> Option<Self> {
-        if params.source_symbols == 0 {
-            return None;
-        }
-        if source_block.len() != params.source_symbols * params.symbol_size {
-            return None;
+    pub fn from_block(params: BlockParams, source_block: &[u8]) -> Result<Self, FecError> {
+        let oti = params.oti()?;
+        let expected = params
+            .source_symbols
+            .checked_mul(params.symbol_size)
+            .ok_or(FecError::PaddedBlockSizeOverflow {
+                source_symbols: params.source_symbols,
+                symbol_size: params.symbol_size,
+            })?;
+        if source_block.len() != expected {
+            return Err(FecError::SourceBlockLengthMismatch {
+                expected,
+                actual: source_block.len(),
+            });
         }
         let inner = match params.scheme {
             FecScheme::RaptorQ => {
-                EncoderInner::RaptorQ(SourceBlockEncoder::new(0, &params.oti(), source_block))
+                EncoderInner::RaptorQ(SourceBlockEncoder::new(0, &oti, source_block))
             }
-            FecScheme::Mettle => return None,
+            FecScheme::Mettle => {
+                return Err(FecError::UnsupportedAdapterScheme {
+                    scheme: params.scheme,
+                });
+            }
         };
-        Some(Self {
+        Ok(Self {
             inner,
             k: params.source_symbols,
         })
@@ -184,17 +432,32 @@ pub struct Decoder {
     k: usize,
     symbol_size: usize,
     params: BlockParams,
+    oti: ObjectTransmissionInformation,
+    block_length: u64,
 }
 
 impl Decoder {
     /// Construct a decoder from shared block parameters.
-    #[must_use]
-    pub fn from_block(params: BlockParams) -> Self {
-        Self {
+    pub fn from_block(params: BlockParams) -> Result<Self, FecError> {
+        let oti = params.oti()?;
+        let block_length = u64::try_from(params.source_symbols)
+            .ok()
+            .and_then(|source_symbols| {
+                u64::try_from(params.symbol_size)
+                    .ok()
+                    .and_then(|symbol_size| source_symbols.checked_mul(symbol_size))
+            })
+            .ok_or(FecError::PaddedBlockSizeOverflow {
+                source_symbols: params.source_symbols,
+                symbol_size: params.symbol_size,
+            })?;
+        Ok(Self {
             k: params.source_symbols,
             symbol_size: params.symbol_size,
             params,
-        }
+            oti,
+            block_length,
+        })
     }
 
     /// Builds a source symbol in decoder input format.
@@ -235,9 +498,7 @@ impl Decoder {
     }
 
     fn decode_raptorq(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
-        let oti = self.params.oti();
-        let block_length = (self.params.source_symbols * self.params.symbol_size) as u64;
-        let mut decoder = SourceBlockDecoder::new(0, &oti, block_length);
+        let mut decoder = SourceBlockDecoder::new(0, &self.oti, self.block_length);
         let packets: Vec<EncodingPacket> = symbols
             .iter()
             .map(|sym| match sym.kind {
@@ -354,6 +615,31 @@ mod tests {
     }
 
     #[test]
+    fn raptorq_oti_rejects_oversized_symbol_without_truncation() {
+        let params = BlockParams::new(32, 65_536, 0);
+
+        assert_eq!(
+            params.oti(),
+            Err(FecError::RaptorQSymbolSizeOutOfRange {
+                symbol_size: 65_536,
+            })
+        );
+    }
+
+    #[test]
+    fn codec_geometry_rejects_raptorq_k_above_rfc_limit() {
+        let fec_mode = LosslessSessionFecMode::new_raptorq(56_404, vec![0]);
+
+        assert_eq!(
+            validate_fec_geometry(56_404, &fec_mode),
+            Err(FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols: 56_404,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            })
+        );
+    }
+
+    #[test]
     fn encode_decode_roundtrip() {
         let k = 32usize;
         let symbol_size = 64;
@@ -366,7 +652,7 @@ mod tests {
             .collect();
 
         let params = BlockParams::new(k, symbol_size, 0);
-        let decoder = Decoder::from_block(params);
+        let decoder = Decoder::from_block(params).expect("valid RaptorQ decoder geometry");
 
         let symbols: Vec<ReceivedSymbol> = source_data
             .iter()
@@ -402,7 +688,7 @@ mod tests {
             .flat_map(|symbol| symbol.iter().copied())
             .collect();
         let encoder = Encoder::from_block(params, &flat).unwrap();
-        let decoder = Decoder::from_block(params);
+        let decoder = Decoder::from_block(params).expect("valid RaptorQ decoder geometry");
 
         let half_k = k / 2;
 
@@ -445,7 +731,7 @@ mod tests {
             .flat_map(|symbol| symbol.iter().copied())
             .collect();
         let encoder = Encoder::from_block(params, &flat).unwrap();
-        let decoder = Decoder::from_block(params);
+        let decoder = Decoder::from_block(params).expect("valid RaptorQ decoder geometry");
 
         let half_k = k / 2;
 
