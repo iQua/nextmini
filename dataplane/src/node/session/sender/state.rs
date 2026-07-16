@@ -60,6 +60,73 @@ pub(super) struct PeerBlockCompletion {
     extra_completed: Vec<CompletedBlockRange>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CarouselLivenessViolation {
+    Silent,
+    Stalled,
+}
+
+/// P7's independent liveness clocks for one frozen carousel peer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CarouselPeerLiveness {
+    last_ack_seen: Instant,
+    last_ack_progress: Instant,
+    next_probe_at: Instant,
+}
+
+impl CarouselPeerLiveness {
+    pub(super) fn new(now: Instant, probe_interval: Duration) -> Self {
+        Self {
+            last_ack_seen: now,
+            last_ack_progress: now,
+            next_probe_at: now + probe_interval,
+        }
+    }
+
+    /// Observe any valid cumulative acknowledgement. Only a strict join grows
+    /// the progress clock; duplicates and heartbeats update the silence clock.
+    pub(super) fn note_ack(&mut self, now: Instant, made_progress: bool, probe_interval: Duration) {
+        self.last_ack_seen = now;
+        if made_progress {
+            self.last_ack_progress = now;
+        }
+        self.next_probe_at = now + probe_interval;
+    }
+
+    pub(super) fn violation(
+        &self,
+        now: Instant,
+        silence_timeout: Duration,
+        stall_timeout: Duration,
+    ) -> Option<CarouselLivenessViolation> {
+        if now >= self.last_ack_seen + silence_timeout {
+            return Some(CarouselLivenessViolation::Silent);
+        }
+        if now >= self.last_ack_progress + stall_timeout {
+            return Some(CarouselLivenessViolation::Stalled);
+        }
+        None
+    }
+
+    pub(super) fn next_event_at(
+        &self,
+        silence_timeout: Duration,
+        stall_timeout: Duration,
+    ) -> Instant {
+        self.next_probe_at
+            .min(self.last_ack_seen + silence_timeout)
+            .min(self.last_ack_progress + stall_timeout)
+    }
+
+    pub(super) fn probe_due(&self, now: Instant) -> bool {
+        now >= self.next_probe_at
+    }
+
+    pub(super) fn note_probe(&mut self, now: Instant, probe_interval: Duration) {
+        self.next_probe_at = now + probe_interval;
+    }
+}
+
 impl PeerBlockCompletion {
     /// Join a validated cumulative acknowledgement into the stored set.
     ///
@@ -329,5 +396,73 @@ mod tests {
             extra_completed: Vec::new(),
         }));
         assert!(completion.object_complete(0));
+    }
+
+    #[test]
+    fn carousel_liveness_distinguishes_silence_from_stall() {
+        let start = Instant::now();
+        let probe = Duration::from_millis(10);
+        let silence = Duration::from_millis(30);
+        let stall = Duration::from_millis(100);
+        let mut peer = CarouselPeerLiveness::new(start, probe);
+
+        peer.note_ack(start + Duration::from_millis(25), false, probe);
+        peer.note_ack(start + Duration::from_millis(50), false, probe);
+        peer.note_ack(start + Duration::from_millis(75), false, probe);
+        assert_eq!(
+            peer.violation(start + Duration::from_millis(99), silence, stall),
+            None
+        );
+        assert_eq!(
+            peer.violation(start + Duration::from_millis(100), silence, stall),
+            Some(CarouselLivenessViolation::Stalled),
+            "unchanged heartbeats keep a peer alive but do not fake progress"
+        );
+
+        let silent = CarouselPeerLiveness::new(start, probe);
+        assert_eq!(
+            silent.violation(start + silence, silence, stall),
+            Some(CarouselLivenessViolation::Silent)
+        );
+    }
+
+    #[test]
+    fn carousel_progress_extends_only_the_progressing_peers_clock() {
+        let start = Instant::now();
+        let probe = Duration::from_millis(10);
+        let silence = Duration::from_millis(40);
+        let stall = Duration::from_millis(100);
+        let mut fast = CarouselPeerLiveness::new(start, probe);
+        let mut slow = CarouselPeerLiveness::new(start, probe);
+
+        for millis in [30, 60, 90, 120, 150] {
+            let now = start + Duration::from_millis(millis);
+            fast.note_ack(now, true, probe);
+            slow.note_ack(now, millis == 90, probe);
+        }
+
+        let check_at = start + Duration::from_millis(180);
+        slow.note_ack(check_at, false, probe);
+        assert_eq!(fast.violation(check_at, silence, stall), None);
+        assert_eq!(slow.violation(check_at, silence, stall), None);
+        assert_eq!(
+            slow.violation(start + Duration::from_millis(190), silence, stall),
+            Some(CarouselLivenessViolation::Stalled)
+        );
+    }
+
+    #[test]
+    fn healthy_long_transfer_refreshes_both_liveness_clocks() {
+        let start = Instant::now();
+        let probe = Duration::from_millis(10);
+        let silence = Duration::from_millis(30);
+        let stall = Duration::from_millis(80);
+        let mut peer = CarouselPeerLiveness::new(start, probe);
+
+        for millis in (20..=400).step_by(20) {
+            let now = start + Duration::from_millis(millis);
+            peer.note_ack(now, millis % 60 == 0, probe);
+            assert_eq!(peer.violation(now, silence, stall), None);
+        }
     }
 }

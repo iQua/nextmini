@@ -661,6 +661,7 @@ mod tests {
     use tokio::time::Duration;
 
     use crate::node::config::LocalConfig;
+    use nextmini_messages::lossless_session::{FecFeedbackMode, LosslessSessionFecMode};
 
     #[test]
     #[ignore = "T1 red test scaffold; enable when round state machine lands"]
@@ -977,6 +978,79 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn carousel_sender_aborts_when_frozen_peer_is_silent() {
+        let processors = test_processors(1);
+        let cfg = carousel_sender_config(31, 0, Bytes::new());
+        let mut sender =
+            SessionSender::new_with_carousel(cfg, processors, short_carousel_liveness_config())
+                .expect("sender should build");
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel(16);
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(31, &LosslessSessionControl::Ready),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("Ready should enqueue");
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(250), sender.run(&mut ctrl_rx))
+                .await
+                .expect("silence timeout should terminate the sender"),
+            SessionOutcome::Aborted
+        );
+    }
+
+    #[tokio::test]
+    async fn carousel_sender_aborts_live_peer_without_ack_progress() {
+        let processors = test_processors(1);
+        let cfg = carousel_sender_config(32, 16, Bytes::from_static(b"abcdefghijklmnop"));
+        let mut sender =
+            SessionSender::new_with_carousel(cfg, processors, short_carousel_liveness_config())
+                .expect("sender should build");
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel(32);
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(32, &LosslessSessionControl::Ready),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("Ready should enqueue");
+        let heartbeat_tx = ctrl_tx.clone();
+        let heartbeat_task = tokio::spawn(async move {
+            for _ in 0..20 {
+                tokio::time::sleep(Duration::from_millis(8)).await;
+                if heartbeat_tx
+                    .send(InboundFrame {
+                        bytes: lossless_session::encode_control(
+                            32,
+                            &LosslessSessionControl::BlockAck {
+                                ack: BlockAck::Blocks {
+                                    completed_watermark: 0,
+                                    extra_completed: Vec::new(),
+                                },
+                            },
+                        ),
+                        peer_id: Some(22),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+
+        assert_eq!(
+            tokio::time::timeout(Duration::from_millis(250), sender.run(&mut ctrl_rx))
+                .await
+                .expect("stall timeout should terminate the sender"),
+            SessionOutcome::Aborted
+        );
+        heartbeat_task.abort();
+    }
+
     #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
         let source = BlockSource::new(Bytes::from_static(b"ab"), 2);
@@ -1041,6 +1115,62 @@ mod tests {
             pacer: None,
             payload_emitted: false,
             carousel: CarouselRuntimeConfig::default(),
+        }
+    }
+
+    fn test_processors(channel_capacity: usize) -> ProcessorHandle {
+        ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        })
+    }
+
+    fn carousel_sender_config(session_id: u64, total_bytes: u64, source: Bytes) -> SenderConfig {
+        SenderConfig {
+            session: SessionConfig {
+                session_id,
+                block_size: 16,
+            },
+            route: TransportRoute {
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                src_port: 1111,
+                dst_port: 2222,
+            },
+            pacing: None,
+            receiver_ids: vec![22],
+            source_buffer: source,
+            manifest: LosslessSessionManifest {
+                block_size: 16,
+                total_bytes,
+                total_blocks: u64::from(total_bytes > 0),
+                mode: LosslessSessionMode::Fec(
+                    LosslessSessionFecMode::new_raptorq(4, vec![7])
+                        .with_feedback_mode(FecFeedbackMode::Carousel),
+                ),
+            },
+            ready_grace_ms: 1,
+            peer_report_timeout_ms: 1500,
+            topology_ready: None,
+            cloudcast: None,
+        }
+    }
+
+    fn short_carousel_liveness_config() -> CarouselRuntimeConfig {
+        CarouselRuntimeConfig {
+            ack_debounce: Duration::from_millis(1),
+            ack_heartbeat: Duration::from_millis(8),
+            ack_probe_interval: Duration::from_millis(5),
+            peer_silence_timeout: Duration::from_millis(25),
+            peer_stall_timeout: Duration::from_millis(60),
+            receiver_passive_window: Duration::from_millis(70),
+            session_complete_repeats: 1,
+            session_complete_interval: Duration::from_millis(1),
         }
     }
 

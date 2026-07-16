@@ -18,7 +18,7 @@ use crate::node::session::fec::{BlockParams, Encoder, FecError, FecSymbolIdBound
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
-use super::state::PeerBlockCompletion;
+use super::state::{CarouselLivenessViolation, CarouselPeerLiveness, PeerBlockCompletion};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoundPhase {
@@ -51,6 +51,7 @@ struct CarouselSymbol {
 enum CarouselPaceOutcome {
     Ready,
     BlockComplete,
+    Timer,
     Closed,
 }
 
@@ -84,6 +85,7 @@ pub(super) struct FecSender {
     repair_window_symbols: u32,
     protocol_error: bool,
     carousel_peer_completion: BTreeMap<usize, PeerBlockCompletion>,
+    carousel_peer_liveness: BTreeMap<usize, CarouselPeerLiveness>,
     carousel_next_repair_block: usize,
     stats: FecSenderStats,
 }
@@ -419,6 +421,7 @@ impl FecSender {
             repair_window_symbols: 0,
             protocol_error: false,
             carousel_peer_completion: BTreeMap::new(),
+            carousel_peer_liveness: BTreeMap::new(),
             carousel_next_repair_block: 0,
             stats: FecSenderStats::new(&fec.tree_ids),
         })
@@ -538,8 +541,15 @@ impl FecSender {
 
         self.carousel_peer_completion
             .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
+        self.carousel_peer_liveness
+            .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
+        let liveness_started_at = tokio::time::Instant::now();
         for peer_id in shared.active_quorum.active_members() {
             self.carousel_peer_completion.entry(*peer_id).or_default();
+            self.carousel_peer_liveness.insert(
+                *peer_id,
+                CarouselPeerLiveness::new(liveness_started_at, shared.carousel.ack_probe_interval),
+            );
         }
 
         if shared.active_quorum_is_empty() {
@@ -553,6 +563,9 @@ impl FecSender {
             if self.carousel_quorum_complete(shared) {
                 self.send_session_complete(shared).await;
                 return SessionOutcome::Completed;
+            }
+            if !self.service_due_carousel_timers(shared, tokio::time::Instant::now()) {
+                return SessionOutcome::Aborted;
             }
 
             let symbol = match self.next_carousel_symbol(shared) {
@@ -592,6 +605,7 @@ impl FecSender {
             {
                 CarouselPaceOutcome::Ready => {}
                 CarouselPaceOutcome::BlockComplete => continue,
+                CarouselPaceOutcome::Timer => continue,
                 CarouselPaceOutcome::Closed => return SessionOutcome::Aborted,
             }
 
@@ -750,6 +764,99 @@ impl FecSender {
         })
     }
 
+    fn carousel_peer_is_complete(&self, shared: &super::SenderShared, peer_id: usize) -> bool {
+        self.carousel_peer_completion
+            .get(&peer_id)
+            .is_some_and(|completion| completion.object_complete(shared.manifest.total_blocks))
+    }
+
+    fn next_carousel_timer_at(&self, shared: &super::SenderShared) -> Option<tokio::time::Instant> {
+        shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| !self.carousel_peer_is_complete(shared, *peer_id))
+            .filter_map(|peer_id| self.carousel_peer_liveness.get(&peer_id))
+            .map(|liveness| {
+                liveness.next_event_at(
+                    shared.carousel.peer_silence_timeout,
+                    shared.carousel.peer_stall_timeout,
+                )
+            })
+            .min()
+    }
+
+    /// Service P7 deadlines for incomplete peers. Completed peers no longer
+    /// gate success and therefore do not create spurious timeout failures
+    /// while another receiver finishes decoding.
+    fn service_due_carousel_timers(
+        &mut self,
+        shared: &super::SenderShared,
+        now: tokio::time::Instant,
+    ) -> bool {
+        let incomplete_peers = shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| !self.carousel_peer_is_complete(shared, *peer_id))
+            .collect::<Vec<_>>();
+
+        for peer_id in incomplete_peers {
+            let Some(liveness) = self.carousel_peer_liveness.get_mut(&peer_id) else {
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id, "Lossless carousel sender is missing frozen-peer liveness state"
+                );
+                return false;
+            };
+            if let Some(violation) = liveness.violation(
+                now,
+                shared.carousel.peer_silence_timeout,
+                shared.carousel.peer_stall_timeout,
+            ) {
+                let reason = match violation {
+                    CarouselLivenessViolation::Silent => "peer_ack_silence_timeout",
+                    CarouselLivenessViolation::Stalled => "peer_ack_stall_timeout",
+                };
+                warn!(
+                    session_id = shared.session.session_id,
+                    peer_id,
+                    reason,
+                    "Lossless carousel sender aborted on frozen-peer liveness violation"
+                );
+                return false;
+            }
+            if !liveness.probe_due(now) {
+                continue;
+            }
+            liveness.note_probe(now, shared.carousel.ack_probe_interval);
+            debug!(
+                session_id = shared.session.session_id,
+                peer_id, "Lossless carousel sender emitted targeted AckProbe"
+            );
+            let Ok(target_peer_id) = u64::try_from(peer_id) else {
+                return false;
+            };
+            let _ = control::try_send_control(
+                &shared.processors,
+                control::FrameRoute {
+                    session_id: shared.session.session_id,
+                    tree_id: None,
+                    src_ip: shared.route.src_ip,
+                    src_port: shared.route.src_port,
+                    dst_ip: shared.route.dst_ip,
+                    dst_port: shared.route.dst_port,
+                },
+                &nextmini_messages::lossless_session::LosslessSessionControl::AckProbe {
+                    target_peer_id,
+                },
+            );
+        }
+        true
+    }
+
     fn drain_carousel_controls(
         &mut self,
         shared: &mut super::SenderShared,
@@ -778,6 +885,9 @@ impl FecSender {
         }
 
         loop {
+            let Some(timer_at) = self.next_carousel_timer_at(shared) else {
+                return CarouselPaceOutcome::BlockComplete;
+            };
             let pacer = shared
                 .pacer
                 .as_mut()
@@ -793,6 +903,9 @@ impl FecSender {
                         return CarouselPaceOutcome::BlockComplete;
                     }
                 }
+                _ = tokio::time::sleep_until(timer_at) => {
+                    return CarouselPaceOutcome::Timer;
+                }
                 _ = pacer.wait_for_bytes(bytes) => {
                     return CarouselPaceOutcome::Ready;
                 }
@@ -805,6 +918,9 @@ impl FecSender {
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> bool {
+        let Some(timer_at) = self.next_carousel_timer_at(shared) else {
+            return true;
+        };
         tokio::select! {
             biased;
             maybe_frame = ctrl_rx.recv() => {
@@ -813,6 +929,7 @@ impl FecSender {
                 };
                 shared.handle_control(frame, self);
             }
+            _ = tokio::time::sleep_until(timer_at) => {}
             _ = tokio::task::yield_now() => {}
         }
         true
@@ -823,53 +940,18 @@ impl FecSender {
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> bool {
-        let missing = shared
-            .active_quorum
-            .active_members()
-            .iter()
-            .copied()
-            .filter(|peer_id| {
-                !self
-                    .carousel_peer_completion
-                    .get(peer_id)
-                    .is_some_and(|completion| {
-                        completion.object_complete(shared.manifest.total_blocks)
-                    })
-            })
-            .collect::<Vec<_>>();
-        debug!(
-            session_id = shared.session.session_id,
-            ?missing,
-            "Lossless carousel sender emitted AckProbe for peers missing completion"
-        );
-        for peer_id in missing {
-            let Ok(target_peer_id) = u64::try_from(peer_id) else {
-                return false;
-            };
-            let _ = control::try_send_control(
-                &shared.processors,
-                control::FrameRoute {
-                    session_id: shared.session.session_id,
-                    tree_id: None,
-                    src_ip: shared.route.src_ip,
-                    src_port: shared.route.src_port,
-                    dst_ip: shared.route.dst_ip,
-                    dst_port: shared.route.dst_port,
-                },
-                &nextmini_messages::lossless_session::LosslessSessionControl::AckProbe {
-                    target_peer_id,
-                },
-            );
-        }
-
+        let Some(timer_at) = self.next_carousel_timer_at(shared) else {
+            return true;
+        };
         tokio::select! {
+            biased;
             maybe_frame = ctrl_rx.recv() => {
                 let Some(frame) = maybe_frame else {
                     return false;
                 };
                 shared.handle_control(frame, self);
             }
-            _ = tokio::time::sleep(shared.carousel.ack_probe_interval) => {}
+            _ = tokio::time::sleep_until(timer_at) => {}
         }
         true
     }
@@ -1325,6 +1407,13 @@ impl super::ModeHooks for FecSender {
             .entry(peer_id)
             .or_default()
             .join(&ack);
+        if let Some(liveness) = self.carousel_peer_liveness.get_mut(&peer_id) {
+            liveness.note_ack(
+                tokio::time::Instant::now(),
+                progress,
+                shared.carousel.ack_probe_interval,
+            );
+        }
         debug!(
             session_id = shared.session.session_id,
             peer_id, progress, "Lossless carousel sender joined cumulative BlockAck"

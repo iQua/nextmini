@@ -159,3 +159,40 @@ fn block_ack_frame(session_id: u64, peer_id: usize, ack: BlockAck) -> InboundFra
         peer_id: Some(peer_id),
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn carousel_empty_frozen_quorum_is_trivial_success() {
+    let harness = common::packet_capture(1, 2, 4122, 5232, 1, 128).await;
+    let session_id = 0xCA40_0003;
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 16),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: Vec::new(),
+        source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+        manifest: LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_raptorq(4, vec![7])
+                    .with_feedback_mode(FecFeedbackMode::Carousel),
+            ),
+        },
+        ready_grace_ms: 200,
+        peer_report_timeout_ms: 200,
+        topology_ready: None,
+        cloudcast: None,
+    };
+    let (_ctrl_tx, ctrl_rx) = mpsc::channel(1);
+
+    assert_eq!(
+        timeout(
+            Duration::from_secs(1),
+            sender::run(sender_cfg, ctrl_rx, harness.processors),
+        )
+        .await
+        .expect("empty-quorum sender should not wait"),
+        SessionOutcome::Completed
+    );
+}
