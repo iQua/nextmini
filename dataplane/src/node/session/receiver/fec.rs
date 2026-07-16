@@ -543,13 +543,13 @@ impl FecReceiver {
             let continues_run = expected_source_index == Some(source_index);
             let fits_batch =
                 run_payload.len().saturating_add(payload.len()) <= METTLE_DECODED_WRITE_BATCH_BYTES;
-            if !continues_run || !fits_batch {
-                if let Some(start) = run_start.take() {
-                    shared
-                        .write_symbol_run(block_id, self.geometry, start, &run_payload)
-                        .await?;
-                    run_payload.clear();
-                }
+            if (!continues_run || !fits_batch)
+                && let Some(start) = run_start.take()
+            {
+                shared
+                    .write_symbol_run(block_id, self.geometry, start, &run_payload)
+                    .await?;
+                run_payload.clear();
             }
 
             if run_start.is_none() {

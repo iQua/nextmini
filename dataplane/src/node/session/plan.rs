@@ -10,6 +10,7 @@ use nextmini_messages::lossless_session::{WireFecGeometry, WireFecGeometryError}
 pub enum PlanError {
     BlockSizeZero,
     BlockSizeTooLarge,
+    #[allow(dead_code)] // Public library geometry API; the binary embeds this module separately.
     SymbolsPerBlockZero,
     SymbolsPerBlockTooLarge,
     SymbolPayloadTooLarge,
@@ -123,6 +124,7 @@ impl BlockPlan {
     }
 
     /// Derive the source-symbol layout used when FEC mode is enabled.
+    #[allow(dead_code)] // Public library geometry API; production uses codec-validated wire geometry.
     pub fn symbol_geometry(&self, symbols_per_block: u32) -> Result<SymbolGeometry, PlanError> {
         SymbolGeometry::new(self.block_size, symbols_per_block)
     }
@@ -158,6 +160,7 @@ pub struct SymbolGeometry {
 
 impl SymbolGeometry {
     /// Construct source-symbol geometry for one block size and symbol count.
+    #[allow(dead_code)] // Public library geometry API; production uses `from_wire` after validation.
     pub fn new(block_size: usize, symbols_per_block: u32) -> Result<Self, PlanError> {
         let block_size = u32::try_from(block_size).map_err(|_| PlanError::BlockSizeTooLarge)?;
         let wire =

@@ -29,7 +29,7 @@ const RECEIVER_CONTROL_TIMEOUT: Duration = Duration::from_secs(30);
 const PAPER_SCALE_METTLE_K: usize = 2400;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
+async fn mettle_lossless_session_completes_full_terminated_zero_overhead_stream() {
     let mut sender_harness = common::packet_capture(
         SENDER_NODE_ID,
         RECEIVER_NODE_ID,
@@ -52,14 +52,16 @@ async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
     let session_id = 0x4D45_5454_1E01;
     let k = PAPER_SCALE_METTLE_K;
     let source_bytes = patterned_source_bytes(k);
-    // Lossless-session METTLE now uses c=0, so the initial finite stream has
-    // exactly K bins. This test verifies the runtime completes without repair
-    // when all initial bins arrive through the real sender/receiver path.
+    // Rounds-mode METTLE emits the full terminated codeword, including the
+    // encoder finish tail, before SourceDone. This test pins that contract and
+    // verifies completion without a retransmission pass.
     let symbols_per_block = u32::try_from(k).expect("paper-scale METTLE K fits u32");
-    let initial_symbol_count = MettleBlockParams::with_overhead(k, 1, 0, OverheadRatio::ZERO)
+    let terminated_symbol_count = MettleBlockParams::with_overhead(k, 1, 0, OverheadRatio::ZERO)
         .metadata()
         .expect("zero-overhead METTLE metadata")
-        .initial_symbol_count();
+        .symbol_count();
+    let terminated_symbol_end_exclusive =
+        u32::try_from(terminated_symbol_count).expect("paper-scale symbol count fits u32");
     let manifest = LosslessSessionManifest {
         block_size: k as u32,
         total_bytes: k as u64,
@@ -137,7 +139,7 @@ async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
         .await
         .expect("READY should enqueue at sender");
 
-    let mut delivered_initial_symbols = 0usize;
+    let mut delivered_terminated_symbols = 0usize;
     loop {
         let packet = common::recv_packet(&mut sender_harness.packet_rx).await;
         let payload = packet
@@ -148,8 +150,8 @@ async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
                 LosslessSessionControl::SourceDone { round_id } => {
                     assert_eq!(round_id, 0);
                     assert_eq!(
-                        delivered_initial_symbols, initial_symbol_count,
-                        "test must deliver the full zero-overhead METTLE initial stream"
+                        delivered_terminated_symbols, terminated_symbol_count,
+                        "SourceDone must follow the full terminated METTLE codeword"
                     );
                     receiver_tx
                         .send(inbound_from_packet(packet, SENDER_NODE_ID))
@@ -171,10 +173,10 @@ async fn mettle_lossless_session_completes_initial_zero_overhead_stream() {
         let symbol = decode_symbol(payload);
         assert_eq!(symbol.block_id, 0);
         assert!(
-            symbol.symbol_id < initial_symbol_count as u32,
-            "future coded symbol appeared before receiver Need: {symbol:?}"
+            symbol.symbol_id < terminated_symbol_end_exclusive,
+            "symbol id exceeded the terminated METTLE codeword: {symbol:?}"
         );
-        delivered_initial_symbols += 1;
+        delivered_terminated_symbols += 1;
         receiver_tx
             .send(inbound_from_packet(packet, SENDER_NODE_ID))
             .await

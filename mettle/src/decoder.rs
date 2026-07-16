@@ -914,8 +914,9 @@ mod tests {
             .expect("expected a future overlap bin");
         let mut decoder = MettleDecoder::new(params, NonZeroUsize::new(1).expect("non-zero"), 0);
         decoder.next_decoded_source_id = source_id;
+        let shared_zero_payload = Arc::new(vec![0u8]);
         decoder.decoded_prefix_equation_payloads =
-            VecDeque::from(vec![Arc::new(vec![0u8]); source_id as usize]);
+            VecDeque::from(vec![shared_zero_payload; source_id as usize]);
 
         assert!(
             decoder

@@ -823,12 +823,12 @@ fn measure_raptorq_decode_with_loss(
         let start = Instant::now();
         let decoded = decoder.decode(survivors);
         let elapsed = start.elapsed();
-        if let Some(decoded) = decoded {
-            if decoded.len() == k * config.symbol_size {
-                metrics.record_strict_success();
-                metrics.record_paper_success(received_packets, elapsed);
-                std::hint::black_box(decoded);
-            }
+        if let Some(decoded) = decoded
+            && decoded.len() == k * config.symbol_size
+        {
+            metrics.record_strict_success();
+            metrics.record_paper_success(received_packets, elapsed);
+            std::hint::black_box(decoded);
         }
     }
 
@@ -1057,8 +1057,7 @@ fn report_loss_decode_unsupported(
     config: LossDecodeConfig,
     reason: &str,
 ) {
-    let unsupported_tail = std::iter::repeat("unsupported")
-        .take(23)
+    let unsupported_tail = std::iter::repeat_n("unsupported", 23)
         .collect::<Vec<_>>()
         .join(",");
     eprintln!(

@@ -818,7 +818,7 @@ fn quantize_cloudcast_tree_weights(
 
     let mut stripes = Vec::with_capacity(stripe_count);
     for (idx, count, _) in allocations {
-        stripes.extend(std::iter::repeat(tree_ids[idx]).take(count));
+        stripes.extend(std::iter::repeat_n(tree_ids[idx], count));
     }
     stripes
 }

@@ -224,17 +224,14 @@ impl MetadataPeelingEstimator {
     }
 
     fn drain(&mut self) {
-        loop {
-            let Some(source_index) = self.repairs.iter().find_map(|touchers| {
-                let mut unknown_touchers = touchers
-                    .iter()
-                    .copied()
-                    .filter(|&source_index| !self.known_sources[source_index]);
-                let source_index = unknown_touchers.next()?;
-                unknown_touchers.next().is_none().then_some(source_index)
-            }) else {
-                break;
-            };
+        while let Some(source_index) = self.repairs.iter().find_map(|touchers| {
+            let mut unknown_touchers = touchers
+                .iter()
+                .copied()
+                .filter(|&source_index| !self.known_sources[source_index]);
+            let source_index = unknown_touchers.next()?;
+            unknown_touchers.next().is_none().then_some(source_index)
+        }) {
             self.known_sources[source_index] = true;
         }
     }
