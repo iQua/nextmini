@@ -120,52 +120,7 @@ pub(super) fn derive_sender_policy(
 pub(super) fn validate_carousel_timing(
     runtime_config: &LosslessConfig,
 ) -> Result<(), PreflightError> {
-    let nonzero = [
-        runtime_config.carousel_ack_debounce_ms,
-        runtime_config.carousel_ack_heartbeat_ms,
-        runtime_config.carousel_ack_probe_interval_ms,
-        runtime_config.carousel_peer_silence_timeout_ms,
-        runtime_config.carousel_peer_stall_timeout_ms,
-        runtime_config.carousel_receiver_passive_window_ms,
-        runtime_config.carousel_session_complete_interval_ms,
-    ];
-    if nonzero.contains(&0) || runtime_config.carousel_session_complete_repeats == 0 {
-        return Err(PreflightError::InvalidCarouselTiming {
-            reason: "all carousel intervals and repeat counts must be non-zero",
-        });
-    }
-    if runtime_config.carousel_ack_debounce_ms >= runtime_config.carousel_ack_heartbeat_ms {
-        return Err(PreflightError::InvalidCarouselTiming {
-            reason: "ack debounce must be shorter than the ack heartbeat",
-        });
-    }
-    if runtime_config.carousel_ack_heartbeat_ms >= runtime_config.carousel_peer_silence_timeout_ms
-        || runtime_config.carousel_ack_probe_interval_ms
-            >= runtime_config.carousel_peer_silence_timeout_ms
-    {
-        return Err(PreflightError::InvalidCarouselTiming {
-            reason: "ack heartbeat and probe intervals must be shorter than peer silence timeout",
-        });
-    }
-    if runtime_config.carousel_peer_silence_timeout_ms
-        >= runtime_config.carousel_peer_stall_timeout_ms
-    {
-        return Err(PreflightError::InvalidCarouselTiming {
-            reason: "peer stall timeout must be longer than peer silence timeout",
-        });
-    }
-    let required_passive_window = runtime_config
-        .carousel_peer_stall_timeout_ms
-        .checked_add(runtime_config.carousel_passive_margin_ms)
-        .ok_or(PreflightError::InvalidCarouselTiming {
-            reason: "carousel abort budget plus passive margin overflows milliseconds",
-        })?;
-    if runtime_config.carousel_receiver_passive_window_ms < required_passive_window {
-        return Err(PreflightError::InvalidCarouselTiming {
-            reason: "receiver passive window must cover sender abort budget plus margin",
-        });
-    }
-    Ok(())
+    super::runtime::CarouselRuntimeConfig::from_lossless(runtime_config).validate()
 }
 
 /// Resolve and validate the tree set used for FEC symbol striping.

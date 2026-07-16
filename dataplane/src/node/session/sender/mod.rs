@@ -1235,6 +1235,7 @@ mod tests {
             ack_probe_interval: Duration::from_millis(5),
             peer_silence_timeout: Duration::from_millis(25),
             peer_stall_timeout: Duration::from_millis(60),
+            passive_margin: Duration::from_millis(10),
             receiver_passive_window: Duration::from_millis(70),
             session_complete_repeats: 1,
             session_complete_interval: Duration::from_millis(1),

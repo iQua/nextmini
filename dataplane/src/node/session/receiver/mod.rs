@@ -671,6 +671,19 @@ impl SessionReceiver {
         {
             return Ok(());
         }
+        if matches!(
+            &manifest.mode,
+            LosslessSessionMode::Fec(fec)
+                if fec.feedback_mode == FecFeedbackMode::Carousel
+        ) && let Err(err) = self.shared.cfg.carousel.validate()
+        {
+            warn!(
+                session_id = self.shared.session_id,
+                %err,
+                "Lossless receiver rejected carousel manifest with invalid timing"
+            );
+            return Ok(());
+        }
 
         let Ok(block_size) = usize::try_from(manifest.block_size) else {
             return Ok(());

@@ -39,6 +39,7 @@ fn short_timing() -> CarouselRuntimeConfig {
         ack_probe_interval: Duration::from_millis(15),
         peer_silence_timeout: Duration::from_millis(250),
         peer_stall_timeout: Duration::from_millis(500),
+        passive_margin: Duration::from_millis(100),
         receiver_passive_window: Duration::from_millis(750),
         session_complete_repeats: 1,
         session_complete_interval: Duration::from_millis(1),

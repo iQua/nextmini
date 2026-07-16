@@ -60,20 +60,21 @@ pub struct CarouselRuntimeConfig {
     pub ack_probe_interval: Duration,
     pub peer_silence_timeout: Duration,
     pub peer_stall_timeout: Duration,
+    pub passive_margin: Duration,
     pub receiver_passive_window: Duration,
     pub session_complete_repeats: u8,
     pub session_complete_interval: Duration,
 }
 
 impl CarouselRuntimeConfig {
-    fn from_lossless(config: &LosslessConfig) -> Result<Self, PreflightError> {
-        fec_policy::validate_carousel_timing(config)?;
-        Ok(Self {
+    pub(super) fn from_lossless(config: &LosslessConfig) -> Self {
+        Self {
             ack_debounce: Duration::from_millis(config.carousel_ack_debounce_ms),
             ack_heartbeat: Duration::from_millis(config.carousel_ack_heartbeat_ms),
             ack_probe_interval: Duration::from_millis(config.carousel_ack_probe_interval_ms),
             peer_silence_timeout: Duration::from_millis(config.carousel_peer_silence_timeout_ms),
             peer_stall_timeout: Duration::from_millis(config.carousel_peer_stall_timeout_ms),
+            passive_margin: Duration::from_millis(config.carousel_passive_margin_ms),
             receiver_passive_window: Duration::from_millis(
                 config.carousel_receiver_passive_window_ms,
             ),
@@ -81,14 +82,63 @@ impl CarouselRuntimeConfig {
             session_complete_interval: Duration::from_millis(
                 config.carousel_session_complete_interval_ms,
             ),
-        })
+        }
+    }
+
+    pub(super) fn validate(self) -> Result<(), PreflightError> {
+        let nonzero = [
+            self.ack_debounce,
+            self.ack_heartbeat,
+            self.ack_probe_interval,
+            self.peer_silence_timeout,
+            self.peer_stall_timeout,
+            self.receiver_passive_window,
+            self.session_complete_interval,
+        ];
+        if nonzero.iter().any(Duration::is_zero) || self.session_complete_repeats == 0 {
+            return Err(PreflightError::InvalidCarouselTiming {
+                reason: "all carousel intervals and repeat counts must be non-zero",
+            });
+        }
+        if self.ack_debounce >= self.ack_heartbeat {
+            return Err(PreflightError::InvalidCarouselTiming {
+                reason: "ack debounce must be shorter than the ack heartbeat",
+            });
+        }
+        if self.ack_heartbeat >= self.peer_silence_timeout
+            || self.ack_probe_interval >= self.peer_silence_timeout
+        {
+            return Err(PreflightError::InvalidCarouselTiming {
+                reason: "ack heartbeat and probe intervals must be shorter than peer silence timeout",
+            });
+        }
+        if self.peer_silence_timeout >= self.peer_stall_timeout {
+            return Err(PreflightError::InvalidCarouselTiming {
+                reason: "peer stall timeout must be longer than peer silence timeout",
+            });
+        }
+        let required_passive_window = self
+            .peer_stall_timeout
+            .checked_add(self.passive_margin)
+            .ok_or(PreflightError::InvalidCarouselTiming {
+                reason: "carousel abort budget plus passive margin overflows",
+            })?;
+        if self.receiver_passive_window < required_passive_window {
+            return Err(PreflightError::InvalidCarouselTiming {
+                reason: "receiver passive window must cover sender abort budget plus margin",
+            });
+        }
+        Ok(())
     }
 }
 
 impl Default for CarouselRuntimeConfig {
     fn default() -> Self {
-        Self::from_lossless(&LosslessConfig::default())
-            .expect("default carousel timing configuration must be valid")
+        let config = Self::from_lossless(&LosslessConfig::default());
+        config
+            .validate()
+            .expect("default carousel timing configuration must be valid");
+        config
     }
 }
 
@@ -224,7 +274,7 @@ pub struct ReceiverConfig {
     pub fec_enabled: bool,
     /// Optional local Cloudcast tree-boundary mode.
     pub cloudcast: Option<CloudcastRuntimeConfig>,
-    /// Validated timing used when a carousel manifest is installed.
+    /// Timing validated if and when a carousel manifest is installed.
     pub carousel: CarouselRuntimeConfig,
 }
 
@@ -541,7 +591,7 @@ impl LosslessRuntime {
             mpsc::channel(self.config.session_control_inbox_capacity);
         let (state_sender, state_receiver) = watch::channel(SessionState::Running);
 
-        let carousel = CarouselRuntimeConfig::from_lossless(&self.config)?;
+        let carousel = CarouselRuntimeConfig::from_lossless(&self.config);
         let task = tokio::spawn(sender::run_with_carousel(
             cfg,
             control_inbox_receiver,
@@ -607,7 +657,7 @@ impl LosslessRuntime {
             peer_report_timeout_ms: self.config.peer_report_timeout_ms,
             fec_enabled: self.config.fec_enabled,
             cloudcast: self.derive_cloudcast_config()?,
-            carousel: CarouselRuntimeConfig::from_lossless(&self.config)?,
+            carousel: CarouselRuntimeConfig::from_lossless(&self.config),
         };
         let processors = self.processors.clone();
 
@@ -975,7 +1025,7 @@ mod tests {
     use tokio::sync::watch;
     use tokio::time::timeout;
 
-    use nextmini_messages::lossless_session::{self, BlockAck, NeedReport};
+    use nextmini_messages::lossless_session::{self, BlockAck, FecFeedbackMode, NeedReport};
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
@@ -985,6 +1035,64 @@ mod tests {
 
     const SOURCE_NODE_ID: usize = 61;
     const RECEIVER_NODE_ID: usize = 62;
+
+    #[tokio::test]
+    async fn non_carousel_session_start_ignores_invalid_carousel_timing() {
+        let (mut runtime, _packet_rx, route) = test_runtime().await;
+        runtime.config.carousel_ack_debounce_ms = 0;
+
+        runtime.config.fec_enabled = false;
+        let plain_session_id = 0xA11C_E410;
+        let plain = runtime.start_sender_session(SenderRequest {
+            session: SessionConfig {
+                session_id: plain_session_id,
+                block_size: 16,
+            },
+            route,
+            pacing: None,
+            receiver_ids: Vec::new(),
+            total_bytes: 0,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            peer_report_timeout_ms: 10,
+        });
+        assert!(plain.is_ok(), "plain startup must ignore carousel timing");
+        runtime.abort_session(plain_session_id);
+
+        runtime.config.fec_enabled = true;
+        runtime.config.fec_feedback_mode = FecFeedbackMode::Rounds;
+        let rounds_session_id = 0xA11C_E411;
+        let rounds = runtime.start_sender_session(SenderRequest {
+            session: SessionConfig {
+                session_id: rounds_session_id,
+                block_size: 16,
+            },
+            route,
+            pacing: None,
+            receiver_ids: Vec::new(),
+            total_bytes: 0,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            peer_report_timeout_ms: 10,
+        });
+        assert!(rounds.is_ok(), "rounds startup must ignore carousel timing");
+        runtime.abort_session(rounds_session_id);
+
+        let receiver_session_id = 0xA11C_E412;
+        let receiver = runtime.start_receiver_session(ReceiverRequest {
+            session_id: receiver_session_id,
+            route,
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: Some(Arc::new(Mutex::new(Vec::new()))),
+            sink_file: None,
+            progress: None,
+        });
+        assert!(
+            receiver.is_ok(),
+            "receiver startup must defer carousel timing validation until manifest install"
+        );
+        runtime.abort_session(receiver_session_id);
+    }
 
     #[tokio::test]
     async fn deliver_frame_falls_back_to_completed_plain_receiver_on_source_done() {
