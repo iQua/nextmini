@@ -802,14 +802,95 @@ mod tests {
     }
 
     #[test]
-    fn codec_geometry_rejects_raptorq_k_above_rfc_limit() {
-        let fec_mode = LosslessSessionFecMode::new_raptorq(56_404, vec![0]);
+    fn raptorq_geometry_accepts_boundary_k_and_rejects_outside_it() {
+        let one = LosslessSessionFecMode::new_raptorq(1, vec![0]);
+        let maximum = LosslessSessionFecMode::new_raptorq(RAPTORQ_MAX_SOURCE_SYMBOLS, vec![0]);
+        let zero = LosslessSessionFecMode::new_raptorq(0, vec![0]);
+        let above = LosslessSessionFecMode::new_raptorq(RAPTORQ_MAX_SOURCE_SYMBOLS + 1, vec![0]);
+
+        let one_geometry = validate_fec_geometry(
+            u32::try_from(MAX_FEC_SYMBOL_PAYLOAD).expect("payload ceiling fits wire field"),
+            &one,
+        )
+        .expect("K=1 and the largest valid symbol should be accepted");
+        assert_eq!(one_geometry.wire().source_symbols(), 1);
+        assert_eq!(
+            usize::try_from(one_geometry.wire().symbol_size()).expect("symbol size fits host"),
+            MAX_FEC_SYMBOL_PAYLOAD
+        );
+
+        let maximum_geometry = validate_fec_geometry(RAPTORQ_MAX_SOURCE_SYMBOLS, &maximum)
+            .expect("the RFC maximum K and one-byte symbols should be accepted");
+        assert_eq!(
+            maximum_geometry.wire().source_symbols(),
+            RAPTORQ_MAX_SOURCE_SYMBOLS
+        );
+        assert_eq!(maximum_geometry.wire().symbol_size(), 1);
 
         assert_eq!(
-            validate_fec_geometry(56_404, &fec_mode),
+            validate_fec_geometry(1, &zero),
+            Err(FecError::WireGeometry(
+                WireFecGeometryError::ZeroSourceSymbols
+            ))
+        );
+
+        assert_eq!(
+            validate_fec_geometry(RAPTORQ_MAX_SOURCE_SYMBOLS + 1, &above),
             Err(FecError::RaptorQSourceSymbolsOutOfRange {
-                source_symbols: 56_404,
+                source_symbols: RAPTORQ_MAX_SOURCE_SYMBOLS + 1,
                 max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            })
+        );
+    }
+
+    #[test]
+    fn raptorq_esi_boundary_reaches_codec_only_when_representable() {
+        let decoder = Decoder::from_block(BlockParams::new(1, 1, 0))
+            .expect("valid minimum RaptorQ decoder geometry");
+        let last_esi = RAPTORQ_SYMBOL_ID_END_EXCLUSIVE - 1;
+
+        let last_symbol = decoder
+            .coded_symbol(last_esi, vec![0])
+            .expect("the last 24-bit ESI should be accepted");
+        let _ = decoder.decode(&[last_symbol]);
+        assert_eq!(
+            decoder
+                .coded_symbol(RAPTORQ_SYMBOL_ID_END_EXCLUSIVE, vec![0])
+                .expect_err("the first unrepresentable ESI must be rejected"),
+            FecError::SymbolIdOutOfRange {
+                scheme: FecScheme::RaptorQ,
+                symbol_id: RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+                end_exclusive: RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+            }
+        );
+    }
+
+    #[test]
+    fn mettle_symbol_id_boundary_matches_terminated_stream() {
+        let fec_mode = LosslessSessionFecMode::new_mettle(4, vec![0]);
+        let validated =
+            validate_fec_geometry(16, &fec_mode).expect("valid terminated METTLE geometry");
+        let terminal_end_exclusive = validated
+            .mettle_stream_symbol_limit()
+            .expect("METTLE geometry has a finite terminal boundary");
+        let bounds = validated.symbol_id_bounds();
+
+        assert!(terminal_end_exclusive > 0);
+        assert_eq!(bounds.validate(terminal_end_exclusive - 1), Ok(()));
+        assert_eq!(
+            bounds.validate(terminal_end_exclusive),
+            Err(FecError::SymbolIdOutOfRange {
+                scheme: FecScheme::Mettle,
+                symbol_id: terminal_end_exclusive,
+                end_exclusive: terminal_end_exclusive,
+            })
+        );
+        assert_eq!(
+            bounds.validate(u32::MAX),
+            Err(FecError::SymbolIdOutOfRange {
+                scheme: FecScheme::Mettle,
+                symbol_id: u32::MAX,
+                end_exclusive: terminal_end_exclusive,
             })
         );
     }

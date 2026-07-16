@@ -248,6 +248,7 @@ mod tests {
         let symbols = plan.symbol_geometry(4).expect("valid symbol geometry");
 
         assert_eq!(symbols.symbol_size(), 3);
+        assert_eq!(symbols.padded_block_size(), 12);
         let populated = |block_len: usize| {
             block_len
                 .div_ceil(symbols.symbol_size())
@@ -291,5 +292,28 @@ mod tests {
             SymbolGeometry::new(16, 0),
             Err(PlanError::SymbolsPerBlockZero)
         );
+    }
+
+    #[test]
+    fn host_usize_conversion_boundaries_are_checked() {
+        let maximum_object = BlockPlan::new(u64::MAX, 1).expect("valid block plan");
+        let wire = nextmini_messages::lossless_session::WireFecGeometry::new(u32::MAX, 100_000)
+            .expect("valid large wire geometry");
+
+        if usize::BITS < u64::BITS {
+            assert!(maximum_object.total_bytes_usize().is_none());
+            assert_eq!(
+                SymbolGeometry::from_wire(wire),
+                Err(PlanError::PaddedBlockSizeTooLarge)
+            );
+        } else {
+            assert_eq!(maximum_object.total_bytes_usize(), Some(usize::MAX));
+            assert_eq!(
+                SymbolGeometry::from_wire(wire)
+                    .expect("64-bit host should hold padded geometry")
+                    .padded_block_size(),
+                4_295_000_000
+            );
+        }
     }
 }

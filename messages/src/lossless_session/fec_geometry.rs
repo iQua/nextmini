@@ -142,4 +142,39 @@ mod tests {
         assert_eq!(geometry.symbol_size(), 3);
         assert_eq!(geometry.padded_block_size(), 12);
     }
+
+    #[test]
+    fn symbol_payload_boundaries_accept_min_and_max_and_reject_max_plus_one() {
+        let maximum = u32::try_from(MAX_FEC_SYMBOL_PAYLOAD).expect("wire ceiling fits u32");
+
+        assert_eq!(
+            WireFecGeometry::new(1, 1)
+                .expect("one-byte symbol should be valid")
+                .symbol_size(),
+            1
+        );
+        assert_eq!(
+            WireFecGeometry::new(maximum, 1)
+                .expect("maximum symbol payload should be valid")
+                .symbol_size(),
+            maximum
+        );
+        assert_eq!(
+            WireFecGeometry::new(maximum + 1, 1),
+            Err(WireFecGeometryError::SymbolPayloadTooLarge {
+                symbol_size: maximum + 1,
+                max: maximum,
+            })
+        );
+    }
+
+    #[test]
+    fn padded_block_multiplication_does_not_truncate_to_wire_fields() {
+        let geometry = WireFecGeometry::new(u32::MAX, 100_000)
+            .expect("large checked wire geometry should be valid");
+
+        assert_eq!(geometry.symbol_size(), 42_950);
+        assert_eq!(geometry.padded_block_size(), 4_295_000_000);
+        assert!(geometry.padded_block_size() > u64::from(u32::MAX));
+    }
 }
