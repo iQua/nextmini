@@ -1,17 +1,20 @@
 use super::{
-    BLOCK_ACK_BLOCKS_VARIANT, BlockAck, CompletedBlockRange, FecFeedbackMode,
-    LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode, LosslessSessionHeader,
-    LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode, LosslessSessionModeKind,
-    MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
-    MissingBlockRange, NeedBlock, NeedReport,
+    BLOCK_ACK_BLOCKS_VARIANT, BLOCK_ACK_METTLE_STREAM_VARIANT, BlockAck, CompletedBlockRange,
+    FecFeedbackMode, LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode,
+    LosslessSessionHeader, LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode,
+    LosslessSessionModeKind, MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS,
+    MAX_METTLE_MISSING_BIN_RANGES, MAX_NEED_BLOCKS, MAX_NEED_RANGES, MettleObjectStreamGeometry,
+    MettleStallEvidence, MissingBlockRange, MissingMettleBinRange, NeedBlock, NeedReport,
 };
 
-const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4 + 4 + 4;
+const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4 + 4 + 4 + 4 + 4 + 8 + 4;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
 const BLOCK_ACK_FIXED_BODY_LEN: usize = 1 + 1 + 2 + 8;
 const BLOCK_ACK_RANGE_LEN: usize = 8 + 8;
+const METTLE_ACK_FIXED_BODY_LEN: usize = 1 + 1 + 2 + 8 + 4 + 4;
+const METTLE_ACK_RANGE_LEN: usize = 4 + 4;
 
 /// Stack-friendly scratch size for common control frames.
 ///
@@ -69,6 +72,13 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
             BlockAck::Blocks {
                 extra_completed, ..
             } => BLOCK_ACK_FIXED_BODY_LEN + (extra_completed.len() * BLOCK_ACK_RANGE_LEN),
+            BlockAck::MettleStream { stalled, .. } => {
+                METTLE_ACK_FIXED_BODY_LEN
+                    + stalled
+                        .as_ref()
+                        .map_or(0, |evidence| evidence.missing_bin_ranges.len())
+                        * METTLE_ACK_RANGE_LEN
+            }
         },
         LosslessSessionControl::AckProbe { .. } => 8,
         LosslessSessionControl::SessionComplete => 0,
@@ -111,15 +121,17 @@ fn encode_control_into<'a>(
                 coded_rate_num,
                 coded_rate_den,
                 feedback_mode,
+                mettle_object_stream,
                 tree_ids,
             ) = match &manifest.mode {
-                LosslessSessionMode::Plain => (0u8, 0u32, 0u32, 0u32, 0u8, &[][..]),
+                LosslessSessionMode::Plain => (0u8, 0u32, 0u32, 0u32, 0u8, None, &[][..]),
                 LosslessSessionMode::Fec(fec) => (
                     fec.scheme,
                     fec.symbols_per_block,
                     fec.coded_rate_num,
                     fec.coded_rate_den,
                     fec.feedback_mode.to_wire(),
+                    fec.mettle_object_stream,
                     fec.tree_ids.as_slice(),
                 ),
             };
@@ -140,6 +152,16 @@ fn encode_control_into<'a>(
             buf[body_start + 24..body_start + 28].copy_from_slice(&symbols_per_block.to_be_bytes());
             buf[body_start + 28..body_start + 32].copy_from_slice(&coded_rate_num.to_be_bytes());
             buf[body_start + 32..body_start + 36].copy_from_slice(&coded_rate_den.to_be_bytes());
+            let geometry =
+                mettle_object_stream.unwrap_or(MettleObjectStreamGeometry::new(0, 0, 0, 0));
+            buf[body_start + 36..body_start + 40]
+                .copy_from_slice(&geometry.source_symbol_bytes.to_be_bytes());
+            buf[body_start + 40..body_start + 44]
+                .copy_from_slice(&geometry.source_symbols_per_stream.to_be_bytes());
+            buf[body_start + 44..body_start + 52]
+                .copy_from_slice(&geometry.stream_count.to_be_bytes());
+            buf[body_start + 52..body_start + 56]
+                .copy_from_slice(&geometry.final_stream_source_symbols.to_be_bytes());
 
             let mut pos = body_start + MANIFEST_FIXED_BODY_LEN;
             for tree_id in tree_ids {
@@ -230,6 +252,36 @@ fn encode_control_into<'a>(
                         pos += BLOCK_ACK_RANGE_LEN;
                     }
                 }
+                BlockAck::MettleStream {
+                    stream_id,
+                    decoded_source_watermark,
+                    stalled,
+                } => {
+                    let missing_ranges = stalled
+                        .as_ref()
+                        .map_or(&[][..], |evidence| evidence.missing_bin_ranges.as_slice());
+                    assert!(
+                        missing_ranges.len() <= MAX_METTLE_MISSING_BIN_RANGES,
+                        "METTLE missing-bin ranges exceed wire capacity"
+                    );
+                    buf[body_start] = BLOCK_ACK_METTLE_STREAM_VARIANT;
+                    buf[body_start + 1] = u8::from(stalled.is_some());
+                    let count = u16::try_from(missing_ranges.len())
+                        .expect("validated METTLE range count fits u16");
+                    buf[body_start + 2..body_start + 4].copy_from_slice(&count.to_be_bytes());
+                    buf[body_start + 4..body_start + 12].copy_from_slice(&stream_id.to_be_bytes());
+                    buf[body_start + 12..body_start + 16]
+                        .copy_from_slice(&decoded_source_watermark.to_be_bytes());
+                    let repair_epoch = stalled.as_ref().map_or(0, |evidence| evidence.repair_epoch);
+                    buf[body_start + 16..body_start + 20]
+                        .copy_from_slice(&repair_epoch.to_be_bytes());
+                    let mut pos = body_start + METTLE_ACK_FIXED_BODY_LEN;
+                    for range in missing_ranges {
+                        buf[pos..pos + 4].copy_from_slice(&range.start_bin_id.to_be_bytes());
+                        buf[pos + 4..pos + 8].copy_from_slice(&range.end_bin_id.to_be_bytes());
+                        pos += METTLE_ACK_RANGE_LEN;
+                    }
+                }
             }
             LosslessSessionCtrlKind::BlockAck as u8
         }
@@ -288,6 +340,24 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let symbols_per_block = u32::from_be_bytes(body[24..28].try_into().ok()?);
             let coded_rate_num = u32::from_be_bytes(body[28..32].try_into().ok()?);
             let coded_rate_den = u32::from_be_bytes(body[32..36].try_into().ok()?);
+            let object_source_symbol_bytes = u32::from_be_bytes(body[36..40].try_into().ok()?);
+            let object_sources_per_stream = u32::from_be_bytes(body[40..44].try_into().ok()?);
+            let object_stream_count = u64::from_be_bytes(body[44..52].try_into().ok()?);
+            let object_final_stream_sources = u32::from_be_bytes(body[52..56].try_into().ok()?);
+            let mettle_object_stream = if object_source_symbol_bytes == 0
+                && object_sources_per_stream == 0
+                && object_stream_count == 0
+                && object_final_stream_sources == 0
+            {
+                None
+            } else {
+                Some(MettleObjectStreamGeometry::new(
+                    object_source_symbol_bytes,
+                    object_sources_per_stream,
+                    object_stream_count,
+                    object_final_stream_sources,
+                ))
+            };
 
             if body.len() != MANIFEST_FIXED_BODY_LEN + (tree_count * 2) {
                 return None;
@@ -307,6 +377,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                         || symbols_per_block != 0
                         || coded_rate_num != 0
                         || coded_rate_den != 0
+                        || mettle_object_stream.is_some()
                         || !tree_ids.is_empty()
                     {
                         return None;
@@ -319,6 +390,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                     coded_rate_num,
                     coded_rate_den,
                     feedback_mode: FecFeedbackMode::from_wire(feedback_mode)?,
+                    mettle_object_stream,
                     tree_ids,
                 }),
             };
@@ -409,34 +481,80 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             LosslessSessionControl::Need { round_id, report }
         }
         x if x == LosslessSessionCtrlKind::BlockAck as u8 => {
-            if body.len() < BLOCK_ACK_FIXED_BODY_LEN
-                || body[0] != BLOCK_ACK_BLOCKS_VARIANT
-                || body[1] != 0
-            {
+            if body.len() < BLOCK_ACK_FIXED_BODY_LEN {
                 return None;
             }
-            let range_count = usize::from(u16::from_be_bytes(body[2..4].try_into().ok()?));
-            if range_count > MAX_BLOCK_ACK_RANGES
-                || body.len() != BLOCK_ACK_FIXED_BODY_LEN + (range_count * BLOCK_ACK_RANGE_LEN)
-            {
-                return None;
-            }
-            let completed_watermark = u64::from_be_bytes(body[4..12].try_into().ok()?);
-            let mut extra_completed = Vec::with_capacity(range_count);
-            let mut pos = BLOCK_ACK_FIXED_BODY_LEN;
-            for _ in 0..range_count {
-                extra_completed.push(CompletedBlockRange {
-                    start_block_id: u64::from_be_bytes(body[pos..pos + 8].try_into().ok()?),
-                    end_block_id: u64::from_be_bytes(body[pos + 8..pos + 16].try_into().ok()?),
-                });
-                pos += BLOCK_ACK_RANGE_LEN;
-            }
-            let ack = BlockAck::Blocks {
-                completed_watermark,
-                extra_completed,
-            }
-            .canonicalized(u64::MAX)
-            .ok()?;
+            let ack = match body[0] {
+                BLOCK_ACK_BLOCKS_VARIANT => {
+                    if body[1] != 0 {
+                        return None;
+                    }
+                    let range_count = usize::from(u16::from_be_bytes(body[2..4].try_into().ok()?));
+                    if range_count > MAX_BLOCK_ACK_RANGES
+                        || body.len()
+                            != BLOCK_ACK_FIXED_BODY_LEN + (range_count * BLOCK_ACK_RANGE_LEN)
+                    {
+                        return None;
+                    }
+                    let completed_watermark = u64::from_be_bytes(body[4..12].try_into().ok()?);
+                    let mut extra_completed = Vec::with_capacity(range_count);
+                    let mut pos = BLOCK_ACK_FIXED_BODY_LEN;
+                    for _ in 0..range_count {
+                        extra_completed.push(CompletedBlockRange {
+                            start_block_id: u64::from_be_bytes(body[pos..pos + 8].try_into().ok()?),
+                            end_block_id: u64::from_be_bytes(
+                                body[pos + 8..pos + 16].try_into().ok()?,
+                            ),
+                        });
+                        pos += BLOCK_ACK_RANGE_LEN;
+                    }
+                    BlockAck::Blocks {
+                        completed_watermark,
+                        extra_completed,
+                    }
+                    .canonicalized(u64::MAX)
+                    .ok()?
+                }
+                BLOCK_ACK_METTLE_STREAM_VARIANT => {
+                    if body.len() < METTLE_ACK_FIXED_BODY_LEN || body[1] > 1 {
+                        return None;
+                    }
+                    let has_stall_evidence = body[1] == 1;
+                    let range_count = usize::from(u16::from_be_bytes(body[2..4].try_into().ok()?));
+                    if range_count > MAX_METTLE_MISSING_BIN_RANGES
+                        || body.len()
+                            != METTLE_ACK_FIXED_BODY_LEN + (range_count * METTLE_ACK_RANGE_LEN)
+                        || has_stall_evidence != (range_count > 0)
+                    {
+                        return None;
+                    }
+                    let stream_id = u64::from_be_bytes(body[4..12].try_into().ok()?);
+                    let decoded_source_watermark =
+                        u32::from_be_bytes(body[12..16].try_into().ok()?);
+                    let repair_epoch = u32::from_be_bytes(body[16..20].try_into().ok()?);
+                    if !has_stall_evidence && repair_epoch != 0 {
+                        return None;
+                    }
+                    let mut missing_bin_ranges = Vec::with_capacity(range_count);
+                    let mut pos = METTLE_ACK_FIXED_BODY_LEN;
+                    for _ in 0..range_count {
+                        missing_bin_ranges.push(MissingMettleBinRange {
+                            start_bin_id: u32::from_be_bytes(body[pos..pos + 4].try_into().ok()?),
+                            end_bin_id: u32::from_be_bytes(body[pos + 4..pos + 8].try_into().ok()?),
+                        });
+                        pos += METTLE_ACK_RANGE_LEN;
+                    }
+                    BlockAck::MettleStream {
+                        stream_id,
+                        decoded_source_watermark,
+                        stalled: has_stall_evidence.then_some(MettleStallEvidence {
+                            repair_epoch,
+                            missing_bin_ranges,
+                        }),
+                    }
+                }
+                _ => return None,
+            };
             LosslessSessionControl::BlockAck { ack }
         }
         x if x == LosslessSessionCtrlKind::AckProbe as u8 => {
@@ -466,9 +584,10 @@ mod tests {
         carousel_manifest, fec_manifest, fec_need, plain_manifest, plain_need,
     };
     use crate::lossless_session::{
-        BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED, BlockAck, CompletedBlockRange, FecScheme,
+        BLOCK_ACK_METTLE_STREAM_VARIANT, BlockAck, CompletedBlockRange, FecScheme,
         LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
-        LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport, encode_block_data,
+        LosslessSessionManifest, LosslessSessionMode, MettleStallEvidence, MissingMettleBinRange,
+        NeedBlock, NeedReport, encode_block_data,
     };
 
     #[test]
@@ -521,6 +640,32 @@ mod tests {
                         start_block_id: 4,
                         end_block_id: 6,
                     }],
+                },
+            },
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 3,
+                    decoded_source_watermark: 17,
+                    stalled: None,
+                },
+            },
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 4,
+                    decoded_source_watermark: 9,
+                    stalled: Some(MettleStallEvidence {
+                        repair_epoch: 7,
+                        missing_bin_ranges: vec![
+                            MissingMettleBinRange {
+                                start_bin_id: 2,
+                                end_bin_id: 4,
+                            },
+                            MissingMettleBinRange {
+                                start_bin_id: 9,
+                                end_bin_id: 10,
+                            },
+                        ],
+                    }),
                 },
             },
             LosslessSessionControl::AckProbe { target_peer_id: 22 },
@@ -647,6 +792,37 @@ mod tests {
     }
 
     #[test]
+    fn mettle_progress_ack_uses_reserved_variant_layout() {
+        let control = LosslessSessionControl::BlockAck {
+            ack: BlockAck::MettleStream {
+                stream_id: 0x0102_0304_0506_0708,
+                decoded_source_watermark: 37,
+                stalled: Some(MettleStallEvidence {
+                    repair_epoch: 11,
+                    missing_bin_ranges: vec![MissingMettleBinRange {
+                        start_bin_id: 19,
+                        end_bin_id: 23,
+                    }],
+                }),
+            },
+        };
+
+        let encoded = encode_control(77, &control);
+        let body = &encoded[LosslessSessionHeader::LEN..];
+        assert_eq!(body.len(), METTLE_ACK_FIXED_BODY_LEN + METTLE_ACK_RANGE_LEN);
+        assert_eq!(body[0], BLOCK_ACK_METTLE_STREAM_VARIANT);
+        assert_eq!(body[1], 1);
+        assert_eq!(&body[2..4], 1u16.to_be_bytes().as_slice());
+        assert_eq!(&body[4..12], 0x0102_0304_0506_0708u64.to_be_bytes());
+        assert_eq!(&body[12..16], 37u32.to_be_bytes());
+        assert_eq!(&body[16..20], 11u32.to_be_bytes());
+        assert_eq!(
+            decode_control(&encoded).map(|(_, value)| value),
+            Some(control)
+        );
+    }
+
+    #[test]
     fn block_ack_truncates_to_lowest_wire_ranges() {
         let ranges: Vec<_> = (0..MAX_BLOCK_ACK_RANGES + 40)
             .map(|index| CompletedBlockRange {
@@ -671,7 +847,10 @@ mod tests {
         let wire = oversized.for_wire(10_000).expect("truncate valid ranges");
         let BlockAck::Blocks {
             extra_completed, ..
-        } = &wire;
+        } = &wire
+        else {
+            panic!("expected block acknowledgement")
+        };
         assert_eq!(extra_completed.len(), MAX_BLOCK_ACK_RANGES);
         assert_eq!(extra_completed.as_slice(), &ranges[..MAX_BLOCK_ACK_RANGES]);
 
@@ -680,8 +859,8 @@ mod tests {
     }
 
     #[test]
-    fn block_ack_rejects_reserved_variant_and_malformed_shapes() {
-        assert_eq!(BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED, 2);
+    fn block_ack_rejects_malformed_variant_shapes() {
+        assert_eq!(BLOCK_ACK_METTLE_STREAM_VARIANT, 2);
         let good = encode_control(
             92,
             &LosslessSessionControl::BlockAck {
@@ -692,9 +871,9 @@ mod tests {
             },
         );
 
-        let mut reserved_variant = good.clone();
-        reserved_variant[LosslessSessionHeader::LEN] = BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED;
-        assert!(decode_control(&reserved_variant).is_none());
+        let mut wrong_variant_shape = good.clone();
+        wrong_variant_shape[LosslessSessionHeader::LEN] = BLOCK_ACK_METTLE_STREAM_VARIANT;
+        assert!(decode_control(&wrong_variant_shape).is_none());
 
         let mut reserved_byte = good.clone();
         reserved_byte[LosslessSessionHeader::LEN + 1] = 1;
@@ -756,6 +935,43 @@ mod tests {
         );
         let (_, decoded) = decode_control(&encoded).expect("decode carousel manifest");
         assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn mettle_object_stream_geometry_roundtrips_in_manifest() {
+        let geometry = MettleObjectStreamGeometry::new(128, 8, 2, 8);
+        let ctrl = LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size: 1024,
+                total_bytes: 2048,
+                total_blocks: 2,
+                mode: LosslessSessionMode::Fec(
+                    LosslessSessionFecMode::new_mettle(8, vec![2, 4])
+                        .with_feedback_mode(FecFeedbackMode::Carousel)
+                        .with_mettle_object_stream(geometry),
+                ),
+            },
+        };
+
+        let encoded = encode_control(88, &ctrl);
+        let body_start = LosslessSessionHeader::LEN;
+        assert_eq!(
+            &encoded[body_start + 36..body_start + 40],
+            128u32.to_be_bytes()
+        );
+        assert_eq!(
+            &encoded[body_start + 40..body_start + 44],
+            8u32.to_be_bytes()
+        );
+        assert_eq!(
+            &encoded[body_start + 44..body_start + 52],
+            2u64.to_be_bytes()
+        );
+        assert_eq!(
+            &encoded[body_start + 52..body_start + 56],
+            8u32.to_be_bytes()
+        );
+        assert_eq!(decode_control(&encoded).map(|(_, value)| value), Some(ctrl));
     }
 
     #[test]

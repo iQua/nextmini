@@ -8,39 +8,21 @@ use nextmini_messages::lossless_session::{
 
 use crate::node::config::{LosslessConfig, LosslessFecScheme};
 use crate::node::session::fec::{self, FecError};
+use crate::node::session::plan::{ObjectSymbolPlan, PlanError};
 
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightError {
-    InvalidBlockSize {
-        value: usize,
-    },
-    BlockSizeTooLarge {
-        value: usize,
-    },
+    InvalidBlockSize { value: usize },
+    BlockSizeTooLarge { value: usize },
     ZeroSymbolsPerBlock,
     MissingTreeIds,
-    TreeIdsMustBeSortedUnique {
-        tree_ids: Vec<u16>,
-    },
-    TooManyTreeIds {
-        configured: usize,
-        max: usize,
-    },
-    InvalidMettleCodedRate {
-        numerator: u32,
-        denominator: u32,
-    },
-    UnsupportedFeedbackModeForScheme {
-        feedback_mode: FecFeedbackMode,
-        scheme: LosslessFecScheme,
-    },
-    InvalidCarouselTiming {
-        reason: &'static str,
-    },
-    InvalidFecGeometry {
-        reason: FecError,
-    },
+    TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
+    TooManyTreeIds { configured: usize, max: usize },
+    InvalidMettleCodedRate { numerator: u32, denominator: u32 },
+    InvalidMettleObjectStreamGeometry { reason: PlanError },
+    InvalidCarouselTiming { reason: &'static str },
+    InvalidFecGeometry { reason: FecError },
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -62,6 +44,7 @@ pub(super) fn validate_block_size(block_size: usize) -> Result<u32, PreflightErr
 pub(super) fn derive_sender_policy(
     runtime_config: &LosslessConfig,
     block_size: u32,
+    total_bytes: u64,
 ) -> Result<SenderPolicy, PreflightError> {
     if !runtime_config.fec_enabled {
         return Ok(SenderPolicy {
@@ -80,18 +63,12 @@ pub(super) fn derive_sender_policy(
     if feedback_mode == FecFeedbackMode::Carousel {
         validate_carousel_timing(runtime_config)?;
     }
-    let fec_mode = match runtime_config.fec_default_scheme {
+    let mut fec_mode = match runtime_config.fec_default_scheme {
         LosslessFecScheme::RaptorQ => {
             LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids)
                 .with_feedback_mode(feedback_mode)
         }
         LosslessFecScheme::Mettle => {
-            if feedback_mode == FecFeedbackMode::Carousel {
-                return Err(PreflightError::UnsupportedFeedbackModeForScheme {
-                    feedback_mode,
-                    scheme: LosslessFecScheme::Mettle,
-                });
-            }
             let numerator = runtime_config.mettle_default_coded_rate_num;
             let denominator = runtime_config.mettle_default_coded_rate_den;
             if denominator == 0 || numerator < denominator {
@@ -109,8 +86,16 @@ pub(super) fn derive_sender_policy(
             .with_feedback_mode(feedback_mode)
         }
     };
-    fec::validate_fec_geometry(block_size, &fec_mode)
+    let validated_geometry = fec::validate_fec_geometry(block_size, &fec_mode)
         .map_err(|reason| PreflightError::InvalidFecGeometry { reason })?;
+    if runtime_config.fec_default_scheme == LosslessFecScheme::Mettle
+        && feedback_mode == FecFeedbackMode::Carousel
+    {
+        let object_plan =
+            ObjectSymbolPlan::derive(total_bytes, validated_geometry.wire().symbol_size())
+                .map_err(|reason| PreflightError::InvalidMettleObjectStreamGeometry { reason })?;
+        fec_mode = fec_mode.with_mettle_object_stream(object_plan.geometry());
+    }
 
     Ok(SenderPolicy {
         mode: LosslessSessionMode::Fec(fec_mode),
@@ -182,13 +167,9 @@ impl Display for PreflightError {
                 f,
                 "mettle_default_coded_rate_num/den must describe a rate >= 1 with non-zero denominator (got {numerator}/{denominator})"
             ),
-            Self::UnsupportedFeedbackModeForScheme {
-                feedback_mode,
-                scheme,
-            } => write!(
-                f,
-                "feedback mode {feedback_mode:?} is not implemented for FEC scheme {scheme:?}"
-            ),
+            Self::InvalidMettleObjectStreamGeometry { reason } => {
+                write!(f, "invalid METTLE object-stream geometry: {reason}")
+            }
             Self::InvalidCarouselTiming { reason } => {
                 write!(f, "invalid carousel timing configuration: {reason}")
             }
@@ -212,11 +193,13 @@ mod tests {
 
     #[test]
     fn sender_policy_defaults_to_rounds_feedback() {
-        let policy = derive_sender_policy(&fec_config(), 1024).expect("valid default FEC policy");
+        let policy =
+            derive_sender_policy(&fec_config(), 1024, 2048).expect("valid default FEC policy");
         let LosslessSessionMode::Fec(mode) = policy.mode else {
             panic!("expected FEC policy");
         };
         assert_eq!(mode.feedback_mode, FecFeedbackMode::Rounds);
+        assert!(mode.mettle_object_stream.is_none());
     }
 
     #[test]
@@ -224,26 +207,40 @@ mod tests {
         let mut config = fec_config();
         config.fec_feedback_mode = FecFeedbackMode::Carousel;
 
-        let policy = derive_sender_policy(&config, 1024).expect("valid carousel FEC policy");
+        let policy = derive_sender_policy(&config, 1024, 2048).expect("valid carousel FEC policy");
         let LosslessSessionMode::Fec(mode) = policy.mode else {
             panic!("expected FEC policy");
         };
         assert_eq!(mode.feedback_mode, FecFeedbackMode::Carousel);
+        assert!(mode.mettle_object_stream.is_none());
     }
 
     #[test]
-    fn sender_policy_rejects_mettle_carousel_until_stage_two() {
+    fn sender_policy_negotiates_mettle_carousel_object_stream() {
         let mut config = fec_config();
         config.fec_default_scheme = LosslessFecScheme::Mettle;
         config.fec_feedback_mode = FecFeedbackMode::Carousel;
 
-        assert_eq!(
-            derive_sender_policy(&config, 1024),
-            Err(PreflightError::UnsupportedFeedbackModeForScheme {
-                feedback_mode: FecFeedbackMode::Carousel,
-                scheme: LosslessFecScheme::Mettle,
-            })
-        );
+        let policy = derive_sender_policy(&config, 1024, 2048)
+            .expect("Stage 2 negotiates METTLE carousel geometry");
+        let LosslessSessionMode::Fec(mode) = policy.mode else {
+            panic!("expected FEC policy");
+        };
+        assert_eq!(mode.feedback_mode, FecFeedbackMode::Carousel);
+        let geometry = mode
+            .mettle_object_stream
+            .expect("METTLE carousel carries object-stream geometry");
+        assert_eq!(geometry.source_symbol_bytes, 32);
+        assert_eq!(geometry.stream_count, 1);
+        assert_eq!(geometry.final_stream_source_symbols, 64);
+        nextmini_messages::lossless_session::LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2048,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Fec(mode),
+        }
+        .validate()
+        .expect("derived METTLE carousel manifest validates");
     }
 
     #[test]
@@ -254,7 +251,7 @@ mod tests {
             config.carousel_peer_stall_timeout_ms + config.carousel_passive_margin_ms - 1;
 
         assert!(matches!(
-            derive_sender_policy(&config, 1024),
+            derive_sender_policy(&config, 1024, 2048),
             Err(PreflightError::InvalidCarouselTiming { .. })
         ));
     }

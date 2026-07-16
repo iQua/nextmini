@@ -3,7 +3,10 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
-use nextmini_messages::lossless_session::{WireFecGeometry, WireFecGeometryError};
+use nextmini_messages::lossless_session::{
+    METTLE_STREAM_PAYLOAD_CAP_BYTES, METTLE_STREAM_SOURCE_CAP,
+    MettleObjectStreamGeometry as ObjectStreamGeometry, WireFecGeometry, WireFecGeometryError,
+};
 
 /// Construction or derivation failures for shared block geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -74,59 +77,6 @@ impl Display for PlanError {
 }
 
 impl Error for PlanError {}
-
-/// Maximum number of source symbols in one negotiated METTLE prefix.
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
-pub(crate) const METTLE_STREAM_SOURCE_CAP: u32 = 65_536;
-/// Maximum source-payload image represented by one negotiated METTLE prefix.
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
-pub(crate) const METTLE_STREAM_PAYLOAD_CAP_BYTES: u64 = 96 * 1024 * 1024;
-
-/// Manifest-negotiated geometry for paper-native object-stream METTLE.
-///
-/// The sender derives this geometry once. Receivers validate the exact values
-/// instead of making a local prefix-size decision after the READY handshake.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
-pub(crate) struct ObjectStreamGeometry {
-    source_symbol_bytes: u32,
-    source_symbols_per_stream: u32,
-    stream_count: u64,
-    final_stream_source_symbols: u32,
-}
-
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
-impl ObjectStreamGeometry {
-    pub(crate) const fn new(
-        source_symbol_bytes: u32,
-        source_symbols_per_stream: u32,
-        stream_count: u64,
-        final_stream_source_symbols: u32,
-    ) -> Self {
-        Self {
-            source_symbol_bytes,
-            source_symbols_per_stream,
-            stream_count,
-            final_stream_source_symbols,
-        }
-    }
-
-    pub(crate) const fn source_symbol_bytes(self) -> u32 {
-        self.source_symbol_bytes
-    }
-
-    pub(crate) const fn source_symbols_per_stream(self) -> u32 {
-        self.source_symbols_per_stream
-    }
-
-    pub(crate) const fn stream_count(self) -> u64 {
-        self.stream_count
-    }
-
-    pub(crate) const fn final_stream_source_symbols(self) -> u32 {
-        self.final_stream_source_symbols
-    }
-}
 
 /// Absolute object span represented by one source symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

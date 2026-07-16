@@ -1,9 +1,121 @@
 use super::{
-    BlockAck, FecFeedbackMode, LosslessSessionBlockData, LosslessSessionBlockSymbol,
+    BlockAck, FecFeedbackMode, FecScheme, LosslessSessionBlockData, LosslessSessionBlockSymbol,
     LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
-    LosslessSessionValidationError, MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS,
-    MAX_NEED_RANGES, NeedReport, WireFecGeometry, WireFecGeometryError,
+    LosslessSessionValidationError, MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS,
+    MAX_METTLE_MISSING_BIN_RANGES, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
+    METTLE_STREAM_PAYLOAD_CAP_BYTES, METTLE_STREAM_SOURCE_CAP, MettleObjectStreamGeometry,
+    MettleStallEvidence, NeedReport, WireFecGeometry, WireFecGeometryError,
 };
+
+impl MettleObjectStreamGeometry {
+    pub fn validate(
+        self,
+        total_bytes: u64,
+        expected_symbol_bytes: u32,
+    ) -> Result<(), LosslessSessionValidationError> {
+        if self.source_symbol_bytes != expected_symbol_bytes {
+            return Err(
+                LosslessSessionValidationError::MettleObjectSymbolSizeMismatch {
+                    expected: expected_symbol_bytes,
+                    actual: self.source_symbol_bytes,
+                },
+            );
+        }
+        if self.source_symbols_per_stream == 0
+            || self.source_symbols_per_stream > METTLE_STREAM_SOURCE_CAP
+        {
+            return Err(
+                LosslessSessionValidationError::MettleStreamSourceLimitOutOfRange {
+                    configured: self.source_symbols_per_stream,
+                    max: METTLE_STREAM_SOURCE_CAP,
+                },
+            );
+        }
+        let stream_payload_bytes = u64::from(self.source_symbol_bytes)
+            .checked_mul(u64::from(self.source_symbols_per_stream))
+            .ok_or(LosslessSessionValidationError::MettleStreamGeometryOverflow)?;
+        if stream_payload_bytes > METTLE_STREAM_PAYLOAD_CAP_BYTES {
+            return Err(
+                LosslessSessionValidationError::MettleStreamPayloadTooLarge {
+                    configured: stream_payload_bytes,
+                    max: METTLE_STREAM_PAYLOAD_CAP_BYTES,
+                },
+            );
+        }
+
+        let total_sources = if total_bytes == 0 {
+            0
+        } else {
+            total_bytes.div_ceil(u64::from(self.source_symbol_bytes))
+        };
+        let source_limit = u64::from(self.source_symbols_per_stream);
+        let expected_stream_count = if total_sources == 0 {
+            0
+        } else {
+            total_sources.div_ceil(source_limit)
+        };
+        if self.stream_count != expected_stream_count {
+            return Err(LosslessSessionValidationError::MettleStreamCountMismatch {
+                expected: expected_stream_count,
+                actual: self.stream_count,
+            });
+        }
+        let expected_final_stream_source_symbols = if total_sources == 0 {
+            0
+        } else {
+            let remainder = total_sources % source_limit;
+            u32::try_from(if remainder == 0 {
+                source_limit
+            } else {
+                remainder
+            })
+            .map_err(|_| LosslessSessionValidationError::MettleStreamGeometryOverflow)?
+        };
+        if self.final_stream_source_symbols != expected_final_stream_source_symbols {
+            return Err(
+                LosslessSessionValidationError::MettleFinalStreamSourceCountMismatch {
+                    expected: expected_final_stream_source_symbols,
+                    actual: self.final_stream_source_symbols,
+                },
+            );
+        }
+        Ok(())
+    }
+}
+
+impl MettleStallEvidence {
+    pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
+        if self.missing_bin_ranges.is_empty() {
+            return Err(LosslessSessionValidationError::MettleMissingBinRangesEmpty);
+        }
+        if self.missing_bin_ranges.len() > MAX_METTLE_MISSING_BIN_RANGES {
+            return Err(
+                LosslessSessionValidationError::TooManyMettleMissingBinRanges {
+                    configured: self.missing_bin_ranges.len(),
+                    max: MAX_METTLE_MISSING_BIN_RANGES,
+                },
+            );
+        }
+        let mut previous_end = None;
+        for range in &self.missing_bin_ranges {
+            if range.start_bin_id >= range.end_bin_id {
+                return Err(
+                    LosslessSessionValidationError::MettleMissingBinRangeInvalid {
+                        start_bin_id: range.start_bin_id,
+                        end_bin_id: range.end_bin_id,
+                    },
+                );
+            }
+            if previous_end.is_some_and(|end| range.start_bin_id <= end) {
+                return Err(
+                    LosslessSessionValidationError::MettleMissingBinRangesMustBeSortedMerged,
+                );
+            }
+            previous_end = Some(range.end_bin_id);
+        }
+        Ok(())
+    }
+}
 
 impl NeedReport {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
@@ -153,6 +265,10 @@ impl BlockAck {
                     extra_completed: canonical,
                 })
             }
+            ack @ Self::MettleStream { .. } => {
+                ack.validate()?;
+                Ok(ack)
+            }
         }
     }
 
@@ -160,24 +276,41 @@ impl BlockAck {
     /// lowest-block-id truncation to the protocol range capacity.
     pub fn for_wire(self, total_blocks: u64) -> Result<Self, LosslessSessionValidationError> {
         let mut canonical = self.canonicalized(total_blocks)?;
-        let Self::Blocks {
-            extra_completed, ..
-        } = &mut canonical;
-        extra_completed.truncate(MAX_BLOCK_ACK_RANGES);
+        match &mut canonical {
+            Self::Blocks {
+                extra_completed, ..
+            } => extra_completed.truncate(MAX_BLOCK_ACK_RANGES),
+            Self::MettleStream { stalled, .. } => {
+                if let Some(stalled) = stalled {
+                    stalled
+                        .missing_bin_ranges
+                        .truncate(MAX_METTLE_MISSING_BIN_RANGES);
+                }
+            }
+        }
         Ok(canonical)
     }
 
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
-        let Self::Blocks {
-            extra_completed, ..
-        } = self;
-        if extra_completed.len() > MAX_BLOCK_ACK_RANGES {
-            return Err(LosslessSessionValidationError::TooManyBlockAckRanges {
-                configured: extra_completed.len(),
-                max: MAX_BLOCK_ACK_RANGES,
-            });
+        match self {
+            Self::Blocks {
+                extra_completed, ..
+            } => {
+                if extra_completed.len() > MAX_BLOCK_ACK_RANGES {
+                    return Err(LosslessSessionValidationError::TooManyBlockAckRanges {
+                        configured: extra_completed.len(),
+                        max: MAX_BLOCK_ACK_RANGES,
+                    });
+                }
+                self.clone().canonicalized(u64::MAX).map(|_| ())
+            }
+            Self::MettleStream { stalled, .. } => {
+                if let Some(stalled) = stalled {
+                    stalled.validate()?;
+                }
+                Ok(())
+            }
         }
-        self.clone().canonicalized(u64::MAX).map(|_| ())
     }
 
     pub fn validate_against_total_blocks(
@@ -185,7 +318,10 @@ impl BlockAck {
         total_blocks: u64,
     ) -> Result<(), LosslessSessionValidationError> {
         self.validate()?;
-        self.clone().canonicalized(total_blocks).map(|_| ())
+        match self {
+            Self::Blocks { .. } => self.clone().canonicalized(total_blocks).map(|_| ()),
+            Self::MettleStream { .. } => Ok(()),
+        }
     }
 }
 
@@ -220,8 +356,8 @@ impl LosslessSessionManifest {
                     scheme: fec.scheme,
                 });
             }
-            WireFecGeometry::new(self.block_size, fec.symbols_per_block).map_err(
-                |err| match err {
+            let wire_geometry = WireFecGeometry::new(self.block_size, fec.symbols_per_block)
+                .map_err(|err| match err {
                     WireFecGeometryError::ZeroBlockSize => {
                         LosslessSessionValidationError::ZeroBlockSize
                     }
@@ -244,8 +380,7 @@ impl LosslessSessionManifest {
                     WireFecGeometryError::SymbolPayloadCeilingUnrepresentable => {
                         LosslessSessionValidationError::FecSymbolPayloadCeilingUnrepresentable
                     }
-                },
-            )?;
+                })?;
             if !fec.coded_rate_is_valid() {
                 return Err(LosslessSessionValidationError::InvalidFecCodedRate {
                     numerator: fec.coded_rate_num,
@@ -263,6 +398,24 @@ impl LosslessSessionManifest {
             }
             if !fec.tree_ids.windows(2).all(|pair| pair[0] < pair[1]) {
                 return Err(LosslessSessionValidationError::TreeIdsMustBeSortedUnique);
+            }
+            match (
+                fec.scheme_kind(),
+                fec.feedback_mode,
+                fec.mettle_object_stream,
+            ) {
+                (Some(FecScheme::Mettle), FecFeedbackMode::Carousel, Some(geometry)) => {
+                    geometry.validate(self.total_bytes, wire_geometry.symbol_size())?;
+                }
+                (Some(FecScheme::Mettle), FecFeedbackMode::Carousel, None) => {
+                    return Err(LosslessSessionValidationError::MettleObjectStreamGeometryRequired);
+                }
+                (_, _, Some(_)) => {
+                    return Err(
+                        LosslessSessionValidationError::MettleObjectStreamGeometryUnexpected,
+                    );
+                }
+                (_, _, None) => {}
             }
         }
 
@@ -327,7 +480,16 @@ impl LosslessSessionManifest {
         let LosslessSessionMode::Fec(fec) = &self.mode else {
             return Err(LosslessSessionValidationError::BlockSymbolRequiresFecMode);
         };
-        self.validate_block_id(symbol.block_id)?;
+        if let Some(geometry) = fec.mettle_object_stream {
+            if symbol.block_id >= geometry.stream_count {
+                return Err(LosslessSessionValidationError::BlockIdOutOfRange {
+                    block_id: symbol.block_id,
+                    total_blocks: geometry.stream_count,
+                });
+            }
+        } else {
+            self.validate_block_id(symbol.block_id)?;
+        }
         if !fec.tree_ids.contains(&symbol.tree_id) {
             return Err(
                 LosslessSessionValidationError::BlockSymbolTreeIdNotAdvertised {
@@ -407,7 +569,47 @@ impl LosslessSessionManifest {
                         LosslessSessionValidationError::CarouselControlRequiresCarouselMode,
                     );
                 }
-                ack.validate_against_total_blocks(self.total_blocks)
+                match (&self.mode, ack) {
+                    (LosslessSessionMode::Fec(fec), BlockAck::Blocks { .. })
+                        if fec.scheme_kind() == Some(FecScheme::RaptorQ) =>
+                    {
+                        ack.validate_against_total_blocks(self.total_blocks)
+                    }
+                    (
+                        LosslessSessionMode::Fec(fec),
+                        BlockAck::MettleStream {
+                            stream_id,
+                            decoded_source_watermark,
+                            ..
+                        },
+                    ) if fec.scheme_kind() == Some(FecScheme::Mettle) => {
+                        let geometry = fec.mettle_object_stream.ok_or(
+                            LosslessSessionValidationError::MettleObjectStreamGeometryRequired,
+                        )?;
+                        let stream_source_count = geometry.stream_source_count(*stream_id).ok_or(
+                            LosslessSessionValidationError::MettleAckStreamOutOfRange {
+                                stream_id: *stream_id,
+                                stream_count: geometry.stream_count,
+                            },
+                        )?;
+                        if *decoded_source_watermark > stream_source_count {
+                            return Err(
+                                LosslessSessionValidationError::MettleAckWatermarkOutOfRange {
+                                    decoded_source_watermark: *decoded_source_watermark,
+                                    stream_source_count,
+                                },
+                            );
+                        }
+                        ack.validate()
+                    }
+                    (LosslessSessionMode::Fec(_), BlockAck::Blocks { .. }) => {
+                        Err(LosslessSessionValidationError::BlockAckVariantRequiresRaptorQ)
+                    }
+                    (LosslessSessionMode::Fec(_), BlockAck::MettleStream { .. }) => {
+                        Err(LosslessSessionValidationError::MettleBlockAckRequiresMettle)
+                    }
+                    _ => Err(LosslessSessionValidationError::CarouselControlRequiresCarouselMode),
+                }
             }
             LosslessSessionControl::AckProbe { .. } | LosslessSessionControl::SessionComplete => {
                 if matches!(
@@ -487,6 +689,7 @@ mod tests {
                 coded_rate_num: 1,
                 coded_rate_den: 1,
                 feedback_mode: Default::default(),
+                mettle_object_stream: None,
                 tree_ids: vec![],
             }),
         };
@@ -518,12 +721,163 @@ mod tests {
                 coded_rate_num: 1,
                 coded_rate_den: 1,
                 feedback_mode: Default::default(),
+                mettle_object_stream: None,
                 tree_ids: vec![1, 3],
             }),
         };
         assert_eq!(
             unknown.validate(),
             Err(LosslessSessionValidationError::UnknownFecScheme { scheme: 99 })
+        );
+    }
+
+    #[test]
+    fn mettle_carousel_requires_exact_checked_object_stream_geometry() {
+        let without_geometry = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2048,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel),
+            ),
+        };
+        assert_eq!(
+            without_geometry.validate(),
+            Err(LosslessSessionValidationError::MettleObjectStreamGeometryRequired)
+        );
+
+        let valid = LosslessSessionManifest {
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 2, 8)),
+            ),
+            ..without_geometry.clone()
+        };
+        valid.validate().expect("checked object stream geometry");
+
+        let wrong_count = LosslessSessionManifest {
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 3, 8)),
+            ),
+            ..valid.clone()
+        };
+        assert_eq!(
+            wrong_count.validate(),
+            Err(LosslessSessionValidationError::MettleStreamCountMismatch {
+                expected: 2,
+                actual: 3,
+            })
+        );
+
+        let wrong_final = LosslessSessionManifest {
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 2, 7)),
+            ),
+            ..valid.clone()
+        };
+        assert_eq!(
+            wrong_final.validate(),
+            Err(
+                LosslessSessionValidationError::MettleFinalStreamSourceCountMismatch {
+                    expected: 8,
+                    actual: 7,
+                }
+            )
+        );
+
+        let rounds_with_geometry = LosslessSessionManifest {
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 2, 8)),
+            ),
+            ..valid
+        };
+        assert_eq!(
+            rounds_with_geometry.validate(),
+            Err(LosslessSessionValidationError::MettleObjectStreamGeometryUnexpected)
+        );
+    }
+
+    #[test]
+    fn mettle_stream_geometry_enforces_source_and_payload_caps() {
+        let source_cap = MettleObjectStreamGeometry::new(
+            1,
+            METTLE_STREAM_SOURCE_CAP + 1,
+            1,
+            METTLE_STREAM_SOURCE_CAP + 1,
+        );
+        assert_eq!(
+            source_cap.validate(u64::from(METTLE_STREAM_SOURCE_CAP) + 1, 1),
+            Err(
+                LosslessSessionValidationError::MettleStreamSourceLimitOutOfRange {
+                    configured: METTLE_STREAM_SOURCE_CAP + 1,
+                    max: METTLE_STREAM_SOURCE_CAP,
+                }
+            )
+        );
+
+        let payload_cap = MettleObjectStreamGeometry::new(65_000, 1_549, 1, 1_549);
+        assert_eq!(
+            payload_cap.validate(65_000 * 1_549, 65_000),
+            Err(
+                LosslessSessionValidationError::MettleStreamPayloadTooLarge {
+                    configured: 100_685_000,
+                    max: METTLE_STREAM_PAYLOAD_CAP_BYTES,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn mettle_progress_ack_is_validated_against_its_stream() {
+        let manifest = LosslessSessionManifest {
+            block_size: 1024,
+            total_bytes: 2176,
+            total_blocks: 3,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 3, 1)),
+            ),
+        };
+        let valid = LosslessSessionControl::BlockAck {
+            ack: BlockAck::MettleStream {
+                stream_id: 2,
+                decoded_source_watermark: 1,
+                stalled: Some(MettleStallEvidence {
+                    repair_epoch: 4,
+                    missing_bin_ranges: vec![super::super::MissingMettleBinRange {
+                        start_bin_id: 2,
+                        end_bin_id: 5,
+                    }],
+                }),
+            },
+        };
+        manifest
+            .validate_control(&valid)
+            .expect("final stream watermark is in range");
+
+        let too_far = LosslessSessionControl::BlockAck {
+            ack: BlockAck::MettleStream {
+                stream_id: 2,
+                decoded_source_watermark: 2,
+                stalled: None,
+            },
+        };
+        assert_eq!(
+            manifest.validate_control(&too_far),
+            Err(
+                LosslessSessionValidationError::MettleAckWatermarkOutOfRange {
+                    decoded_source_watermark: 2,
+                    stream_source_count: 1,
+                }
+            )
         );
     }
 

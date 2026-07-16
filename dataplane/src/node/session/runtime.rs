@@ -668,7 +668,7 @@ impl LosslessRuntime {
                 mode: lossless_session::LosslessSessionMode::Plain,
             }
         } else {
-            fec_policy::derive_sender_policy(&self.config, block_size)?
+            fec_policy::derive_sender_policy(&self.config, block_size, req.total_bytes)?
         };
         let plan = BlockPlan::new(req.total_bytes, session.block_size).map_err(|_| {
             PreflightError::InvalidBlockSize {

@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Protocol version with explicit FEC feedback-mode negotiation.
-pub const LOSSLESS_SESSION_VERSION: u8 = 8;
+/// Protocol version with manifest-negotiated METTLE object streams.
+pub const LOSSLESS_SESSION_VERSION: u8 = 9;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -110,7 +110,73 @@ pub struct LosslessSessionFecMode {
     /// Feedback state machine selected for this transfer.
     #[serde(default)]
     pub feedback_mode: FecFeedbackMode,
+    /// Present only for paper-native `Carousel + METTLE` object streams.
+    #[serde(default)]
+    pub mettle_object_stream: Option<MettleObjectStreamGeometry>,
     pub tree_ids: Vec<u16>,
+}
+
+/// Maximum source count in one manifest-negotiated METTLE prefix.
+pub const METTLE_STREAM_SOURCE_CAP: u32 = 65_536;
+/// Maximum source-payload image in one manifest-negotiated METTLE prefix.
+pub const METTLE_STREAM_PAYLOAD_CAP_BYTES: u64 = 96 * 1024 * 1024;
+
+/// Deterministic object/prefix geometry for paper-native Carousel + METTLE.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MettleObjectStreamGeometry {
+    pub source_symbol_bytes: u32,
+    pub source_symbols_per_stream: u32,
+    pub stream_count: u64,
+    pub final_stream_source_symbols: u32,
+}
+
+impl MettleObjectStreamGeometry {
+    #[must_use]
+    pub const fn new(
+        source_symbol_bytes: u32,
+        source_symbols_per_stream: u32,
+        stream_count: u64,
+        final_stream_source_symbols: u32,
+    ) -> Self {
+        Self {
+            source_symbol_bytes,
+            source_symbols_per_stream,
+            stream_count,
+            final_stream_source_symbols,
+        }
+    }
+
+    #[must_use]
+    pub const fn source_symbol_bytes(self) -> u32 {
+        self.source_symbol_bytes
+    }
+
+    #[must_use]
+    pub const fn source_symbols_per_stream(self) -> u32 {
+        self.source_symbols_per_stream
+    }
+
+    #[must_use]
+    pub const fn stream_count(self) -> u64 {
+        self.stream_count
+    }
+
+    #[must_use]
+    pub const fn final_stream_source_symbols(self) -> u32 {
+        self.final_stream_source_symbols
+    }
+
+    #[must_use]
+    pub fn stream_source_count(self, stream_id: u64) -> Option<u32> {
+        if stream_id >= self.stream_count {
+            return None;
+        }
+        if stream_id.checked_add(1) == Some(self.stream_count) {
+            Some(self.final_stream_source_symbols)
+        } else {
+            Some(self.source_symbols_per_stream)
+        }
+    }
 }
 
 impl LosslessSessionFecMode {
@@ -122,6 +188,7 @@ impl LosslessSessionFecMode {
             coded_rate_num: 1,
             coded_rate_den: 1,
             feedback_mode: FecFeedbackMode::Rounds,
+            mettle_object_stream: None,
             tree_ids,
         }
     }
@@ -144,6 +211,7 @@ impl LosslessSessionFecMode {
             coded_rate_num,
             coded_rate_den,
             feedback_mode: FecFeedbackMode::Rounds,
+            mettle_object_stream: None,
             tree_ids,
         }
     }
@@ -151,6 +219,12 @@ impl LosslessSessionFecMode {
     #[must_use]
     pub fn with_feedback_mode(mut self, feedback_mode: FecFeedbackMode) -> Self {
         self.feedback_mode = feedback_mode;
+        self
+    }
+
+    #[must_use]
+    pub fn with_mettle_object_stream(mut self, geometry: MettleObjectStreamGeometry) -> Self {
+        self.mettle_object_stream = Some(geometry);
         self
     }
 
@@ -217,10 +291,24 @@ pub struct CompletedBlockRange {
     pub end_block_id: u64,
 }
 
+/// Canonical half-open range of missing METTLE bin ids.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MissingMettleBinRange {
+    pub start_bin_id: u32,
+    pub end_bin_id: u32,
+}
+
+/// Gap evidence tied to one sender departure epoch.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MettleStallEvidence {
+    pub repair_epoch: u32,
+    pub missing_bin_ranges: Vec<MissingMettleBinRange>,
+}
+
 /// Cumulative carousel feedback.
 ///
-/// Variant `1` on the wire is this block-completion snapshot. Wire variant `2`
-/// is reserved for the Stage 2 METTLE stream-progress acknowledgement.
+/// Variant `1` is a block-completion snapshot. Variant `2` is per-stream
+/// METTLE source progress with optional epoch-tagged stall evidence.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[non_exhaustive]
 pub enum BlockAck {
@@ -229,6 +317,14 @@ pub enum BlockAck {
         completed_watermark: u64,
         /// Canonical completed islands strictly above the watermark.
         extra_completed: Vec<CompletedBlockRange>,
+    },
+    MettleStream {
+        /// Deterministic manifest prefix id.
+        stream_id: u64,
+        /// Next not-yet-released source id within this stream.
+        decoded_source_watermark: u32,
+        /// Aged missing-bin evidence, absent on ordinary progress heartbeats.
+        stalled: Option<MettleStallEvidence>,
     },
 }
 
@@ -330,6 +426,49 @@ pub enum LosslessSessionValidationError {
         configured: usize,
         max: usize,
     },
+    MettleObjectStreamGeometryRequired,
+    MettleObjectStreamGeometryUnexpected,
+    MettleObjectSymbolSizeMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    MettleStreamSourceLimitOutOfRange {
+        configured: u32,
+        max: u32,
+    },
+    MettleStreamPayloadTooLarge {
+        configured: u64,
+        max: u64,
+    },
+    MettleStreamGeometryOverflow,
+    MettleStreamCountMismatch {
+        expected: u64,
+        actual: u64,
+    },
+    MettleFinalStreamSourceCountMismatch {
+        expected: u32,
+        actual: u32,
+    },
+    BlockAckVariantRequiresRaptorQ,
+    MettleBlockAckRequiresMettle,
+    MettleAckStreamOutOfRange {
+        stream_id: u64,
+        stream_count: u64,
+    },
+    MettleAckWatermarkOutOfRange {
+        decoded_source_watermark: u32,
+        stream_source_count: u32,
+    },
+    MettleMissingBinRangesEmpty,
+    MettleMissingBinRangeInvalid {
+        start_bin_id: u32,
+        end_bin_id: u32,
+    },
+    MettleMissingBinRangesMustBeSortedMerged,
+    TooManyMettleMissingBinRanges {
+        configured: usize,
+        max: usize,
+    },
     CarouselControlRequiresCarouselMode,
     RoundsControlRequiresRoundsMode,
 }
@@ -337,8 +476,9 @@ pub enum LosslessSessionValidationError {
 pub const MAX_NEED_RANGES: usize = u8::MAX as usize;
 pub const MAX_NEED_BLOCKS: usize = u16::MAX as usize;
 pub const MAX_BLOCK_ACK_RANGES: usize = MAX_NEED_RANGES;
+pub const MAX_METTLE_MISSING_BIN_RANGES: usize = MAX_BLOCK_ACK_RANGES;
 pub const BLOCK_ACK_BLOCKS_VARIANT: u8 = 1;
-pub const BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED: u8 = 2;
+pub const BLOCK_ACK_METTLE_STREAM_VARIANT: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LosslessSessionBlockData {

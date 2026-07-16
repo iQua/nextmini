@@ -297,20 +297,30 @@ pub(crate) fn validate_fec_geometry(
                     denominator: fec_mode.coded_rate_den,
                 },
             )?;
-            let source_symbols = usize::try_from(wire.source_symbols()).map_err(|_| {
+            let object_geometry = fec_mode.mettle_object_stream;
+            let mettle_source_symbols = object_geometry.map_or(wire.source_symbols(), |geometry| {
+                geometry.source_symbols_per_stream
+            });
+            let mettle_symbol_size =
+                object_geometry.map_or(wire.symbol_size(), |geometry| geometry.source_symbol_bytes);
+            let source_symbols = usize::try_from(mettle_source_symbols).map_err(|_| {
                 FecError::SourceSymbolsDoNotFitHost {
-                    source_symbols: wire.source_symbols(),
+                    source_symbols: mettle_source_symbols,
                 }
             })?;
-            let symbol_size = usize::try_from(wire.symbol_size()).map_err(|_| {
+            let symbol_size = usize::try_from(mettle_symbol_size).map_err(|_| {
                 FecError::SymbolSizeDoesNotFitHost {
-                    symbol_size: wire.symbol_size(),
+                    symbol_size: mettle_symbol_size,
                 }
             })?;
-            usize::try_from(wire.padded_block_size()).map_err(|_| {
-                FecError::PaddedBlockSizeDoesNotFitHost {
-                    padded_block_size: wire.padded_block_size(),
-                }
+            let padded_size = u64::from(mettle_source_symbols)
+                .checked_mul(u64::from(mettle_symbol_size))
+                .ok_or(FecError::PaddedBlockSizeOverflow {
+                    source_symbols,
+                    symbol_size,
+                })?;
+            usize::try_from(padded_size).map_err(|_| FecError::PaddedBlockSizeDoesNotFitHost {
+                padded_block_size: padded_size,
             })?;
             let metadata =
                 mettle::block::BlockParams::with_overhead(source_symbols, symbol_size, 0, overhead)
