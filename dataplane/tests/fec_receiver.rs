@@ -288,7 +288,6 @@ async fn receiver_reports_missing_blocks_after_source_done_for_incomplete_block(
         ),
     )
     .await;
-    drop(harness.tx);
 
     let (_, status) = recv_control(&mut harness.packet_rx).await;
     assert_eq!(
@@ -305,6 +304,7 @@ async fn receiver_reports_missing_blocks_after_source_done_for_incomplete_block(
         "receiver should request the remaining source symbols first"
     );
 
+    drop(harness.tx);
     timeout(Duration::from_secs(2), harness.receiver_task)
         .await
         .expect("receiver task should drain once input closes")
