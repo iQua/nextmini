@@ -119,3 +119,63 @@ entry was added to `plans/perfect-fec-runtime-questions.md`.
 ## Open questions
 
 None for Stage 1.
+
+## Review follow-up fixes
+
+The approved Stage 1 review follow-ups were completed before any Stage 2 work. No review item was
+skipped or disputed, and `plans/perfect-fec-runtime-questions.md` required no new entry.
+
+### Required fixes
+
+| Item | Resolution | Commit |
+| --- | --- | --- |
+| 1 — runtime-actor deadlock | Made live-receiver delivery non-blocking, kept a completing receiver draining its inbox until replay installation is acknowledged, and added the full-data-inbox runtime-liveness conformance test. | `167661f` |
+| 2 — completed transfer reported aborted | Made joined quorum completion win over control-channel disconnect, including when the completing acknowledgement is consumed inside a wait branch. | `8af234b` |
+| 3 — timer starvation under acknowledgement flood | Gave pacing, backpressure, and feedback wait deadlines precedence over continuously ready control input so liveness and probe timers remain observable. | `8af234b` |
+| 4 — probe loss during receiver handoff | Made completed replay handling cache-first during handoff and kept the receiver draining controls until the runtime confirms replay installation; probes are answerable across the transition. | `167661f` |
+| 5 — unbounded replay cache | Added a retention deadline to Plain, FEC, and Carousel replay entries, insertion-time sweeping, and exact-session expiry checks, with an all-modes eviction test. | `cd78bbe` |
+| 6 — pacing double-charge on retry | Retained the generated pending symbol and its pacing-charge state across `AllWouldBlock`, preventing payload regeneration and duplicate token charges. | `8af234b` |
+| 7 — carousel timing rejected plain/rounds | Scoped timing validation to negotiated Carousel senders and Carousel receiver manifests; Plain and FEC Rounds startup now has regression coverage with otherwise-invalid carousel timing. | `b445f91` |
+| 8 — duplicate flow delivery | Added a shared controller-side flow claim before random session-id allocation, used by startup and database-sync delivery, with a duplicate-builder regression test. | `9f775f5` |
+
+### Test strengthening and wire hardening
+
+| Item | Resolution | Commit |
+| --- | --- | --- |
+| T1 — incarnation safety | Reused a runtime/session route across successive transfers, injected stale payload and acknowledgement frames, and positively asserted clean successor receiver and sender completion. | `77d915b` |
+| T2 — timer fairness | Continuously refilled a full receiver data inbox across both debounce and heartbeat windows and asserted both acknowledgements while production remained active. | `77d915b` |
+| T3 — passive expiry | Added a receiver test that drops `SessionComplete` forever and proves termination at passive-window expiry. | `77d915b` |
+| T4 — metrics positive path | Directly drove `record_queued_after_final_ack` and asserted the counter increments. | `77d915b` |
+| T5 — allocator retention | Added deterministic candidate injection, pre-seeded issued ids, and proved zero and retained candidates are redrawn before accepting a fresh id. | `77d915b` |
+| W1 — BlockAck canonical bytes | Canonicalized accepted BlockAck state during encoding, truncated reused output buffers to the canonical frame, asserted exact bytes, and added Plain/Rounds manifest rejection tests. | `bacdd42` |
+
+The two cheap receiver timer nits were also applied in `cd78bbe`: deadline arithmetic is checked, and
+an armed acknowledgement timer advances even when no BlockAck can yet be formed. The review's
+Carousel+METTLE diagnostic note remains intentionally owned by Stage 2, and no METTLE restriction was
+changed in this follow-up.
+
+### Follow-up commits
+
+| Concern | Commit | Message |
+| --- | --- | --- |
+| Runtime handoff, replay, and probe window | `167661f` | `Prevent receiver handoff deadlocks.` |
+| Sender waits, completion outcome, and pending-symbol pacing | `8af234b` | `Correct carousel sender wait outcomes.` |
+| Replay retention and receiver timer nits | `cd78bbe` | `Bound completed receiver replay retention.` |
+| Carousel-only timing validation | `b445f91` | `Scope carousel timing validation.` |
+| Controller flow deduplication | `9f775f5` | `Deduplicate lossless flow delivery.` |
+| Canonical BlockAck encoding and mode validation | `bacdd42` | `Canonicalize BlockAck wire encoding.` |
+| T1–T5 conformance strengthening | `77d915b` | `Strengthen carousel conformance coverage.` |
+
+### Follow-up verification
+
+All cargo commands used `CARGO_INCREMENTAL=0` and
+`PYO3_PYTHON=/opt/homebrew/bin/python3.13`.
+
+- Each concern commit passed formatting, clippy with `-D warnings`, and nextest for its touched
+  crates before commit.
+- The strengthened carousel conformance binary passed all 21 tests.
+- Gate 1 `cargo fmt --check`: passed.
+- Gate 1 `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- Gate 1 `cargo nextest run`: 755 passed, 0 failed, 17 pre-existing skips across 32 binaries.
+- Focused `fec_round_regressions`: 2 passed, 0 failed, 0 skipped. The regression source file has no
+  diff from the pre-follow-up Stage 1 report commit.
