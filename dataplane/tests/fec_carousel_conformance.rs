@@ -6,6 +6,7 @@ mod sender_state;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -13,11 +14,13 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::{self, timeout};
 
 use nextmini::node::packet::Packet;
-use nextmini::node::session::api::{InboundFrame, LosslessRuntimeHandle, SessionOutcome};
+use nextmini::node::session::api::{
+    InboundFrame, LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome,
+};
 use nextmini::node::session::metrics::{SenderWaitState, SessionMetrics, SessionMetricsSnapshot};
 use nextmini::node::session::receiver;
 use nextmini::node::session::runtime::{
-    CarouselRuntimeConfig, ReceiverConfig, ReceiverRequest, SenderConfig,
+    CarouselRuntimeConfig, ReceiverConfig, ReceiverRequest, SenderConfig, SenderRequest,
 };
 use nextmini::node::session::sender;
 use nextmini_messages::TokenBucketSpec;
@@ -117,6 +120,25 @@ async fn recv_control_where(
     }
 }
 
+async fn recv_session_control_where(
+    packet_rx: &mut mpsc::Receiver<Packet>,
+    session_id: u64,
+    predicate: impl Fn(&LosslessSessionControl) -> bool,
+) -> LosslessSessionControl {
+    loop {
+        let packet = common::recv_packet(packet_rx).await;
+        let Some(payload) = packet.tcp_payload() else {
+            continue;
+        };
+        let Some((header, control)) = lossless_session::decode_control(payload) else {
+            continue;
+        };
+        if header.session_id == session_id && predicate(&control) {
+            return control;
+        }
+    }
+}
+
 fn sender_config(
     harness: &common::PacketCaptureHarness,
     session_id: u64,
@@ -140,6 +162,75 @@ fn sender_config(
         topology_ready: None,
         cloudcast: None,
     }
+}
+
+async fn complete_runtime_receiver(
+    runtime: &LosslessRuntimeHandle,
+    packet_rx: &mut mpsc::Receiver<Packet>,
+    session: &mut LosslessSessionHandle,
+    session_id: u64,
+) {
+    runtime
+        .deliver(
+            session_id,
+            control_frame(
+                session_id,
+                SOURCE_NODE_ID,
+                LosslessSessionControl::Manifest {
+                    manifest: carousel_manifest(16, 16, 4, vec![7]),
+                },
+            ),
+        )
+        .await;
+    recv_session_control_where(packet_rx, session_id, |control| {
+        matches!(control, LosslessSessionControl::Ready)
+    })
+    .await;
+
+    for symbol_id in 0..4u32 {
+        let start = usize::try_from(symbol_id).expect("small symbol id") * 4;
+        runtime
+            .deliver(
+                session_id,
+                symbol_frame(
+                    session_id,
+                    SOURCE_NODE_ID,
+                    0,
+                    symbol_id,
+                    7,
+                    &b"abcdefghijklmnop"[start..start + 4],
+                ),
+            )
+            .await;
+    }
+    recv_session_control_where(packet_rx, session_id, |control| {
+        matches!(
+            control,
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 1,
+                    ..
+                }
+            }
+        )
+    })
+    .await;
+    runtime
+        .deliver(
+            session_id,
+            control_frame(
+                session_id,
+                SOURCE_NODE_ID,
+                LosslessSessionControl::SessionComplete,
+            ),
+        )
+        .await;
+    assert_eq!(
+        timeout(Duration::from_secs(1), session.wait())
+            .await
+            .expect("runtime receiver should finish after SessionComplete"),
+        SessionOutcome::Completed
+    );
 }
 
 #[test]
@@ -377,19 +468,125 @@ async fn dropped_completion_recovers_through_probe_during_passive_handoff() {
     assert_eq!(sink.lock().await.as_slice(), b"abcdefghijklmnop");
 }
 
+#[tokio::test]
+async fn passive_receiver_finishes_when_session_complete_is_dropped_forever() {
+    let mut harness =
+        common::packet_capture(RECEIVER_NODE_ID, SOURCE_NODE_ID, 4320, 5320, 1, 128).await;
+    time::pause();
+    let session_id = 0xC011_000B;
+    let sink = Arc::new(Mutex::new(Vec::new()));
+    let timing = short_timing();
+    let cfg = ReceiverConfig {
+        session_id,
+        route: harness.route(),
+        local_node_id: RECEIVER_NODE_ID,
+        sink_buffer: Some(sink.clone()),
+        sink_file: None,
+        progress: None,
+        peer_report_timeout_ms: 500,
+        fec_enabled: true,
+        cloudcast: None,
+        carousel: timing,
+    };
+    let (control_tx, control_rx) = mpsc::channel(16);
+    let (data_tx, data_rx) = mpsc::channel(16);
+    let task = tokio::spawn(receiver::run_observed(
+        cfg,
+        control_rx,
+        data_rx,
+        harness.processors.clone(),
+        Arc::new(SessionMetrics::default()),
+    ));
+
+    control_tx
+        .send(control_frame(
+            session_id,
+            SOURCE_NODE_ID,
+            LosslessSessionControl::Manifest {
+                manifest: carousel_manifest(16, 16, 4, vec![7]),
+            },
+        ))
+        .await
+        .expect("manifest should enqueue");
+    spin_recv_control(&mut harness.packet_rx, |control| {
+        matches!(control, LosslessSessionControl::Ready)
+    })
+    .await;
+    for symbol_id in 0..4u32 {
+        let start = usize::try_from(symbol_id).expect("small symbol id") * 4;
+        data_tx
+            .send(symbol_frame(
+                session_id,
+                SOURCE_NODE_ID,
+                0,
+                symbol_id,
+                7,
+                &b"abcdefghijklmnop"[start..start + 4],
+            ))
+            .await
+            .expect("source symbol should enqueue");
+    }
+    for _ in 0..10_000 {
+        if sink.lock().await.as_slice() == b"abcdefghijklmnop" {
+            break;
+        }
+        tokio::task::yield_now().await;
+    }
+    assert_eq!(sink.lock().await.as_slice(), b"abcdefghijklmnop");
+    time::advance(timing.ack_debounce + Duration::from_millis(1)).await;
+    spin_recv_control(&mut harness.packet_rx, |control| {
+        matches!(
+            control,
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 1,
+                    ..
+                }
+            }
+        )
+    })
+    .await;
+
+    // Never deliver SessionComplete. P5 requires the passive window itself to
+    // terminate the receiver successfully.
+    time::advance(timing.receiver_passive_window + Duration::from_millis(1)).await;
+    assert_eq!(
+        timeout(Duration::from_secs(1), task)
+            .await
+            .expect("passive receiver should terminate at its retention deadline")
+            .expect("receiver task should not panic"),
+        SessionOutcome::Completed
+    );
+    assert_eq!(sink.lock().await.as_slice(), b"abcdefghijklmnop");
+    time::resume();
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn stale_incarnation_frame_cannot_install_a_manifest() {
+async fn successor_transfers_reject_stale_payload_and_ack_incarnations() {
     let mut harness =
         common::packet_capture(RECEIVER_NODE_ID, SOURCE_NODE_ID, 4312, 5312, 1, 128).await;
     let mut runtime_cfg = harness.cfg.lossless_runtime_config.clone();
     runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_feedback_mode = FecFeedbackMode::Carousel;
+    runtime_cfg.fec_default_symbols_per_block = 4;
+    runtime_cfg.fec_default_tree_ids = vec![7];
+    runtime_cfg.carousel_ack_debounce_ms = 5;
+    runtime_cfg.carousel_ack_heartbeat_ms = 20;
+    runtime_cfg.carousel_ack_probe_interval_ms = 15;
+    runtime_cfg.carousel_peer_silence_timeout_ms = 250;
+    runtime_cfg.carousel_peer_stall_timeout_ms = 500;
+    runtime_cfg.carousel_passive_margin_ms = 100;
+    runtime_cfg.carousel_receiver_passive_window_ms = 750;
+    runtime_cfg.carousel_session_complete_repeats = 1;
+    runtime_cfg.carousel_session_complete_interval_ms = 1;
     let runtime = LosslessRuntimeHandle::new(harness.processors.clone(), runtime_cfg);
-    let session_id = 0xC011_0003;
-    let stale_session_id = 0xC011_F003;
-    let manifest = carousel_manifest(16, 16, 4, vec![7]);
-    let mut session = runtime
+    let first_session_id = 0xC011_F003;
+    let successor_session_id = 0xC011_0003;
+
+    // Complete one receiver incarnation on this transport slot.
+    let mut first = runtime
         .start_receiver(ReceiverRequest {
-            session_id,
+            session_id: first_session_id,
             route: harness.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
@@ -397,52 +594,106 @@ async fn stale_incarnation_frame_cannot_install_a_manifest() {
             progress: None,
         })
         .await
-        .expect("receiver should start");
+        .expect("first receiver incarnation should start");
+    complete_runtime_receiver(
+        &runtime,
+        &mut harness.packet_rx,
+        &mut first,
+        first_session_id,
+    )
+    .await;
 
+    // Reuse the same runtime and transport route for a successor incarnation.
+    // Frames carrying the old wire identity are routed at the live successor
+    // to model delayed packets already queued below the runtime boundary.
+    let successor_sink = Arc::new(Mutex::new(Vec::new()));
+    let mut successor = runtime
+        .start_receiver(ReceiverRequest {
+            session_id: successor_session_id,
+            route: harness.route(),
+            local_node_id: RECEIVER_NODE_ID,
+            sink_buffer: Some(successor_sink.clone()),
+            sink_file: None,
+            progress: None,
+        })
+        .await
+        .expect("successor receiver incarnation should start");
     runtime
         .deliver(
-            session_id,
-            control_frame(
-                stale_session_id,
-                SOURCE_NODE_ID,
-                LosslessSessionControl::Manifest {
-                    manifest: manifest.clone(),
-                },
-            ),
+            successor_session_id,
+            symbol_frame(first_session_id, SOURCE_NODE_ID, 0, 0, 7, b"stale"),
+        )
+        .await;
+    runtime
+        .deliver(
+            successor_session_id,
+            block_ack_frame(first_session_id, SOURCE_NODE_ID, 1),
+        )
+        .await;
+    complete_runtime_receiver(
+        &runtime,
+        &mut harness.packet_rx,
+        &mut successor,
+        successor_session_id,
+    )
+    .await;
+    assert_eq!(successor_sink.lock().await.as_slice(), b"abcdefghijklmnop");
+
+    // Stale completion feedback is meaningful on a sender successor: it must
+    // not finish the new transfer, while the matching acknowledgement must.
+    runtime.set_topology_ready(true).await;
+    let sender_session_id = 0xC011_1003;
+    let mut sender_session = runtime
+        .start_sender(SenderRequest {
+            session: harness.session_config(sender_session_id, 16),
+            route: harness.route(),
+            pacing: None,
+            receiver_ids: vec![SOURCE_NODE_ID],
+            total_bytes: 16,
+            source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+            ready_grace_ms: 50,
+            peer_report_timeout_ms: 500,
+        })
+        .await
+        .expect("sender successor should start");
+    runtime
+        .deliver(
+            sender_session_id,
+            common::ready_frame(sender_session_id, SOURCE_NODE_ID),
+        )
+        .await;
+    loop {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet.tcp_payload().expect("captured packet has payload");
+        if let Some((header, _, _)) = lossless_session::decode_block_symbol(payload)
+            && header.session_id == sender_session_id
+        {
+            break;
+        }
+    }
+    runtime
+        .deliver(
+            sender_session_id,
+            block_ack_frame(first_session_id, SOURCE_NODE_ID, 1),
         )
         .await;
     assert!(
-        timeout(Duration::from_millis(50), harness.packet_rx.recv())
+        timeout(Duration::from_millis(30), sender_session.wait())
             .await
             .is_err(),
-        "wire session identity must match the runtime routing key"
+        "stale acknowledgement must not complete the sender successor"
     );
-
     runtime
         .deliver(
-            session_id,
-            control_frame(
-                session_id,
-                SOURCE_NODE_ID,
-                LosslessSessionControl::Manifest { manifest },
-            ),
+            sender_session_id,
+            block_ack_frame(sender_session_id, SOURCE_NODE_ID, 1),
         )
         .await;
-    assert!(matches!(
-        recv_control_where(&mut harness.packet_rx, |control| matches!(
-            control,
-            LosslessSessionControl::Ready
-        ))
-        .await,
-        LosslessSessionControl::Ready
-    ));
-
-    session.abort();
     assert_eq!(
-        timeout(Duration::from_secs(1), session.wait())
+        timeout(Duration::from_secs(1), sender_session.wait())
             .await
-            .expect("receiver abort should complete"),
-        SessionOutcome::Aborted
+            .expect("matching successor ack should complete the sender"),
+        SessionOutcome::Completed
     );
 }
 
@@ -681,7 +932,7 @@ async fn receiver_ack_timer_is_fair_under_a_continuously_ready_data_inbox() {
         carousel: short_timing(),
     };
     let (control_tx, control_rx) = mpsc::channel(128);
-    let (data_tx, data_rx) = mpsc::channel(128);
+    let (data_tx, data_rx) = mpsc::channel(4);
     let task = tokio::spawn(receiver::run_observed(
         cfg,
         control_rx,
@@ -703,19 +954,21 @@ async fn receiver_ack_timer_is_fair_under_a_continuously_ready_data_inbox() {
     .await;
 
     let duplicate = symbol_frame(session_id, SOURCE_NODE_ID, 0, 0, 7, b"abcd");
-    for _ in 0..64 {
-        data_tx
-            .send(duplicate.clone())
-            .await
-            .expect("duplicate symbol should enqueue");
-    }
+    let refill_count = Arc::new(AtomicUsize::new(0));
+    let producer_count = refill_count.clone();
+    let producer = tokio::spawn(async move {
+        while data_tx.send(duplicate.clone()).await.is_ok() {
+            producer_count.fetch_add(1, Ordering::Relaxed);
+        }
+    });
+    tokio::task::yield_now().await;
     time::advance(Duration::from_millis(6)).await;
-    let ack = spin_recv_control(&mut harness.packet_rx, |control| {
+    let debounce_ack = spin_recv_control(&mut harness.packet_rx, |control| {
         matches!(control, LosslessSessionControl::BlockAck { .. })
     })
     .await;
     assert!(matches!(
-        ack,
+        debounce_ack,
         LosslessSessionControl::BlockAck {
             ack: BlockAck::Blocks {
                 completed_watermark: 0,
@@ -723,7 +976,29 @@ async fn receiver_ack_timer_is_fair_under_a_continuously_ready_data_inbox() {
             }
         }
     ));
+    let after_debounce = refill_count.load(Ordering::Relaxed);
 
+    time::advance(Duration::from_millis(21)).await;
+    let heartbeat_ack = spin_recv_control(&mut harness.packet_rx, |control| {
+        matches!(control, LosslessSessionControl::BlockAck { .. })
+    })
+    .await;
+    assert!(matches!(
+        heartbeat_ack,
+        LosslessSessionControl::BlockAck {
+            ack: BlockAck::Blocks {
+                completed_watermark: 0,
+                ..
+            }
+        }
+    ));
+    assert!(
+        refill_count.load(Ordering::Relaxed) > after_debounce,
+        "the data inbox must remain continuously refilled through the heartbeat window"
+    );
+
+    producer.abort();
+    let _ = producer.await;
     task.abort();
     let _ = task.await;
     time::resume();

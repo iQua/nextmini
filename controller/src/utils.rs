@@ -32,8 +32,12 @@ pub struct LosslessSessionIdAllocator {
 impl LosslessSessionIdAllocator {
     #[must_use]
     pub fn allocate(&mut self) -> u64 {
+        self.allocate_with(rand::random::<u64>)
+    }
+
+    fn allocate_with(&mut self, mut draw: impl FnMut() -> u64) -> u64 {
         loop {
-            let candidate = rand::random::<u64>();
+            let candidate = draw();
             if candidate != 0 && self.issued.insert(candidate) {
                 return candidate;
             }
@@ -816,6 +820,22 @@ mod tests {
         assert_ne!(first_transfer, 0);
         assert_ne!(reused_flow_transfer, 0);
         assert_ne!(first_transfer, reused_flow_transfer);
+    }
+
+    #[test]
+    fn lossless_session_id_allocator_redraws_zero_and_retained_ids() {
+        let mut allocator = LosslessSessionIdAllocator::default();
+        allocator.issued.insert(7);
+        let mut candidates = [0, 7, 11].into_iter();
+
+        let allocated = allocator.allocate_with(|| {
+            candidates
+                .next()
+                .expect("test candidate stream should reach a fresh id")
+        });
+
+        assert_eq!(allocated, 11);
+        assert_eq!(allocator.issued, HashSet::from([7, 11]));
     }
 
     #[test]

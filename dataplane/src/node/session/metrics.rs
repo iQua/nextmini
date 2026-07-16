@@ -171,4 +171,14 @@ mod tests {
         assert_eq!(snapshot.receiver_duplicate_symbols, 1);
         assert_eq!(snapshot.symbols_at_decode_minus_k.get(&2), Some(&1));
     }
+
+    #[test]
+    fn queued_after_final_ack_metric_hook_increments() {
+        let metrics = SessionMetrics::default();
+
+        metrics.record_queued_after_final_ack();
+        metrics.record_queued_after_final_ack();
+
+        assert_eq!(metrics.snapshot().queued_after_final_ack_processed, 2);
+    }
 }
