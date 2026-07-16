@@ -3,7 +3,7 @@
 use std::fs::File;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, OnceLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use bytes::Bytes;
@@ -50,6 +50,46 @@ pub struct TransportRoute {
 pub struct CloudcastRuntimeConfig {
     tree_ids: Vec<u16>,
     stripe_tree_ids: Vec<u16>,
+}
+
+/// Validated carousel timing values shared by sender and receiver tasks.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarouselRuntimeConfig {
+    pub ack_debounce: Duration,
+    pub ack_heartbeat: Duration,
+    pub ack_probe_interval: Duration,
+    pub peer_silence_timeout: Duration,
+    pub peer_stall_timeout: Duration,
+    pub receiver_passive_window: Duration,
+    pub session_complete_repeats: u8,
+    pub session_complete_interval: Duration,
+}
+
+impl CarouselRuntimeConfig {
+    fn from_lossless(config: &LosslessConfig) -> Result<Self, PreflightError> {
+        fec_policy::validate_carousel_timing(config)?;
+        Ok(Self {
+            ack_debounce: Duration::from_millis(config.carousel_ack_debounce_ms),
+            ack_heartbeat: Duration::from_millis(config.carousel_ack_heartbeat_ms),
+            ack_probe_interval: Duration::from_millis(config.carousel_ack_probe_interval_ms),
+            peer_silence_timeout: Duration::from_millis(config.carousel_peer_silence_timeout_ms),
+            peer_stall_timeout: Duration::from_millis(config.carousel_peer_stall_timeout_ms),
+            receiver_passive_window: Duration::from_millis(
+                config.carousel_receiver_passive_window_ms,
+            ),
+            session_complete_repeats: config.carousel_session_complete_repeats,
+            session_complete_interval: Duration::from_millis(
+                config.carousel_session_complete_interval_ms,
+            ),
+        })
+    }
+}
+
+impl Default for CarouselRuntimeConfig {
+    fn default() -> Self {
+        Self::from_lossless(&LosslessConfig::default())
+            .expect("default carousel timing configuration must be valid")
+    }
 }
 
 impl CloudcastRuntimeConfig {
@@ -184,6 +224,8 @@ pub struct ReceiverConfig {
     pub fec_enabled: bool,
     /// Optional local Cloudcast tree-boundary mode.
     pub cloudcast: Option<CloudcastRuntimeConfig>,
+    /// Validated timing used when a carousel manifest is installed.
+    pub carousel: CarouselRuntimeConfig,
 }
 
 /// Handle for interacting with the background lossless runtime actor.
@@ -542,6 +584,7 @@ impl LosslessRuntime {
             peer_report_timeout_ms: self.config.peer_report_timeout_ms,
             fec_enabled: self.config.fec_enabled,
             cloudcast: self.derive_cloudcast_config()?,
+            carousel: CarouselRuntimeConfig::from_lossless(&self.config)?,
         };
         let processors = self.processors.clone();
 
@@ -600,13 +643,21 @@ impl LosslessRuntime {
         let _ = self.topology_ready_sender.send(ready);
     }
 
-    async fn replay_completed_receiver(&self, session: SessionId, frame: InboundFrame) -> bool {
+    async fn replay_completed_receiver(&mut self, session: SessionId, frame: InboundFrame) -> bool {
+        let expired = matches!(
+            self.completed_receivers.get(&session),
+            Some(CompletedReceiverReplay::Carousel { retain_until, .. })
+                if *retain_until <= tokio::time::Instant::now()
+        );
+        if expired {
+            self.completed_receivers.remove(&session);
+            return false;
+        }
+
         let Some(replay) = self.completed_receivers.get(&session) else {
             return false;
         };
-        let Some((_, LosslessSessionControl::SourceDone { round_id })) =
-            lossless_session::decode_control(&frame.bytes)
-        else {
+        let Some((_, received_control)) = lossless_session::decode_control(&frame.bytes) else {
             return false;
         };
         match replay {
@@ -615,6 +666,9 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
+                let LosslessSessionControl::SourceDone { round_id } = received_control else {
+                    return false;
+                };
                 if round_id != *replay_round_id {
                     debug!(
                         session_id = session,
@@ -647,6 +701,9 @@ impl LosslessRuntime {
                 route,
                 report,
             } => {
+                let LosslessSessionControl::SourceDone { round_id } = received_control else {
+                    return false;
+                };
                 if round_id != *replay_round_id {
                     debug!(
                         session_id = session,
@@ -674,6 +731,26 @@ impl LosslessRuntime {
                 .await;
                 true
             }
+            CompletedReceiverReplay::Carousel { route, ack, .. } => match received_control {
+                LosslessSessionControl::AckProbe => {
+                    control::send_control(
+                        &self.processors,
+                        control::FrameRoute {
+                            session_id: session,
+                            tree_id: None,
+                            src_ip: route.src_ip,
+                            src_port: route.src_port,
+                            dst_ip: route.dst_ip,
+                            dst_port: route.dst_port,
+                        },
+                        &LosslessSessionControl::BlockAck { ack: ack.clone() },
+                    )
+                    .await;
+                    true
+                }
+                LosslessSessionControl::SessionComplete => true,
+                _ => false,
+            },
         }
     }
 
@@ -857,7 +934,7 @@ mod tests {
     use tokio::sync::watch;
     use tokio::time::timeout;
 
-    use nextmini_messages::lossless_session::{self, NeedReport};
+    use nextmini_messages::lossless_session::{self, BlockAck, NeedReport};
     use nextmini_messages::{RouteForwardingMode, RoutingTableEntry};
 
     use super::*;
@@ -955,6 +1032,77 @@ mod tests {
             )
             .await;
         assert_fec_complete(&mut packet_rx).await;
+    }
+
+    #[tokio::test]
+    async fn deliver_frame_replays_final_carousel_ack_for_probe() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E40B;
+        let final_ack = BlockAck::Blocks {
+            completed_watermark: 3,
+            extra_completed: vec![],
+        };
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Carousel {
+                route,
+                ack: final_ack.clone(),
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::AckProbe,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        assert_carousel_ack(&mut packet_rx, final_ack).await;
+    }
+
+    #[tokio::test]
+    async fn completed_carousel_replay_expires_at_configured_deadline() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E40C;
+        runtime.completed_receivers.insert(
+            session_id,
+            CompletedReceiverReplay::Carousel {
+                route,
+                ack: BlockAck::Blocks {
+                    completed_watermark: 1,
+                    extra_completed: vec![],
+                },
+                retain_until: tokio::time::Instant::now(),
+            },
+        );
+
+        runtime
+            .deliver_frame(
+                session_id,
+                InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::AckProbe,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            )
+            .await;
+
+        assert!(!runtime.completed_receivers.contains_key(&session_id));
+        assert!(
+            timeout(Duration::from_millis(50), packet_rx.recv())
+                .await
+                .is_err(),
+            "expired replay must not emit a BlockAck"
+        );
     }
 
     #[tokio::test]
@@ -1273,5 +1421,18 @@ mod tests {
                 report: NeedReport::Complete,
             }
         );
+    }
+
+    async fn assert_carousel_ack(packet_rx: &mut mpsc::Receiver<Packet>, expected: BlockAck) {
+        let packet = tokio::time::timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for replayed BlockAck")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("BlockAck packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("BlockAck should decode");
+        assert_eq!(control, LosslessSessionControl::BlockAck { ack: expected });
     }
 }

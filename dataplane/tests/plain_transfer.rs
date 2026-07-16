@@ -43,6 +43,7 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -153,6 +154,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -273,6 +275,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -343,6 +346,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -448,6 +452,7 @@ async fn plain_receiver_ignores_removed_legacy_control_ids() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -531,6 +536,7 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -593,6 +599,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));

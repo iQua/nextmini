@@ -173,6 +173,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         peer_report_timeout_ms: 500,
         fec_enabled: false,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -347,6 +348,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         peer_report_timeout_ms: 500,
         fec_enabled: true,
         cloudcast: None,
+        carousel: Default::default(),
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));

@@ -76,6 +76,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
         peer_report_timeout_ms: 500,
         fec_enabled: true,
         cloudcast: None,
+        carousel: Default::default(),
     };
 
     let (tx, rx) = mpsc::channel::<InboundFrame>(128);

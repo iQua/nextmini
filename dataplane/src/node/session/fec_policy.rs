@@ -35,6 +35,9 @@ pub enum PreflightError {
         feedback_mode: FecFeedbackMode,
         scheme: LosslessFecScheme,
     },
+    InvalidCarouselTiming {
+        reason: &'static str,
+    },
     InvalidFecGeometry {
         reason: FecError,
     },
@@ -74,6 +77,9 @@ pub(super) fn derive_sender_policy(
     let tree_ids = derive_sender_tree_ids(runtime_config)?;
 
     let feedback_mode = runtime_config.fec_feedback_mode;
+    if feedback_mode == FecFeedbackMode::Carousel {
+        validate_carousel_timing(runtime_config)?;
+    }
     let fec_mode = match runtime_config.fec_default_scheme {
         LosslessFecScheme::RaptorQ => {
             LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids)
@@ -109,6 +115,57 @@ pub(super) fn derive_sender_policy(
     Ok(SenderPolicy {
         mode: LosslessSessionMode::Fec(fec_mode),
     })
+}
+
+pub(super) fn validate_carousel_timing(
+    runtime_config: &LosslessConfig,
+) -> Result<(), PreflightError> {
+    let nonzero = [
+        runtime_config.carousel_ack_debounce_ms,
+        runtime_config.carousel_ack_heartbeat_ms,
+        runtime_config.carousel_ack_probe_interval_ms,
+        runtime_config.carousel_peer_silence_timeout_ms,
+        runtime_config.carousel_peer_stall_timeout_ms,
+        runtime_config.carousel_receiver_passive_window_ms,
+        runtime_config.carousel_session_complete_interval_ms,
+    ];
+    if nonzero.contains(&0) || runtime_config.carousel_session_complete_repeats == 0 {
+        return Err(PreflightError::InvalidCarouselTiming {
+            reason: "all carousel intervals and repeat counts must be non-zero",
+        });
+    }
+    if runtime_config.carousel_ack_debounce_ms >= runtime_config.carousel_ack_heartbeat_ms {
+        return Err(PreflightError::InvalidCarouselTiming {
+            reason: "ack debounce must be shorter than the ack heartbeat",
+        });
+    }
+    if runtime_config.carousel_ack_heartbeat_ms >= runtime_config.carousel_peer_silence_timeout_ms
+        || runtime_config.carousel_ack_probe_interval_ms
+            >= runtime_config.carousel_peer_silence_timeout_ms
+    {
+        return Err(PreflightError::InvalidCarouselTiming {
+            reason: "ack heartbeat and probe intervals must be shorter than peer silence timeout",
+        });
+    }
+    if runtime_config.carousel_peer_silence_timeout_ms
+        >= runtime_config.carousel_peer_stall_timeout_ms
+    {
+        return Err(PreflightError::InvalidCarouselTiming {
+            reason: "peer stall timeout must be longer than peer silence timeout",
+        });
+    }
+    let required_passive_window = runtime_config
+        .carousel_peer_stall_timeout_ms
+        .checked_add(runtime_config.carousel_passive_margin_ms)
+        .ok_or(PreflightError::InvalidCarouselTiming {
+            reason: "carousel abort budget plus passive margin overflows milliseconds",
+        })?;
+    if runtime_config.carousel_receiver_passive_window_ms < required_passive_window {
+        return Err(PreflightError::InvalidCarouselTiming {
+            reason: "receiver passive window must cover sender abort budget plus margin",
+        });
+    }
+    Ok(())
 }
 
 /// Resolve and validate the tree set used for FEC symbol striping.
@@ -177,6 +234,9 @@ impl Display for PreflightError {
                 f,
                 "feedback mode {feedback_mode:?} is not implemented for FEC scheme {scheme:?}"
             ),
+            Self::InvalidCarouselTiming { reason } => {
+                write!(f, "invalid carousel timing configuration: {reason}")
+            }
             Self::InvalidFecGeometry { reason } => {
                 write!(f, "invalid FEC geometry: {reason}")
             }
@@ -229,5 +289,18 @@ mod tests {
                 scheme: LosslessFecScheme::Mettle,
             })
         );
+    }
+
+    #[test]
+    fn carousel_timing_requires_passive_window_beyond_abort_budget() {
+        let mut config = fec_config();
+        config.fec_feedback_mode = FecFeedbackMode::Carousel;
+        config.carousel_receiver_passive_window_ms =
+            config.carousel_peer_stall_timeout_ms + config.carousel_passive_margin_ms - 1;
+
+        assert!(matches!(
+            derive_sender_policy(&config, 1024),
+            Err(PreflightError::InvalidCarouselTiming { .. })
+        ));
     }
 }

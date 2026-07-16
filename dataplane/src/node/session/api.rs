@@ -4,7 +4,7 @@ use std::fmt::{Display, Formatter};
 
 use tokio::sync::{mpsc, oneshot, watch};
 
-use nextmini_messages::lossless_session::NeedReport;
+use nextmini_messages::lossless_session::{BlockAck, NeedReport};
 
 use crate::node::session::runtime::{
     PreflightError, ReceiverRequest, SenderRequest, TransportRoute,
@@ -157,6 +157,11 @@ pub(crate) enum CompletedReceiverReplay {
         round_id: u32,
         route: TransportRoute,
         report: NeedReport,
+    },
+    Carousel {
+        route: TransportRoute,
+        ack: BlockAck,
+        retain_until: tokio::time::Instant,
     },
 }
 

@@ -709,6 +709,42 @@ pub struct LosslessConfig {
     #[serde(default = "default_peer_report_timeout_ms")]
     pub peer_report_timeout_ms: u64,
 
+    /// Debounce applied to cumulative carousel acknowledgements after progress.
+    #[serde(default = "default_carousel_ack_debounce_ms")]
+    pub carousel_ack_debounce_ms: u64,
+
+    /// Heartbeat interval for cumulative carousel acknowledgements.
+    #[serde(default = "default_carousel_ack_heartbeat_ms")]
+    pub carousel_ack_heartbeat_ms: u64,
+
+    /// Interval between sender probes while cumulative completion is missing.
+    #[serde(default = "default_carousel_ack_probe_interval_ms")]
+    pub carousel_ack_probe_interval_ms: u64,
+
+    /// Maximum interval without any valid acknowledgement from one peer.
+    #[serde(default = "default_carousel_peer_silence_timeout_ms")]
+    pub carousel_peer_silence_timeout_ms: u64,
+
+    /// Maximum interval without acknowledgement-set growth from one peer.
+    #[serde(default = "default_carousel_peer_stall_timeout_ms")]
+    pub carousel_peer_stall_timeout_ms: u64,
+
+    /// Receiver retention window after local carousel completion.
+    #[serde(default = "default_carousel_receiver_passive_window_ms")]
+    pub carousel_receiver_passive_window_ms: u64,
+
+    /// Safety margin added beyond the sender's longest abort timeout.
+    #[serde(default = "default_carousel_passive_margin_ms")]
+    pub carousel_passive_margin_ms: u64,
+
+    /// Number of best-effort `SessionComplete` transmissions.
+    #[serde(default = "default_carousel_session_complete_repeats")]
+    pub carousel_session_complete_repeats: u8,
+
+    /// Delay between repeated `SessionComplete` transmissions.
+    #[serde(default = "default_carousel_session_complete_interval_ms")]
+    pub carousel_session_complete_interval_ms: u64,
+
     /// Global kill-switch for FEC sessions. When false, all FEC session requests are rejected.
     #[serde(default = "default_fec_enabled")]
     pub fec_enabled: bool,
@@ -783,6 +819,15 @@ impl Default for LosslessConfig {
             data_bucket: None,
             ready_grace_ms: 1500,
             peer_report_timeout_ms: 15_000,
+            carousel_ack_debounce_ms: default_carousel_ack_debounce_ms(),
+            carousel_ack_heartbeat_ms: default_carousel_ack_heartbeat_ms(),
+            carousel_ack_probe_interval_ms: default_carousel_ack_probe_interval_ms(),
+            carousel_peer_silence_timeout_ms: default_carousel_peer_silence_timeout_ms(),
+            carousel_peer_stall_timeout_ms: default_carousel_peer_stall_timeout_ms(),
+            carousel_receiver_passive_window_ms: default_carousel_receiver_passive_window_ms(),
+            carousel_passive_margin_ms: default_carousel_passive_margin_ms(),
+            carousel_session_complete_repeats: default_carousel_session_complete_repeats(),
+            carousel_session_complete_interval_ms: default_carousel_session_complete_interval_ms(),
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_scheme: LosslessFecScheme::RaptorQ,
@@ -808,6 +853,42 @@ const fn default_ready_grace_ms() -> u64 {
 
 const fn default_peer_report_timeout_ms() -> u64 {
     15_000
+}
+
+const fn default_carousel_ack_debounce_ms() -> u64 {
+    8
+}
+
+const fn default_carousel_ack_heartbeat_ms() -> u64 {
+    300
+}
+
+const fn default_carousel_ack_probe_interval_ms() -> u64 {
+    250
+}
+
+const fn default_carousel_peer_silence_timeout_ms() -> u64 {
+    3_000
+}
+
+const fn default_carousel_peer_stall_timeout_ms() -> u64 {
+    15_000
+}
+
+const fn default_carousel_receiver_passive_window_ms() -> u64 {
+    17_000
+}
+
+const fn default_carousel_passive_margin_ms() -> u64 {
+    1_000
+}
+
+const fn default_carousel_session_complete_repeats() -> u8 {
+    3
+}
+
+const fn default_carousel_session_complete_interval_ms() -> u64 {
+    20
 }
 
 const fn default_fec_enabled() -> bool {
@@ -1087,6 +1168,13 @@ mod tests {
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
         assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
         assert_eq!(lossless.fec_feedback_mode, FecFeedbackMode::Rounds);
+        assert_eq!(lossless.carousel_ack_debounce_ms, 8);
+        assert_eq!(lossless.carousel_ack_heartbeat_ms, 300);
+        assert_eq!(lossless.carousel_ack_probe_interval_ms, 250);
+        assert_eq!(lossless.carousel_peer_silence_timeout_ms, 3_000);
+        assert_eq!(lossless.carousel_peer_stall_timeout_ms, 15_000);
+        assert_eq!(lossless.carousel_receiver_passive_window_ms, 17_000);
+        assert_eq!(lossless.carousel_passive_margin_ms, 1_000);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert!(lossless.fec_default_tree_weights.is_empty());
         assert_eq!(lossless.mettle_default_coded_rate_num, 1);

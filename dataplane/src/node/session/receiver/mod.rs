@@ -10,8 +10,8 @@ mod cloudcast;
 mod fec;
 mod plain;
 
-use std::collections::BTreeSet;
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
+use std::future::pending;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
 
@@ -20,8 +20,9 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode, MissingBlockRange, NeedReport,
+    self, BlockAck, CompletedBlockRange, FecFeedbackMode, FecScheme, LosslessSessionControl,
+    LosslessSessionFecMode, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+    NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -68,6 +69,7 @@ struct SessionReceiver {
     lifecycle: ReceiverLifecycle,
     passive_complete_deadline: Option<Instant>,
     pending_control_frames: VecDeque<InboundFrame>,
+    carousel_ack: Option<CarouselAckState>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +77,50 @@ enum ReceiverLifecycle {
     Active,
     PassiveComplete,
     SessionFinished,
+}
+
+enum ReceiverInput {
+    Frame(InboundFrame),
+    CarouselAckTimer,
+}
+
+struct CarouselAckState {
+    debounce_deadline: Option<Instant>,
+    heartbeat_deadline: Instant,
+}
+
+impl CarouselAckState {
+    fn new(now: Instant, config: crate::node::session::runtime::CarouselRuntimeConfig) -> Self {
+        Self {
+            debounce_deadline: Some(now + config.ack_debounce),
+            heartbeat_deadline: now + config.ack_heartbeat,
+        }
+    }
+
+    fn note_progress(
+        &mut self,
+        now: Instant,
+        config: crate::node::session::runtime::CarouselRuntimeConfig,
+    ) {
+        self.debounce_deadline
+            .get_or_insert(now + config.ack_debounce);
+    }
+
+    fn next_deadline(&self) -> Instant {
+        self.debounce_deadline
+            .map_or(self.heartbeat_deadline, |debounce| {
+                debounce.min(self.heartbeat_deadline)
+            })
+    }
+
+    fn record_sent(
+        &mut self,
+        now: Instant,
+        config: crate::node::session::runtime::CarouselRuntimeConfig,
+    ) {
+        self.debounce_deadline = None;
+        self.heartbeat_deadline = now + config.ack_heartbeat;
+    }
 }
 
 /// Receiver state that is truly common across plain and FEC modes.
@@ -156,6 +202,7 @@ impl SessionReceiver {
             lifecycle: ReceiverLifecycle::Active,
             passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
+            carousel_ack: None,
         }
     }
 
@@ -172,18 +219,31 @@ impl SessionReceiver {
         );
 
         loop {
-            let Some(frame) = self.next_frame(control_rx, data_rx).await else {
+            let Some(input) = self.next_input(control_rx, data_rx).await else {
                 break;
             };
 
-            if let Err(error) = self.handle_frame(frame).await {
-                warn!(
-                    session_id = self.shared.session_id,
-                    error = %error,
-                    "Lossless receiver aborted after sink failure"
-                );
-                self.finish_session("sink_error");
-                return SessionOutcome::SinkError;
+            match input {
+                ReceiverInput::Frame(frame) => {
+                    let completed_before = self.shared.complete_blocks.len();
+                    if let Err(error) = self.handle_frame(frame).await {
+                        warn!(
+                            session_id = self.shared.session_id,
+                            error = %error,
+                            "Lossless receiver aborted after sink failure"
+                        );
+                        self.finish_session("sink_error");
+                        return SessionOutcome::SinkError;
+                    }
+                    if self.shared.complete_blocks.len() > completed_before {
+                        self.note_carousel_progress();
+                    }
+                }
+                ReceiverInput::CarouselAckTimer => self.send_carousel_ack().await,
+            }
+
+            if self.lifecycle == ReceiverLifecycle::SessionFinished {
+                break;
             }
 
             if self.reported_complete() {
@@ -222,26 +282,34 @@ impl SessionReceiver {
         }
     }
 
-    async fn next_frame(
+    async fn next_input(
         &mut self,
         control_rx: &mut mpsc::Receiver<InboundFrame>,
         data_rx: &mut mpsc::Receiver<InboundFrame>,
-    ) -> Option<InboundFrame> {
+    ) -> Option<ReceiverInput> {
+        if self
+            .next_carousel_ack_deadline()
+            .is_some_and(|deadline| deadline <= Instant::now())
+        {
+            return Some(ReceiverInput::CarouselAckTimer);
+        }
+
         if let Some(frame) = self.pending_control_frames.pop_front() {
-            return Some(
+            return Some(ReceiverInput::Frame(
                 self.defer_source_done_behind_ready_data(frame, data_rx)
                     .await,
-            );
+            ));
         }
 
         if let Ok(frame) = control_rx.try_recv() {
             let frame = self.coalesce_control_frame(frame, control_rx);
-            return Some(
+            return Some(ReceiverInput::Frame(
                 self.defer_source_done_behind_ready_data(frame, data_rx)
                     .await,
-            );
+            ));
         }
 
+        let ack_deadline = self.next_carousel_ack_deadline();
         let maybe_frame = if self.is_passive_complete() {
             let passive_deadline = self.passive_complete_deadline();
             if passive_deadline <= Instant::now() {
@@ -250,6 +318,9 @@ impl SessionReceiver {
             }
             tokio::select! {
                 biased;
+                _ = sleep_until_optional(ack_deadline) => {
+                    return Some(ReceiverInput::CarouselAckTimer);
+                }
                 maybe_frame = control_rx.recv() => maybe_frame
                     .map(|frame| self.coalesce_control_frame(frame, control_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
@@ -261,6 +332,9 @@ impl SessionReceiver {
         } else {
             tokio::select! {
                 biased;
+                _ = sleep_until_optional(ack_deadline) => {
+                    return Some(ReceiverInput::CarouselAckTimer);
+                }
                 maybe_frame = control_rx.recv() => maybe_frame
                     .map(|frame| self.coalesce_control_frame(frame, control_rx)),
                 maybe_frame = data_rx.recv() => maybe_frame,
@@ -270,10 +344,24 @@ impl SessionReceiver {
         if maybe_frame.is_none() {
             self.finish_session("receiver_channel_closed");
         }
-        Some(
+        Some(ReceiverInput::Frame(
             self.defer_source_done_behind_ready_data(maybe_frame?, data_rx)
                 .await,
-        )
+        ))
+    }
+
+    #[cfg(test)]
+    async fn next_frame(
+        &mut self,
+        control_rx: &mut mpsc::Receiver<InboundFrame>,
+        data_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> Option<InboundFrame> {
+        loop {
+            match self.next_input(control_rx, data_rx).await? {
+                ReceiverInput::Frame(frame) => return Some(frame),
+                ReceiverInput::CarouselAckTimer => self.send_carousel_ack().await,
+            }
+        }
     }
 
     fn coalesce_control_frame(
@@ -317,6 +405,9 @@ impl SessionReceiver {
     }
 
     fn reported_complete(&self) -> bool {
+        if self.is_carousel() {
+            return self.object_complete();
+        }
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
             Some(ReceiverMode::Cloudcast(mode)) => mode.is_complete(),
@@ -373,10 +464,43 @@ impl SessionReceiver {
     }
 
     fn compute_passive_complete_deadline(&self) -> Instant {
+        if self.is_carousel() {
+            return Instant::now() + self.shared.cfg.carousel.receiver_passive_window;
+        }
         Instant::now()
             + timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
                 self.shared.cfg.peer_report_timeout_ms,
             ))
+    }
+
+    fn is_carousel(&self) -> bool {
+        matches!(
+            self.shared.manifest.as_ref().map(|manifest| &manifest.mode),
+            Some(LosslessSessionMode::Fec(fec))
+                if fec.feedback_mode == FecFeedbackMode::Carousel
+        )
+    }
+
+    fn next_carousel_ack_deadline(&self) -> Option<Instant> {
+        self.carousel_ack
+            .as_ref()
+            .map(CarouselAckState::next_deadline)
+    }
+
+    fn note_carousel_progress(&mut self) {
+        if let Some(ack) = self.carousel_ack.as_mut() {
+            ack.note_progress(Instant::now(), self.shared.cfg.carousel);
+        }
+    }
+
+    async fn send_carousel_ack(&mut self) {
+        let Some(ack) = self.shared.block_ack() else {
+            return;
+        };
+        self.shared.send_block_ack(&ack).await;
+        if let Some(state) = self.carousel_ack.as_mut() {
+            state.record_sent(Instant::now(), self.shared.cfg.carousel);
+        }
     }
 
     /// Handle one inbound control frame.
@@ -399,10 +523,21 @@ impl SessionReceiver {
             }
             LosslessSessionControl::Ready
             | LosslessSessionControl::Need { .. }
-            | LosslessSessionControl::BlockAck { .. }
-            | LosslessSessionControl::AckProbe
-            | LosslessSessionControl::SessionComplete => {}
+            | LosslessSessionControl::BlockAck { .. } => {}
+            LosslessSessionControl::AckProbe => {
+                if self.is_carousel() {
+                    self.send_carousel_ack().await;
+                }
+            }
+            LosslessSessionControl::SessionComplete => {
+                if self.is_carousel() && self.is_passive_complete() {
+                    self.finish_session("session_complete");
+                }
+            }
             LosslessSessionControl::SourceDone { round_id } => {
+                if self.is_carousel() {
+                    return Ok(());
+                }
                 if let Some(ReceiverMode::Plain(mode)) = self.mode.as_mut() {
                     mode.handle_source_done(&self.shared, round_id).await;
                 }
@@ -526,6 +661,12 @@ impl SessionReceiver {
         self.shared.plan = Some(plan);
         self.shared.manifest = Some(manifest);
         self.mode = Some(mode);
+        if self.is_carousel() {
+            self.carousel_ack = Some(CarouselAckState::new(
+                Instant::now(),
+                self.shared.cfg.carousel,
+            ));
+        }
         info!(
             session_id = self.shared.session_id,
             local_node_id = self.shared.local_node_id,
@@ -578,6 +719,13 @@ impl SessionReceiver {
     }
 
     fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
+        if self.is_carousel() && self.reported_complete() {
+            return Some(CompletedReceiverReplay::Carousel {
+                route: self.shared.route,
+                ack: self.shared.block_ack()?,
+                retain_until: Instant::now() + self.shared.cfg.carousel.receiver_passive_window,
+            });
+        }
         match self.mode.as_ref() {
             Some(ReceiverMode::Plain(mode)) if self.reported_complete() => {
                 let round_id = mode.last_source_done_round_id()?;
@@ -608,6 +756,14 @@ impl SessionReceiver {
     }
 }
 
+async fn sleep_until_optional(deadline: Option<Instant>) {
+    if let Some(deadline) = deadline {
+        tokio::time::sleep_until(deadline).await;
+    } else {
+        pending::<()>().await;
+    }
+}
+
 fn source_done_round(frame: &InboundFrame) -> Option<u32> {
     let (_, control) = lossless_session::decode_control(&frame.bytes)?;
     match control {
@@ -617,10 +773,11 @@ fn source_done_round(frame: &InboundFrame) -> Option<u32> {
 }
 
 fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
-    match fec.scheme_kind() {
-        Some(FecScheme::RaptorQ) => true,
-        Some(FecScheme::Mettle) => true,
-        None => false,
+    match (fec.scheme_kind(), fec.feedback_mode) {
+        (Some(FecScheme::RaptorQ), _) => true,
+        (Some(FecScheme::Mettle), FecFeedbackMode::Rounds) => true,
+        (Some(FecScheme::Mettle), FecFeedbackMode::Carousel) => false,
+        (None, _) => false,
     }
 }
 
@@ -631,6 +788,49 @@ impl ReceiverShared {
             return false;
         };
         self.complete_blocks.len() as u64 == plan.total_blocks()
+    }
+
+    fn block_ack(&self) -> Option<BlockAck> {
+        let total_blocks = self.plan?.total_blocks();
+        let mut completed_watermark = 0u64;
+        while completed_watermark < total_blocks
+            && self.complete_blocks.contains(&completed_watermark)
+        {
+            completed_watermark = completed_watermark.checked_add(1)?;
+        }
+
+        let mut extra_completed = Vec::new();
+        let mut current_start = None;
+        let mut current_end = completed_watermark;
+        for &block_id in self.complete_blocks.range(completed_watermark..) {
+            if block_id >= total_blocks {
+                break;
+            }
+            if current_start.is_some() && block_id == current_end {
+                current_end = block_id.checked_add(1)?;
+                continue;
+            }
+            if let Some(start_block_id) = current_start.replace(block_id) {
+                extra_completed.push(CompletedBlockRange {
+                    start_block_id,
+                    end_block_id: current_end,
+                });
+            }
+            current_end = block_id.checked_add(1)?;
+        }
+        if let Some(start_block_id) = current_start {
+            extra_completed.push(CompletedBlockRange {
+                start_block_id,
+                end_block_id: current_end,
+            });
+        }
+
+        BlockAck::Blocks {
+            completed_watermark,
+            extra_completed,
+        }
+        .for_wire(total_blocks)
+        .ok()
     }
 
     /// Record when the first payload unit arrives for this receiver session.
@@ -860,6 +1060,22 @@ impl ReceiverShared {
         .await;
     }
 
+    async fn send_block_ack(&self, ack: &BlockAck) {
+        control::send_control(
+            &self.processors,
+            control::FrameRoute {
+                session_id: self.session_id,
+                tree_id: None,
+                src_ip: self.route.src_ip,
+                src_port: self.route.src_port,
+                dst_ip: self.route.dst_ip,
+                dst_port: self.route.dst_port,
+            },
+            &LosslessSessionControl::BlockAck { ack: ack.clone() },
+        )
+        .await;
+    }
+
     fn plain_need(&self) -> Option<NeedReport> {
         let total_blocks = self.plan?.total_blocks();
         if total_blocks == 0 {
@@ -1015,6 +1231,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1057,6 +1274,172 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn carousel_receiver_debounces_progress_then_sends_heartbeats() {
+        let (mut receiver, mut packet_rx) = carousel_test_receiver(BTreeSet::new()).await;
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (data_tx, mut data_rx) = mpsc::channel(1);
+
+        receiver.shared.complete_blocks.insert(0);
+        receiver.note_carousel_progress();
+
+        assert!(
+            timeout(
+                Duration::from_millis(5),
+                receiver.next_input(&mut control_rx, &mut data_rx)
+            )
+            .await
+            .is_err(),
+            "ack must not precede the debounce deadline"
+        );
+        assert!(matches!(
+            timeout(
+                Duration::from_millis(200),
+                receiver.next_input(&mut control_rx, &mut data_rx)
+            )
+            .await
+            .expect("debounce timer should fire"),
+            Some(ReceiverInput::CarouselAckTimer)
+        ));
+        receiver.send_carousel_ack().await;
+        assert_eq!(
+            recv_block_ack(&mut packet_rx).await,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: vec![],
+            }
+        );
+
+        assert!(matches!(
+            timeout(
+                Duration::from_millis(200),
+                receiver.next_input(&mut control_rx, &mut data_rx)
+            )
+            .await
+            .expect("heartbeat timer should fire"),
+            Some(ReceiverInput::CarouselAckTimer)
+        ));
+        receiver.send_carousel_ack().await;
+        assert_eq!(
+            recv_block_ack(&mut packet_rx).await,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: vec![],
+            }
+        );
+
+        drop((control_tx, data_tx));
+    }
+
+    #[tokio::test]
+    async fn carousel_receiver_answers_probes_and_finishes_only_from_passive_state() {
+        let (mut receiver, mut packet_rx) = carousel_test_receiver(BTreeSet::new()).await;
+        let probe = InboundFrame {
+            bytes: lossless_session::encode_control(
+                receiver.shared.session_id,
+                &LosslessSessionControl::AckProbe,
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+        let complete = InboundFrame {
+            bytes: lossless_session::encode_control(
+                receiver.shared.session_id,
+                &LosslessSessionControl::SessionComplete,
+            ),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+
+        receiver
+            .handle_control_frame(probe.clone())
+            .await
+            .expect("probe should not touch sinks");
+        assert_eq!(
+            recv_block_ack(&mut packet_rx).await,
+            BlockAck::Blocks {
+                completed_watermark: 0,
+                extra_completed: vec![],
+            }
+        );
+        receiver
+            .handle_control_frame(complete.clone())
+            .await
+            .expect("early completion should be ignored");
+        assert_eq!(receiver.lifecycle, ReceiverLifecycle::Active);
+
+        receiver.shared.complete_blocks.insert(0);
+        receiver.enter_passive_complete();
+        receiver
+            .handle_control_frame(probe)
+            .await
+            .expect("passive probe should not touch sinks");
+        assert_eq!(
+            recv_block_ack(&mut packet_rx).await,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: vec![],
+            }
+        );
+        receiver
+            .handle_control_frame(complete)
+            .await
+            .expect("completion should not touch sinks");
+        assert_eq!(receiver.lifecycle, ReceiverLifecycle::SessionFinished);
+    }
+
+    #[tokio::test]
+    async fn carousel_receiver_eagerly_decodes_acks_and_commits_before_completion() {
+        let (mut receiver, mut packet_rx) = carousel_test_receiver(BTreeSet::new()).await;
+        let session_id = receiver.shared.session_id;
+        let sink = Arc::new(tokio::sync::Mutex::new(vec![0; 8]));
+        receiver.shared.cfg.sink_buffer = Some(sink.clone());
+        let (control_tx, mut control_rx) = mpsc::channel(8);
+        let (data_tx, mut data_rx) = mpsc::channel(8);
+
+        let task =
+            tokio::spawn(async move { receiver.run(&mut control_rx, &mut data_rx, None).await });
+        for (symbol_id, payload) in [(0, [0, 10]), (1, [1, 11]), (2, [2, 12]), (3, [3, 13])] {
+            data_tx
+                .send(InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(
+                        session_id, 0, symbol_id, 0, &payload,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                })
+                .await
+                .expect("receiver data inbox should stay open");
+        }
+
+        loop {
+            if recv_block_ack(&mut packet_rx).await
+                == (BlockAck::Blocks {
+                    completed_watermark: 1,
+                    extra_completed: vec![],
+                })
+            {
+                break;
+            }
+        }
+        assert_eq!(*sink.lock().await, vec![0, 10, 1, 11, 2, 12, 3, 13]);
+
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    session_id,
+                    &LosslessSessionControl::SessionComplete,
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("receiver control inbox should stay open");
+        assert_eq!(
+            timeout(Duration::from_secs(2), task)
+                .await
+                .expect("receiver should finish after SessionComplete")
+                .expect("receiver task should not panic"),
+            SessionOutcome::Completed
+        );
+    }
+
+    #[tokio::test]
     async fn fec_status_reports_all_missing_blocks_for_large_transfers() {
         let plan = BlockPlan::new(300, 1).expect("plan");
         let geometry = plan.symbol_geometry(4).expect("geometry");
@@ -1084,6 +1467,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1141,6 +1525,7 @@ mod tests {
                     peer_report_timeout_ms: 200,
                     fec_enabled: false,
                     cloudcast: None,
+                    carousel: Default::default(),
                 },
                 processors: crate::node::processor::ProcessorHandle::new(Default::default()),
                 manifest: Some(LosslessSessionManifest {
@@ -1156,6 +1541,7 @@ mod tests {
             lifecycle: ReceiverLifecycle::Active,
             passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
+            carousel_ack: None,
         };
 
         assert!(!receiver.is_complete());
@@ -1173,6 +1559,10 @@ mod tests {
         ));
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(16, vec![0])
+        ));
+        assert!(!receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(16, vec![0])
+                .with_feedback_mode(FecFeedbackMode::Carousel)
         ));
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])
@@ -1205,6 +1595,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: true,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1820,6 +2211,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1864,6 +2256,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1921,6 +2314,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -2004,6 +2398,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             processors,
         );
@@ -2103,6 +2498,7 @@ mod tests {
                     peer_report_timeout_ms: 200,
                     fec_enabled: true,
                     cloudcast: None,
+                    carousel: Default::default(),
                 },
                 processors,
                 manifest: Some(LosslessSessionManifest {
@@ -2126,6 +2522,7 @@ mod tests {
             lifecycle: ReceiverLifecycle::Active,
             passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
+            carousel_ack: None,
         };
 
         receiver
@@ -2226,6 +2623,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             control_rx,
             data_rx,
@@ -2379,6 +2777,7 @@ mod tests {
                 peer_report_timeout_ms: 200,
                 fec_enabled: false,
                 cloudcast: None,
+                carousel: Default::default(),
             },
             control_rx,
             data_rx,
@@ -2534,6 +2933,7 @@ mod tests {
                         peer_report_timeout_ms: 200,
                         fec_enabled: false,
                         cloudcast: None,
+                        carousel: Default::default(),
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {
@@ -2549,6 +2949,7 @@ mod tests {
                 lifecycle: ReceiverLifecycle::Active,
                 passive_complete_deadline: None,
                 pending_control_frames: VecDeque::new(),
+                carousel_ack: None,
             },
             packet_rx,
         )
@@ -2638,6 +3039,7 @@ mod tests {
                         peer_report_timeout_ms: 200,
                         fec_enabled: true,
                         cloudcast: None,
+                        carousel: Default::default(),
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {
@@ -2658,9 +3060,56 @@ mod tests {
                 lifecycle: ReceiverLifecycle::Active,
                 passive_complete_deadline: None,
                 pending_control_frames: VecDeque::new(),
+                carousel_ack: None,
             },
             packet_rx,
         )
+    }
+
+    async fn carousel_test_receiver(
+        complete_blocks: BTreeSet<u64>,
+    ) -> (SessionReceiver, mpsc::Receiver<Packet>) {
+        let (mut receiver, packet_rx) =
+            fec_test_receiver(8, complete_blocks, BTreeMap::new()).await;
+        let manifest = receiver
+            .shared
+            .manifest
+            .as_mut()
+            .expect("test receiver has a manifest");
+        let LosslessSessionMode::Fec(fec) = &mut manifest.mode else {
+            panic!("test receiver must use FEC");
+        };
+        fec.feedback_mode = FecFeedbackMode::Carousel;
+        receiver.shared.cfg.carousel = crate::node::session::runtime::CarouselRuntimeConfig {
+            ack_debounce: Duration::from_millis(15),
+            ack_heartbeat: Duration::from_millis(60),
+            ack_probe_interval: Duration::from_millis(30),
+            peer_silence_timeout: Duration::from_millis(120),
+            peer_stall_timeout: Duration::from_millis(200),
+            receiver_passive_window: Duration::from_millis(300),
+            ..Default::default()
+        };
+        receiver.carousel_ack = Some(CarouselAckState::new(
+            Instant::now(),
+            receiver.shared.cfg.carousel,
+        ));
+        (receiver, packet_rx)
+    }
+
+    async fn recv_block_ack(packet_rx: &mut mpsc::Receiver<Packet>) -> BlockAck {
+        let packet = timeout(Duration::from_secs(2), packet_rx.recv())
+            .await
+            .expect("timed out waiting for BlockAck")
+            .expect("packet capture closed unexpectedly");
+        let payload = packet
+            .tcp_payload()
+            .expect("BlockAck packet should include payload");
+        let (_, control) =
+            lossless_session::decode_control(payload).expect("BlockAck should decode");
+        let LosslessSessionControl::BlockAck { ack } = control else {
+            panic!("unexpected control frame: {control:?}");
+        };
+        ack
     }
 
     async fn recv_plain_need(packet_rx: &mut mpsc::Receiver<Packet>) -> NeedReport {
