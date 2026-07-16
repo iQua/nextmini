@@ -7,6 +7,33 @@ use std::sync::Arc;
 use crate::MettleParams;
 use crate::encoder::MettleBin;
 
+/// Failure to construct a finite dense METTLE decoder.
+///
+/// The production constructor uses fallible reservations for every structure
+/// whose size grows with the negotiated source or bin count. This lets the
+/// session layer reject a manifest cleanly instead of relying on an aborting
+/// allocator path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DecoderBuildError {
+    /// The terminated graph cannot be indexed on this host.
+    GeometryTooLarge,
+    /// The allocator rejected one of the checked graph reservations.
+    AllocationFailed,
+}
+
+impl std::fmt::Display for DecoderBuildError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::GeometryTooLarge => {
+                formatter.write_str("terminated decoder geometry is too large")
+            }
+            Self::AllocationFailed => formatter.write_str("terminated decoder allocation failed"),
+        }
+    }
+}
+
+impl std::error::Error for DecoderBuildError {}
+
 /// Shared, refcounted view of a decoded source payload.
 ///
 /// The decoder needs to hold each decoded source's bytes until the coupling
@@ -124,10 +151,16 @@ enum SeenBinIds {
 }
 
 impl SeenBinIds {
-    fn new(bin_count: Option<usize>) -> Self {
+    fn try_new(bin_count: Option<usize>) -> Result<Self, DecoderBuildError> {
         match bin_count {
-            Some(bin_count) => Self::Dense(vec![false; bin_count]),
-            None => Self::Sparse(BTreeSet::new()),
+            Some(bin_count) => {
+                let mut seen = Vec::new();
+                seen.try_reserve_exact(bin_count)
+                    .map_err(|_| DecoderBuildError::AllocationFailed)?;
+                seen.resize(bin_count, false);
+                Ok(Self::Dense(seen))
+            }
+            None => Ok(Self::Sparse(BTreeSet::new())),
         }
     }
 
@@ -204,12 +237,16 @@ enum ReceivedBins {
 }
 
 impl ReceivedBins {
-    fn new(bin_count: Option<usize>) -> Self {
+    fn try_new(bin_count: Option<usize>) -> Result<Self, DecoderBuildError> {
         match bin_count {
             Some(bin_count) => {
-                Self::Dense(std::iter::repeat_with(|| None).take(bin_count).collect())
+                let mut bins = Vec::new();
+                bins.try_reserve_exact(bin_count)
+                    .map_err(|_| DecoderBuildError::AllocationFailed)?;
+                bins.resize_with(bin_count, || None);
+                Ok(Self::Dense(bins))
             }
-            None => Self::Sparse(BTreeMap::new()),
+            None => Ok(Self::Sparse(BTreeMap::new())),
         }
     }
 
@@ -383,8 +420,23 @@ impl MettleDecoder {
         seed: u64,
         terminal_source_count: u64,
     ) -> Self {
-        let graph = Some(precompute_graph(params, seed, terminal_source_count));
-        Self::new_with_optional_graph(
+        Self::try_new_terminated_with_precomputed_graph(
+            params,
+            source_symbol_bytes,
+            seed,
+            terminal_source_count,
+        )
+        .expect("infallible dense decoder constructor could not reserve its graph")
+    }
+
+    pub(crate) fn try_new_terminated_with_precomputed_graph(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Result<Self, DecoderBuildError> {
+        let graph = Some(precompute_graph(params, seed, terminal_source_count)?);
+        Self::try_new_with_optional_graph(
             params,
             source_symbol_bytes,
             seed,
@@ -400,8 +452,25 @@ impl MettleDecoder {
         terminal_source_count: Option<u64>,
         graph: Option<DecoderGraph>,
     ) -> Self {
+        Self::try_new_with_optional_graph(
+            params,
+            source_symbol_bytes,
+            seed,
+            terminal_source_count,
+            graph,
+        )
+        .expect("decoder constructor could not reserve its dense state")
+    }
+
+    fn try_new_with_optional_graph(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+        graph: Option<DecoderGraph>,
+    ) -> Result<Self, DecoderBuildError> {
         let bin_count = graph.as_ref().map(DecoderGraph::bin_count);
-        Self {
+        Ok(Self {
             params,
             source_symbol_bytes,
             next_decoded_source_id: 0,
@@ -410,13 +479,13 @@ impl MettleDecoder {
             decoded_prefix_start_source_id: 0,
             decoded_prefix_equation_payloads: VecDeque::new(),
             decoded_future_equation_payloads: BTreeMap::new(),
-            seen_bin_ids: SeenBinIds::new(bin_count),
-            received_bins: ReceivedBins::new(bin_count),
+            seen_bin_ids: SeenBinIds::try_new(bin_count)?,
+            received_bins: ReceivedBins::try_new(bin_count)?,
             ready_bin_ids: VecDeque::new(),
             graph,
             rolling_graph: RollingDecoderGraph::default(),
             bin_cleanup_frontier: 0,
-        }
+        })
     }
 
     pub(crate) fn push_bin(&mut self, bin: MettleBin) -> Vec<DecodedSource> {
@@ -766,12 +835,24 @@ fn xor_payload(dst: &mut [u8], src: &[u8]) {
     }
 }
 
-fn precompute_graph(params: MettleParams, seed: u64, terminal_source_count: u64) -> DecoderGraph {
-    let source_count = usize::try_from(terminal_source_count).expect("source count fits usize");
+fn precompute_graph(
+    params: MettleParams,
+    seed: u64,
+    terminal_source_count: u64,
+) -> Result<DecoderGraph, DecoderBuildError> {
+    let source_count =
+        usize::try_from(terminal_source_count).map_err(|_| DecoderBuildError::GeometryTooLarge)?;
     let bin_count = usize::try_from(params.terminal_departure_end_exclusive(terminal_source_count))
-        .expect("terminal bin count fits usize");
-    let mut source_bins = Vec::with_capacity(source_count);
-    let mut bin_touchers = vec![Vec::new(); bin_count];
+        .map_err(|_| DecoderBuildError::GeometryTooLarge)?;
+    let mut source_bins = Vec::new();
+    source_bins
+        .try_reserve_exact(source_count)
+        .map_err(|_| DecoderBuildError::AllocationFailed)?;
+    let mut bin_touchers = Vec::new();
+    bin_touchers
+        .try_reserve_exact(bin_count)
+        .map_err(|_| DecoderBuildError::AllocationFailed)?;
+    bin_touchers.resize_with(bin_count, Vec::new);
 
     for source_id in 0..terminal_source_count {
         let (edge_bin_ids, edge_count) = params
@@ -781,19 +862,23 @@ fn precompute_graph(params: MettleParams, seed: u64, terminal_source_count: u64)
                 Some(terminal_source_count),
             );
         for &bin_id in &edge_bin_ids[..edge_count] {
-            let bin_index = usize::try_from(bin_id).expect("bin id fits usize");
-            bin_touchers
+            let bin_index =
+                usize::try_from(bin_id).map_err(|_| DecoderBuildError::GeometryTooLarge)?;
+            let touchers = bin_touchers
                 .get_mut(bin_index)
-                .expect("bin id is inside terminal departure range")
-                .push(source_id);
+                .ok_or(DecoderBuildError::GeometryTooLarge)?;
+            touchers
+                .try_reserve(1)
+                .map_err(|_| DecoderBuildError::AllocationFailed)?;
+            touchers.push(source_id);
         }
         source_bins.push(SourceEdgeIds::new(edge_bin_ids, edge_count));
     }
 
-    DecoderGraph {
+    Ok(DecoderGraph {
         source_bins,
         bin_touchers,
-    }
+    })
 }
 
 #[cfg(test)]

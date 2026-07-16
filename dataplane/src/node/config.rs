@@ -777,6 +777,14 @@ pub struct LosslessConfig {
     #[serde(default = "default_mettle_default_coded_rate_den")]
     pub mettle_default_coded_rate_den: u32,
 
+    /// Logical memory reservation charged for each active dense METTLE decoder.
+    #[serde(default = "default_mettle_decoder_reservation_bytes")]
+    pub mettle_decoder_reservation_bytes: usize,
+
+    /// Maximum number of dense METTLE decoder reservations held process-wide.
+    #[serde(default = "default_mettle_decoder_max_concurrent")]
+    pub mettle_decoder_max_concurrent: usize,
+
     /// Number of Cloudcast stripes/partitions used to quantize tree weights.
     #[serde(default)]
     pub cloudcast_stripes: usize,
@@ -836,6 +844,8 @@ impl Default for LosslessConfig {
             fec_default_tree_weights: Vec::new(),
             mettle_default_coded_rate_num: 1,
             mettle_default_coded_rate_den: 1,
+            mettle_decoder_reservation_bytes: default_mettle_decoder_reservation_bytes(),
+            mettle_decoder_max_concurrent: default_mettle_decoder_max_concurrent(),
             cloudcast_stripes: 0,
             cloudcast_stripe_tree_ids: Vec::new(),
             ingress_feature: Feature::Sequential,
@@ -909,6 +919,14 @@ const fn default_mettle_default_coded_rate_num() -> u32 {
 
 const fn default_mettle_default_coded_rate_den() -> u32 {
     1
+}
+
+const fn default_mettle_decoder_reservation_bytes() -> usize {
+    192 * 1024 * 1024
+}
+
+const fn default_mettle_decoder_max_concurrent() -> usize {
+    4
 }
 
 #[allow(dead_code)]
@@ -1179,6 +1197,8 @@ mod tests {
         assert!(lossless.fec_default_tree_weights.is_empty());
         assert_eq!(lossless.mettle_default_coded_rate_num, 1);
         assert_eq!(lossless.mettle_default_coded_rate_den, 1);
+        assert_eq!(lossless.mettle_decoder_reservation_bytes, 192 * 1024 * 1024);
+        assert_eq!(lossless.mettle_decoder_max_concurrent, 4);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,

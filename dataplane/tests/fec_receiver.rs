@@ -77,6 +77,7 @@ async fn build_receiver_harness() -> ReceiverHarness {
         fec_enabled: true,
         cloudcast: None,
         carousel: Default::default(),
+        mettle_decoder_budget: None,
     };
 
     let (tx, rx) = mpsc::channel::<InboundFrame>(128);

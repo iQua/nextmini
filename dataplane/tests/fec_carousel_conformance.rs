@@ -378,6 +378,7 @@ async fn dropped_completion_recovers_through_probe_during_passive_handoff() {
         fec_enabled: true,
         cloudcast: None,
         carousel: short_timing(),
+        mettle_decoder_budget: None,
     };
     let (control_tx, control_rx) = mpsc::channel(64);
     let (data_tx, data_rx) = mpsc::channel(64);
@@ -487,6 +488,7 @@ async fn passive_receiver_finishes_when_session_complete_is_dropped_forever() {
         fec_enabled: true,
         cloudcast: None,
         carousel: timing,
+        mettle_decoder_budget: None,
     };
     let (control_tx, control_rx) = mpsc::channel(16);
     let (data_tx, data_rx) = mpsc::channel(16);
@@ -930,6 +932,7 @@ async fn receiver_ack_timer_is_fair_under_a_continuously_ready_data_inbox() {
         fec_enabled: true,
         cloudcast: None,
         carousel: short_timing(),
+        mettle_decoder_budget: None,
     };
     let (control_tx, control_rx) = mpsc::channel(128);
     let (data_tx, data_rx) = mpsc::channel(4);
@@ -1114,6 +1117,7 @@ async fn run_receiver_permutation(
         fec_enabled: true,
         cloudcast: None,
         carousel: short_timing(),
+        mettle_decoder_budget: None,
     };
     let (control_tx, control_rx) = mpsc::channel(64);
     let (data_tx, data_rx) = mpsc::channel(64);

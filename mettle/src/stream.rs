@@ -7,6 +7,7 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use crate::MettleParams;
+pub use crate::decoder::DecoderBuildError;
 use crate::decoder::{DecodedSource as InnerDecodedSource, MettleDecoder};
 use crate::encoder::{MettleBin, MettleEncoder};
 
@@ -170,6 +171,27 @@ impl Decoder {
         }
     }
 
+    /// Fallibly construct a dense decoder for a finite source prefix.
+    ///
+    /// Every `O(N)` graph and dense-state allocation is reserved with the
+    /// fallible collection API. Runtime callers should perform this work on a
+    /// blocking worker before advertising readiness for the stream.
+    pub fn try_new_terminated(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Result<Self, DecoderBuildError> {
+        Ok(Self {
+            inner: MettleDecoder::try_new_terminated_with_precomputed_graph(
+                params,
+                source_symbol_bytes,
+                seed,
+                terminal_source_count,
+            )?,
+        })
+    }
+
     /// Push one received coded bin and return any newly released source prefix.
     pub fn push_bin(&mut self, bin_id: u128, payload: Vec<u8>) -> Vec<DecodedSource> {
         self.inner
@@ -183,5 +205,39 @@ impl Decoder {
     #[must_use]
     pub fn next_source_id(&self) -> u64 {
         self.inner.next_source_id()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::num::NonZeroUsize;
+
+    use crate::{DecoderBuildError, MettleParams, OverheadRatio};
+
+    use super::Decoder;
+
+    #[test]
+    fn fallible_dense_constructor_builds_checked_prefix() {
+        let decoder = Decoder::try_new_terminated(
+            MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead")),
+            NonZeroUsize::new(1400).expect("non-zero symbol size"),
+            7,
+            128,
+        )
+        .expect("small dense decoder should allocate");
+
+        assert_eq!(decoder.next_source_id(), 0);
+    }
+
+    #[test]
+    fn fallible_dense_constructor_rejects_unindexable_geometry() {
+        let result = Decoder::try_new_terminated(
+            MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead")),
+            NonZeroUsize::new(1).expect("non-zero symbol size"),
+            7,
+            u64::MAX,
+        );
+
+        assert!(matches!(result, Err(DecoderBuildError::GeometryTooLarge)));
     }
 }

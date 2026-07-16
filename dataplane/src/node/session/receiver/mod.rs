@@ -1349,6 +1349,7 @@ mod tests {
                 fec_enabled: true,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1606,6 +1607,7 @@ mod tests {
                 fec_enabled: true,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -1665,6 +1667,7 @@ mod tests {
                     fec_enabled: false,
                     cloudcast: None,
                     carousel: Default::default(),
+                    mettle_decoder_budget: None,
                 },
                 processors: crate::node::processor::ProcessorHandle::new(Default::default()),
                 manifest: Some(LosslessSessionManifest {
@@ -1736,6 +1739,7 @@ mod tests {
                 fec_enabled: true,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -2392,6 +2396,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -2438,6 +2443,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -2497,6 +2503,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
@@ -2582,6 +2589,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             processors,
         );
@@ -2682,6 +2690,7 @@ mod tests {
                     fec_enabled: true,
                     cloudcast: None,
                     carousel: Default::default(),
+                    mettle_decoder_budget: None,
                 },
                 processors,
                 manifest: Some(LosslessSessionManifest {
@@ -2880,6 +2889,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             control_rx,
             data_rx,
@@ -3035,6 +3045,7 @@ mod tests {
                 fec_enabled: false,
                 cloudcast: None,
                 carousel: Default::default(),
+                mettle_decoder_budget: None,
             },
             control_rx,
             data_rx,
@@ -3192,6 +3203,7 @@ mod tests {
                         fec_enabled: false,
                         cloudcast: None,
                         carousel: Default::default(),
+                        mettle_decoder_budget: None,
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {
@@ -3299,6 +3311,7 @@ mod tests {
                         fec_enabled: true,
                         cloudcast: None,
                         carousel: Default::default(),
+                        mettle_decoder_budget: None,
                     },
                     processors,
                     manifest: Some(LosslessSessionManifest {

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use ahash::AHashMap;
 use bytes::Bytes;
-use tokio::sync::{Mutex, mpsc, oneshot, watch};
+use tokio::sync::{Mutex, OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::TokenBucketSpec;
@@ -64,6 +64,105 @@ pub struct CarouselRuntimeConfig {
     pub receiver_passive_window: Duration,
     pub session_complete_repeats: u8,
     pub session_complete_interval: Duration,
+}
+
+/// Process-wide admission pool for dense METTLE prefix decoders.
+#[derive(Clone, Debug)]
+pub struct MettleDecoderBudget {
+    reservation_bytes: usize,
+    max_concurrent: usize,
+    permits: Arc<Semaphore>,
+}
+
+/// One logical dense-decoder reservation.
+#[derive(Debug)]
+#[allow(dead_code)] // Acquired by the Stage 2.3 manifest-install path.
+pub struct MettleDecoderPermit {
+    reservation_bytes: usize,
+    _permit: OwnedSemaphorePermit,
+}
+
+/// Invalid decoder-budget configuration or exhausted process admission.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MettleDecoderBudgetError {
+    ZeroReservation,
+    ZeroPermits,
+    TooManyPermits,
+    AggregateOverflow,
+    Exhausted,
+}
+
+impl std::fmt::Display for MettleDecoderBudgetError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ZeroReservation => formatter.write_str("METTLE decoder reservation is zero"),
+            Self::ZeroPermits => formatter.write_str("METTLE decoder permit count is zero"),
+            Self::TooManyPermits => {
+                formatter.write_str("METTLE decoder permit count exceeds semaphore capacity")
+            }
+            Self::AggregateOverflow => {
+                formatter.write_str("METTLE decoder aggregate reservation overflows")
+            }
+            Self::Exhausted => formatter.write_str("METTLE decoder permits are exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for MettleDecoderBudgetError {}
+
+#[allow(dead_code)] // Admission methods are consumed by the Stage 2.3 receiver path.
+impl MettleDecoderBudget {
+    fn from_lossless(config: &LosslessConfig) -> Result<Self, MettleDecoderBudgetError> {
+        let reservation_bytes = config.mettle_decoder_reservation_bytes;
+        if reservation_bytes == 0 {
+            return Err(MettleDecoderBudgetError::ZeroReservation);
+        }
+        let max_concurrent = config.mettle_decoder_max_concurrent;
+        if max_concurrent == 0 {
+            return Err(MettleDecoderBudgetError::ZeroPermits);
+        }
+        if max_concurrent > Semaphore::MAX_PERMITS {
+            return Err(MettleDecoderBudgetError::TooManyPermits);
+        }
+        reservation_bytes
+            .checked_mul(max_concurrent)
+            .ok_or(MettleDecoderBudgetError::AggregateOverflow)?;
+
+        Ok(Self {
+            reservation_bytes,
+            max_concurrent,
+            permits: Arc::new(Semaphore::new(max_concurrent)),
+        })
+    }
+
+    pub(super) fn try_acquire(&self) -> Result<MettleDecoderPermit, MettleDecoderBudgetError> {
+        let permit = Arc::clone(&self.permits)
+            .try_acquire_owned()
+            .map_err(|_| MettleDecoderBudgetError::Exhausted)?;
+        Ok(MettleDecoderPermit {
+            reservation_bytes: self.reservation_bytes,
+            _permit: permit,
+        })
+    }
+
+    pub(super) const fn reservation_bytes(&self) -> usize {
+        self.reservation_bytes
+    }
+
+    pub(super) const fn max_concurrent(&self) -> usize {
+        self.max_concurrent
+    }
+
+    pub(super) fn available_permits(&self) -> usize {
+        self.permits.available_permits()
+    }
+}
+
+#[allow(dead_code)] // Admission methods are consumed by the Stage 2.3 receiver path.
+impl MettleDecoderPermit {
+    pub(super) const fn reservation_bytes(&self) -> usize {
+        self.reservation_bytes
+    }
 }
 
 impl CarouselRuntimeConfig {
@@ -276,6 +375,9 @@ pub struct ReceiverConfig {
     pub cloudcast: Option<CloudcastRuntimeConfig>,
     /// Timing validated if and when a carousel manifest is installed.
     pub carousel: CarouselRuntimeConfig,
+    /// Shared process-wide dense METTLE decoder admission pool.
+    #[allow(dead_code)] // Consumed by the Stage 2.3 manifest-install path.
+    pub mettle_decoder_budget: Option<MettleDecoderBudget>,
 }
 
 /// Handle for interacting with the background lossless runtime actor.
@@ -379,6 +481,7 @@ struct LosslessRuntime {
     topology_ready: bool,
     message_sender: mpsc::Sender<LosslessRuntimeMessage>,
     message_receiver: mpsc::Receiver<LosslessRuntimeMessage>,
+    mettle_decoder_budget: Option<MettleDecoderBudget>,
 }
 
 impl LosslessRuntime {
@@ -390,6 +493,13 @@ impl LosslessRuntime {
         message_receiver: mpsc::Receiver<LosslessRuntimeMessage>,
     ) -> Self {
         let (topology_ready_sender, _) = watch::channel(false);
+        let mettle_decoder_budget = match MettleDecoderBudget::from_lossless(&config) {
+            Ok(budget) => Some(budget),
+            Err(error) => {
+                warn!(%error, "Lossless runtime disabled METTLE decoder admission because its budget is invalid");
+                None
+            }
+        };
 
         Self {
             processors,
@@ -400,6 +510,7 @@ impl LosslessRuntime {
             topology_ready: false,
             message_sender,
             message_receiver,
+            mettle_decoder_budget,
         }
     }
 
@@ -658,6 +769,7 @@ impl LosslessRuntime {
             fec_enabled: self.config.fec_enabled,
             cloudcast: self.derive_cloudcast_config()?,
             carousel: CarouselRuntimeConfig::from_lossless(&self.config),
+            mettle_decoder_budget: self.mettle_decoder_budget.clone(),
         };
         let processors = self.processors.clone();
 
@@ -1035,6 +1147,49 @@ mod tests {
 
     const SOURCE_NODE_ID: usize = 61;
     const RECEIVER_NODE_ID: usize = 62;
+
+    #[test]
+    fn mettle_decoder_budget_defaults_and_fifth_permit_rejection_are_checked() {
+        let config = LosslessConfig::default();
+        let budget = MettleDecoderBudget::from_lossless(&config).expect("valid default budget");
+        assert_eq!(budget.reservation_bytes(), 192 * 1024 * 1024);
+        assert_eq!(budget.max_concurrent(), 4);
+
+        let mut permits = Vec::new();
+        for _ in 0..4 {
+            permits.push(budget.try_acquire().expect("one of four decoder permits"));
+        }
+        assert_eq!(permits[0].reservation_bytes(), 192 * 1024 * 1024);
+        assert_eq!(budget.available_permits(), 0);
+        assert!(matches!(
+            budget.try_acquire(),
+            Err(MettleDecoderBudgetError::Exhausted)
+        ));
+
+        permits.pop();
+        assert!(budget.try_acquire().is_ok());
+    }
+
+    #[test]
+    fn mettle_decoder_budget_rejects_invalid_configuration() {
+        let zero_reservation = LosslessConfig {
+            mettle_decoder_reservation_bytes: 0,
+            ..LosslessConfig::default()
+        };
+        assert!(matches!(
+            MettleDecoderBudget::from_lossless(&zero_reservation),
+            Err(MettleDecoderBudgetError::ZeroReservation)
+        ));
+
+        let zero_permits = LosslessConfig {
+            mettle_decoder_max_concurrent: 0,
+            ..LosslessConfig::default()
+        };
+        assert!(matches!(
+            MettleDecoderBudget::from_lossless(&zero_permits),
+            Err(MettleDecoderBudgetError::ZeroPermits)
+        ));
+    }
 
     #[tokio::test]
     async fn non_carousel_session_start_ignores_invalid_carousel_timing() {

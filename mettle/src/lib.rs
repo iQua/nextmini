@@ -9,3 +9,4 @@ pub mod test_support;
 mod validation;
 
 pub use params::{MettleParams, OverheadRatio, ParamsError};
+pub use stream::DecoderBuildError;

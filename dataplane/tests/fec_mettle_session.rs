@@ -84,6 +84,7 @@ async fn mettle_lossless_session_completes_full_terminated_zero_overhead_stream(
         fec_enabled: true,
         cloudcast: None,
         carousel: Default::default(),
+        mettle_decoder_budget: None,
     };
     let (receiver_tx, receiver_rx) = mpsc::channel::<InboundFrame>(4096);
     let receiver_task = tokio::spawn(receiver::run(
