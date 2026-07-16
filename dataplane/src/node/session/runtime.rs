@@ -374,7 +374,7 @@ impl LosslessRuntime {
                     replay,
                     ack,
                 } => {
-                    self.completed_receivers.insert(session_id, replay);
+                    self.cache_completed_receiver(session_id, replay);
                     let _ = ack.send(());
                 }
                 LosslessRuntimeMessage::SessionExited {
@@ -667,11 +667,10 @@ impl LosslessRuntime {
     }
 
     async fn replay_completed_receiver(&mut self, session: SessionId, frame: InboundFrame) -> bool {
-        let expired = matches!(
-            self.completed_receivers.get(&session),
-            Some(CompletedReceiverReplay::Carousel { retain_until, .. })
-                if *retain_until <= tokio::time::Instant::now()
-        );
+        let expired = self
+            .completed_receivers
+            .get(&session)
+            .is_some_and(|replay| replay.retain_until() <= tokio::time::Instant::now());
         if expired {
             self.completed_receivers.remove(&session);
             return false;
@@ -688,6 +687,7 @@ impl LosslessRuntime {
                 round_id: replay_round_id,
                 route,
                 report,
+                ..
             } => {
                 let LosslessSessionControl::SourceDone { round_id } = received_control else {
                     return false;
@@ -723,6 +723,7 @@ impl LosslessRuntime {
                 round_id: replay_round_id,
                 route,
                 report,
+                ..
             } => {
                 let LosslessSessionControl::SourceDone { round_id } = received_control else {
                     return false;
@@ -781,6 +782,15 @@ impl LosslessRuntime {
                 LosslessSessionControl::SessionComplete => true,
                 _ => false,
             },
+        }
+    }
+
+    fn cache_completed_receiver(&mut self, session_id: SessionId, replay: CompletedReceiverReplay) {
+        let now = tokio::time::Instant::now();
+        self.completed_receivers
+            .retain(|_, cached| cached.retain_until() > now);
+        if replay.retain_until() > now {
+            self.completed_receivers.insert(session_id, replay);
         }
     }
 
@@ -1002,6 +1012,7 @@ mod tests {
                 round_id: 0,
                 route,
                 report: NeedReport::Complete,
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
             },
         );
 
@@ -1033,6 +1044,7 @@ mod tests {
                 round_id: 0,
                 route,
                 report: NeedReport::Complete,
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
             },
         );
 
@@ -1251,6 +1263,55 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completed_replay_insert_sweeps_expired_entries_in_every_mode() {
+        let (mut runtime, _packet_rx, route) = test_runtime().await;
+        let now = tokio::time::Instant::now();
+        runtime.completed_receivers.insert(
+            1,
+            CompletedReceiverReplay::Plain {
+                round_id: 0,
+                route,
+                report: NeedReport::Complete,
+                retain_until: now,
+            },
+        );
+        runtime.completed_receivers.insert(
+            2,
+            CompletedReceiverReplay::Fec {
+                round_id: 0,
+                route,
+                report: NeedReport::Complete,
+                retain_until: now,
+            },
+        );
+        runtime.completed_receivers.insert(
+            3,
+            CompletedReceiverReplay::Carousel {
+                route,
+                ack: BlockAck::Blocks {
+                    completed_watermark: 1,
+                    extra_completed: Vec::new(),
+                },
+                local_node_id: RECEIVER_NODE_ID,
+                retain_until: now,
+            },
+        );
+
+        runtime.cache_completed_receiver(
+            4,
+            CompletedReceiverReplay::Plain {
+                round_id: 1,
+                route,
+                report: NeedReport::Complete,
+                retain_until: now + Duration::from_secs(1),
+            },
+        );
+
+        assert_eq!(runtime.completed_receivers.len(), 1);
+        assert!(runtime.completed_receivers.contains_key(&4));
+    }
+
+    #[tokio::test]
     async fn deliver_frame_replays_completed_receiver_for_the_cached_round_only() {
         let (mut runtime, mut packet_rx, route) = test_runtime().await;
         let session_id = 0xA11C_E40A;
@@ -1261,6 +1322,7 @@ mod tests {
                 round_id: 1,
                 route,
                 report: NeedReport::Complete,
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
             },
         );
 
@@ -1342,6 +1404,7 @@ mod tests {
                 round_id: 0,
                 route,
                 report: NeedReport::Complete,
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
             },
         );
 
@@ -1400,6 +1463,7 @@ mod tests {
                 round_id: 0,
                 route,
                 report: NeedReport::Complete,
+                retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
             },
         );
 

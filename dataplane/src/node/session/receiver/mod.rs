@@ -125,8 +125,8 @@ struct CarouselAckState {
 impl CarouselAckState {
     fn new(now: Instant, config: crate::node::session::runtime::CarouselRuntimeConfig) -> Self {
         Self {
-            debounce_deadline: Some(now + config.ack_debounce),
-            heartbeat_deadline: now + config.ack_heartbeat,
+            debounce_deadline: Some(checked_deadline(now, config.ack_debounce)),
+            heartbeat_deadline: checked_deadline(now, config.ack_heartbeat),
         }
     }
 
@@ -136,7 +136,7 @@ impl CarouselAckState {
         config: crate::node::session::runtime::CarouselRuntimeConfig,
     ) {
         self.debounce_deadline
-            .get_or_insert(now + config.ack_debounce);
+            .get_or_insert(checked_deadline(now, config.ack_debounce));
     }
 
     fn next_deadline(&self) -> Instant {
@@ -152,7 +152,7 @@ impl CarouselAckState {
         config: crate::node::session::runtime::CarouselRuntimeConfig,
     ) {
         self.debounce_deadline = None;
-        self.heartbeat_deadline = now + config.ack_heartbeat;
+        self.heartbeat_deadline = checked_deadline(now, config.ack_heartbeat);
     }
 }
 
@@ -510,12 +510,17 @@ impl SessionReceiver {
 
     fn compute_passive_complete_deadline(&self) -> Instant {
         if self.is_carousel() {
-            return Instant::now() + self.shared.cfg.carousel.receiver_passive_window;
+            return checked_deadline(
+                Instant::now(),
+                self.shared.cfg.carousel.receiver_passive_window,
+            );
         }
-        Instant::now()
-            + timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
+        checked_deadline(
+            Instant::now(),
+            timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
                 self.shared.cfg.peer_report_timeout_ms,
-            ))
+            )),
+        )
     }
 
     fn is_carousel(&self) -> bool {
@@ -540,6 +545,12 @@ impl SessionReceiver {
 
     async fn send_carousel_ack(&mut self) {
         let Some(ack) = self.shared.block_ack() else {
+            if let Some(state) = self.carousel_ack.as_mut() {
+                // An armed carousel timer without an installed FEC manifest
+                // must still advance; otherwise its expired deadline spins the
+                // receiver loop without awaiting input.
+                state.record_sent(Instant::now(), self.shared.cfg.carousel);
+            }
             return;
         };
         self.shared.send_block_ack(&ack).await;
@@ -793,12 +804,23 @@ impl SessionReceiver {
     }
 
     fn completed_replay(&self) -> Option<CompletedReceiverReplay> {
+        let rounds_retain_until = || {
+            checked_deadline(
+                Instant::now(),
+                timing::session_finish_timeout_for(tokio::time::Duration::from_millis(
+                    self.shared.cfg.peer_report_timeout_ms,
+                )),
+            )
+        };
         if self.is_carousel() && self.reported_complete() {
             return Some(CompletedReceiverReplay::Carousel {
                 route: self.shared.route,
                 ack: self.shared.block_ack()?,
                 local_node_id: self.shared.local_node_id,
-                retain_until: Instant::now() + self.shared.cfg.carousel.receiver_passive_window,
+                retain_until: checked_deadline(
+                    Instant::now(),
+                    self.shared.cfg.carousel.receiver_passive_window,
+                ),
             });
         }
         match self.mode.as_ref() {
@@ -808,6 +830,7 @@ impl SessionReceiver {
                     round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,
+                    retain_until: rounds_retain_until(),
                 })
             }
             Some(ReceiverMode::Cloudcast(mode)) if self.reported_complete() => {
@@ -816,6 +839,7 @@ impl SessionReceiver {
                     round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,
+                    retain_until: rounds_retain_until(),
                 })
             }
             Some(ReceiverMode::Fec(mode)) if self.reported_complete() => {
@@ -824,11 +848,16 @@ impl SessionReceiver {
                     round_id,
                     route: self.shared.route,
                     report: NeedReport::Complete,
+                    retain_until: rounds_retain_until(),
                 })
             }
             _ => None,
         }
     }
+}
+
+fn checked_deadline(now: Instant, duration: tokio::time::Duration) -> Instant {
+    now.checked_add(duration).unwrap_or(now)
 }
 
 async fn sleep_until_optional(deadline: Option<Instant>) {
@@ -2705,14 +2734,15 @@ mod tests {
             panic!("unexpected runtime message");
         };
         assert_eq!(session_id, 9);
-        assert_eq!(
+        assert!(matches!(
             replay,
             CompletedReceiverReplay::Fec {
                 round_id: 0,
-                route,
+                route: replay_route,
                 report: NeedReport::Complete,
-            }
-        );
+                ..
+            } if replay_route == route
+        ));
         ack.send(())
             .expect("replay registration should still await ack");
 
@@ -2927,14 +2957,15 @@ mod tests {
             panic!("unexpected runtime message");
         };
         assert_eq!(session_id, 11);
-        assert_eq!(
+        assert!(matches!(
             replay,
             CompletedReceiverReplay::Plain {
                 round_id: 1,
-                route,
+                route: replay_route,
                 report: NeedReport::Complete,
-            }
-        );
+                ..
+            } if replay_route == route
+        ));
         ack.send(()).expect("replay handoff should still await ack");
 
         receiver_task
@@ -3079,14 +3110,15 @@ mod tests {
             panic!("unexpected runtime message");
         };
         assert_eq!(session_id, 12);
-        assert_eq!(
+        assert!(matches!(
             replay,
             CompletedReceiverReplay::Plain {
                 round_id: 1,
-                route,
+                route: replay_route,
                 report: NeedReport::Complete,
-            }
-        );
+                ..
+            } if replay_route == route
+        ));
         ack.send(()).expect("replay handoff should still await ack");
 
         receiver_task

@@ -152,11 +152,13 @@ pub(crate) enum CompletedReceiverReplay {
         round_id: u32,
         route: TransportRoute,
         report: NeedReport,
+        retain_until: tokio::time::Instant,
     },
     Fec {
         round_id: u32,
         route: TransportRoute,
         report: NeedReport,
+        retain_until: tokio::time::Instant,
     },
     Carousel {
         route: TransportRoute,
@@ -164,6 +166,16 @@ pub(crate) enum CompletedReceiverReplay {
         local_node_id: usize,
         retain_until: tokio::time::Instant,
     },
+}
+
+impl CompletedReceiverReplay {
+    pub(crate) fn retain_until(&self) -> tokio::time::Instant {
+        match self {
+            Self::Plain { retain_until, .. }
+            | Self::Fec { retain_until, .. }
+            | Self::Carousel { retain_until, .. } => *retain_until,
+        }
+    }
 }
 
 /// Messages sent to the background lossless runtime task.
