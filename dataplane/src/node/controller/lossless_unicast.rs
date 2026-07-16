@@ -1,8 +1,5 @@
 //! Controller-facing orchestration for lossless unicast flows.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
-
 use bytes::Bytes;
 use tracing::{debug, warn};
 
@@ -46,9 +43,13 @@ impl LosslessUnicastFlowManager {
     /// Install controller-assigned flows that involve the local node.
     pub fn add_flows(&self, flows: Vec<Flow>) {
         for flow in flows {
-            // Compute deterministic session_id and client_port from Flow fields.
-            // Both sender and receiver compute the same values, enabling proper matching.
-            let session_id = session_id_for_flow(&flow);
+            let Some(session_id) = flow.lossless_session_id else {
+                warn!(
+                    controller_id = flow.controller_id,
+                    "LosslessUnicastFlow: missing controller-allocated session id; skipping"
+                );
+                continue;
+            };
             let client_port = client_port_for_flow(&flow, self.cfg.user_space_client_port);
 
             // Spin up whichever side matches the local node.
@@ -219,9 +220,7 @@ impl LosslessUnicastFlowManager {
                 progress: None,
             };
 
-            // Register receiver directly with the pre-computed session_id.
-            // Both sender and receiver compute the same session_id from Flow fields,
-            // so packets will be routed correctly.
+            // Register with the same controller-allocated transfer identity used by the sender.
             let mut session = match lossless_runtime.start_receiver(receiver_cfg).await {
                 Ok(session) => session,
                 Err(err) => {
@@ -236,19 +235,6 @@ impl LosslessUnicastFlowManager {
             let _ = session.wait().await;
         });
     }
-}
-
-/// Generates a deterministic session ID from Flow fields.
-/// Both sender and receiver compute the same session_id, enabling direct matching
-/// without needing the pending receiver mechanism.
-fn session_id_for_flow(flow: &Flow) -> SessionId {
-    let mut hasher = DefaultHasher::new();
-    flow.controller_id.hash(&mut hasher);
-    flow.src_node_id.hash(&mut hasher);
-    flow.dst_node_id.hash(&mut hasher);
-    flow.flow_spec.flow_len.hash(&mut hasher);
-    let raw = hasher.finish() & 0x7FFF_FFFF_FFFF_FFFF;
-    raw | 0x8000_0000_0000_0000
 }
 
 /// Generates a deterministic client port from Flow fields.
@@ -320,6 +306,7 @@ mod tests {
     fn lossless_flow(flow_len: FlowLen) -> Flow {
         Flow {
             controller_id: Some(17),
+            lossless_session_id: Some(0x1234_5678_9ABC_DEF0),
             src_node_id: 3,
             dst_node_id: 7,
             route_id: Some(11),
@@ -330,12 +317,6 @@ mod tests {
                 transport: FlowTransport::LosslessUnicast,
             },
         }
-    }
-
-    #[test]
-    fn session_id_for_flow_is_deterministic() {
-        let flow = lossless_flow(FlowLen::Bytes(4096));
-        assert_eq!(session_id_for_flow(&flow), session_id_for_flow(&flow));
     }
 
     #[test]

@@ -1,8 +1,8 @@
 use super::{
-    LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode, LosslessSessionHeader,
-    LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode, LosslessSessionModeKind,
-    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, MissingBlockRange, NeedBlock,
-    NeedReport,
+    FecFeedbackMode, LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode,
+    LosslessSessionHeader, LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode,
+    LosslessSessionModeKind, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
+    MissingBlockRange, NeedBlock, NeedReport,
 };
 
 const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4 + 4 + 4;
@@ -83,17 +83,24 @@ fn encode_control_into<'a>(
     let ctrl_kind = match control {
         LosslessSessionControl::Manifest { manifest } => {
             let body_start = LosslessSessionHeader::LEN;
-            let (scheme, symbols_per_block, coded_rate_num, coded_rate_den, tree_ids) =
-                match &manifest.mode {
-                    LosslessSessionMode::Plain => (0u8, 0u32, 0u32, 0u32, &[][..]),
-                    LosslessSessionMode::Fec(fec) => (
-                        fec.scheme,
-                        fec.symbols_per_block,
-                        fec.coded_rate_num,
-                        fec.coded_rate_den,
-                        fec.tree_ids.as_slice(),
-                    ),
-                };
+            let (
+                scheme,
+                symbols_per_block,
+                coded_rate_num,
+                coded_rate_den,
+                feedback_mode,
+                tree_ids,
+            ) = match &manifest.mode {
+                LosslessSessionMode::Plain => (0u8, 0u32, 0u32, 0u32, 0u8, &[][..]),
+                LosslessSessionMode::Fec(fec) => (
+                    fec.scheme,
+                    fec.symbols_per_block,
+                    fec.coded_rate_num,
+                    fec.coded_rate_den,
+                    fec.feedback_mode.to_wire(),
+                    fec.tree_ids.as_slice(),
+                ),
+            };
             assert!(
                 tree_ids.len() <= MAX_MANIFEST_TREE_IDS,
                 "manifest tree set exceeds wire capacity"
@@ -102,7 +109,7 @@ fn encode_control_into<'a>(
             buf[body_start] = manifest.mode.kind() as u8;
             buf[body_start + 1] = scheme;
             buf[body_start + 2] = tree_ids.len() as u8;
-            buf[body_start + 3] = 0;
+            buf[body_start + 3] = feedback_mode;
             buf[body_start + 4..body_start + 8].copy_from_slice(&manifest.block_size.to_be_bytes());
             buf[body_start + 8..body_start + 16]
                 .copy_from_slice(&manifest.total_bytes.to_be_bytes());
@@ -218,6 +225,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let mode_kind = LosslessSessionModeKind::from_wire(body[0])?;
             let scheme = body[1];
             let tree_count = body[2] as usize;
+            let feedback_mode = body[3];
             let block_size = u32::from_be_bytes(body[4..8].try_into().ok()?);
             let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
             let total_blocks = u64::from_be_bytes(body[16..24].try_into().ok()?);
@@ -239,6 +247,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let mode = match mode_kind {
                 LosslessSessionModeKind::Plain => {
                     if scheme != 0
+                        || feedback_mode != 0
                         || symbols_per_block != 0
                         || coded_rate_num != 0
                         || coded_rate_den != 0
@@ -253,6 +262,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                     symbols_per_block,
                     coded_rate_num,
                     coded_rate_den,
+                    feedback_mode: FecFeedbackMode::from_wire(feedback_mode)?,
                     tree_ids,
                 }),
             };
@@ -450,6 +460,50 @@ mod tests {
         );
         let (_, decoded) = decode_control(&encoded).expect("decode METTLE manifest");
         assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn carousel_feedback_mode_roundtrips_in_manifest_feedback_byte() {
+        let ctrl = LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size: 1024,
+                total_bytes: 2048,
+                total_blocks: 2,
+                mode: LosslessSessionMode::Fec(
+                    LosslessSessionFecMode::new_raptorq(8, vec![2, 4])
+                        .with_feedback_mode(FecFeedbackMode::Carousel),
+                ),
+            },
+        };
+
+        let encoded = encode_control(88, &ctrl);
+        assert_eq!(
+            encoded[LosslessSessionHeader::LEN + 3],
+            FecFeedbackMode::Carousel.to_wire()
+        );
+        let (_, decoded) = decode_control(&encoded).expect("decode carousel manifest");
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn manifest_decode_rejects_unknown_or_plain_feedback_mode() {
+        let mut fec = encode_control(
+            88,
+            &LosslessSessionControl::Manifest {
+                manifest: fec_manifest(),
+            },
+        );
+        fec[LosslessSessionHeader::LEN + 3] = 99;
+        assert!(decode_control(&fec).is_none());
+
+        let mut plain = encode_control(
+            88,
+            &LosslessSessionControl::Manifest {
+                manifest: plain_manifest(),
+            },
+        );
+        plain[LosslessSessionHeader::LEN + 3] = FecFeedbackMode::Rounds.to_wire();
+        assert!(decode_control(&plain).is_none());
     }
 
     #[test]

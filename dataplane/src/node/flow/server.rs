@@ -232,6 +232,7 @@ mod tests {
     fn make_flow(src_node_id: usize, dst_node_id: usize, rate: Option<usize>) -> Flow {
         Flow {
             controller_id: None,
+            lossless_session_id: None,
             src_node_id,
             dst_node_id,
             route_id: None,

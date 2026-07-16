@@ -335,6 +335,7 @@ mod tests {
                 symbols_per_block: 0,
                 coded_rate_num: 1,
                 coded_rate_den: 1,
+                feedback_mode: Default::default(),
                 tree_ids: vec![],
             }),
         };
@@ -365,6 +366,7 @@ mod tests {
                 symbols_per_block: 8,
                 coded_rate_num: 1,
                 coded_rate_den: 1,
+                feedback_mode: Default::default(),
                 tree_ids: vec![1, 3],
             }),
         };

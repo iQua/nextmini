@@ -3,7 +3,7 @@
 use std::fmt::{Display, Formatter};
 
 use nextmini_messages::lossless_session::{
-    LosslessSessionFecMode, LosslessSessionMode, MAX_MANIFEST_TREE_IDS,
+    FecFeedbackMode, LosslessSessionFecMode, LosslessSessionMode, MAX_MANIFEST_TREE_IDS,
 };
 
 use crate::node::config::{LosslessConfig, LosslessFecScheme};
@@ -12,14 +12,32 @@ use crate::node::session::fec::{self, FecError};
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreflightError {
-    InvalidBlockSize { value: usize },
-    BlockSizeTooLarge { value: usize },
+    InvalidBlockSize {
+        value: usize,
+    },
+    BlockSizeTooLarge {
+        value: usize,
+    },
     ZeroSymbolsPerBlock,
     MissingTreeIds,
-    TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
-    TooManyTreeIds { configured: usize, max: usize },
-    InvalidMettleCodedRate { numerator: u32, denominator: u32 },
-    InvalidFecGeometry { reason: FecError },
+    TreeIdsMustBeSortedUnique {
+        tree_ids: Vec<u16>,
+    },
+    TooManyTreeIds {
+        configured: usize,
+        max: usize,
+    },
+    InvalidMettleCodedRate {
+        numerator: u32,
+        denominator: u32,
+    },
+    UnsupportedFeedbackModeForScheme {
+        feedback_mode: FecFeedbackMode,
+        scheme: LosslessFecScheme,
+    },
+    InvalidFecGeometry {
+        reason: FecError,
+    },
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -55,11 +73,19 @@ pub(super) fn derive_sender_policy(
 
     let tree_ids = derive_sender_tree_ids(runtime_config)?;
 
+    let feedback_mode = runtime_config.fec_feedback_mode;
     let fec_mode = match runtime_config.fec_default_scheme {
         LosslessFecScheme::RaptorQ => {
             LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids)
+                .with_feedback_mode(feedback_mode)
         }
         LosslessFecScheme::Mettle => {
+            if feedback_mode == FecFeedbackMode::Carousel {
+                return Err(PreflightError::UnsupportedFeedbackModeForScheme {
+                    feedback_mode,
+                    scheme: LosslessFecScheme::Mettle,
+                });
+            }
             let numerator = runtime_config.mettle_default_coded_rate_num;
             let denominator = runtime_config.mettle_default_coded_rate_den;
             if denominator == 0 || numerator < denominator {
@@ -74,6 +100,7 @@ pub(super) fn derive_sender_policy(
                 numerator,
                 denominator,
             )
+            .with_feedback_mode(feedback_mode)
         }
     };
     fec::validate_fec_geometry(block_size, &fec_mode)
@@ -143,9 +170,64 @@ impl Display for PreflightError {
                 f,
                 "mettle_default_coded_rate_num/den must describe a rate >= 1 with non-zero denominator (got {numerator}/{denominator})"
             ),
+            Self::UnsupportedFeedbackModeForScheme {
+                feedback_mode,
+                scheme,
+            } => write!(
+                f,
+                "feedback mode {feedback_mode:?} is not implemented for FEC scheme {scheme:?}"
+            ),
             Self::InvalidFecGeometry { reason } => {
                 write!(f, "invalid FEC geometry: {reason}")
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn fec_config() -> LosslessConfig {
+        LosslessConfig {
+            fec_enabled: true,
+            ..LosslessConfig::default()
+        }
+    }
+
+    #[test]
+    fn sender_policy_defaults_to_rounds_feedback() {
+        let policy = derive_sender_policy(&fec_config(), 1024).expect("valid default FEC policy");
+        let LosslessSessionMode::Fec(mode) = policy.mode else {
+            panic!("expected FEC policy");
+        };
+        assert_eq!(mode.feedback_mode, FecFeedbackMode::Rounds);
+    }
+
+    #[test]
+    fn sender_policy_negotiates_raptorq_carousel() {
+        let mut config = fec_config();
+        config.fec_feedback_mode = FecFeedbackMode::Carousel;
+
+        let policy = derive_sender_policy(&config, 1024).expect("valid carousel FEC policy");
+        let LosslessSessionMode::Fec(mode) = policy.mode else {
+            panic!("expected FEC policy");
+        };
+        assert_eq!(mode.feedback_mode, FecFeedbackMode::Carousel);
+    }
+
+    #[test]
+    fn sender_policy_rejects_mettle_carousel_until_stage_two() {
+        let mut config = fec_config();
+        config.fec_default_scheme = LosslessFecScheme::Mettle;
+        config.fec_feedback_mode = FecFeedbackMode::Carousel;
+
+        assert_eq!(
+            derive_sender_policy(&config, 1024),
+            Err(PreflightError::UnsupportedFeedbackModeForScheme {
+                feedback_mode: FecFeedbackMode::Carousel,
+                scheme: LosslessFecScheme::Mettle,
+            })
+        );
     }
 }

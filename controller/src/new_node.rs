@@ -1,5 +1,5 @@
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Instant;
 
 use tokio::time::Duration;
@@ -18,7 +18,7 @@ use crate::WebSocketWriter;
 use crate::addr::shares_private_network;
 use crate::config::Config;
 use crate::models::{DbFlow, DbFlowRoute, Node};
-use crate::utils::build_flows_for_node;
+use crate::utils::{LosslessSessionIdAllocator, build_flows_for_node};
 
 // Event to be sent when a new node has connected to the controller.
 #[derive(Debug, Clone)]
@@ -40,6 +40,7 @@ pub async fn new_node_connected(
     config: Config,
     node_ws: Arc<RwLock<HashMap<usize, Arc<Mutex<WebSocketWriter>>>>>,
     db_pool: Arc<Pool<Postgres>>,
+    lossless_session_ids: Arc<StdMutex<LosslessSessionIdAllocator>>,
 ) {
     let mut config_dispatched = false;
     let mut topology_ready_sent = false;
@@ -104,7 +105,13 @@ pub async fn new_node_connected(
 
                         // waits for all link rates to be set before sending the flows
                         tokio::time::sleep(Duration::from_millis(100)).await;
-                        send_flows(node_ws.clone(), db_pool.clone(), config.flow_transport).await;
+                        send_flows(
+                            node_ws.clone(),
+                            db_pool.clone(),
+                            config.flow_transport,
+                            lossless_session_ids.clone(),
+                        )
+                        .await;
 
                         let duration_secs = match start_time {
                             Some(t0) => t0.elapsed().as_secs_f32(),
@@ -175,6 +182,7 @@ async fn send_flows(
     node_ws: NodeWriterMap,
     db_pool: Arc<Pool<Postgres>>,
     flow_transport: FlowTransport,
+    lossless_session_ids: Arc<StdMutex<LosslessSessionIdAllocator>>,
 ) {
     let db_flows: Vec<DbFlow> =
         match sqlx::query_as("SELECT * FROM flows WHERE is_finished = false")
@@ -200,12 +208,22 @@ async fn send_flows(
         }
     };
 
+    let all_flows = {
+        let mut allocator = lossless_session_ids
+            .lock()
+            .expect("lossless session-id allocator mutex poisoned");
+        match build_flows_for_node(db_flows, &flow_routes, flow_transport, &mut allocator) {
+            ControllerToDataplane::AddFlows { flows } => flows,
+            _ => unreachable!("flow builder must return AddFlows"),
+        }
+    };
+
     let node_ws_guard = node_ws.read().await;
 
     for (&node_id, writer) in node_ws_guard.iter() {
-        let flows: Vec<DbFlow> = db_flows
+        let flows: Vec<_> = all_flows
             .iter()
-            .filter(|flow| flow.src_node_id == node_id as i32 || flow.dst_node_id == node_id as i32)
+            .filter(|flow| flow.src_node_id == node_id || flow.dst_node_id == node_id)
             .cloned()
             .collect();
 
@@ -217,7 +235,7 @@ async fn send_flows(
                 node_id
             );
 
-            let msg = build_flows_for_node(flows, &flow_routes, flow_transport);
+            let msg = ControllerToDataplane::AddFlows { flows };
 
             match writer
                 .lock()

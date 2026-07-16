@@ -18,6 +18,28 @@ use crate::routing;
 use crate::routing::RoutingProtocol;
 use crate::topology::topo;
 
+/// Process-lifetime allocator for lossless transfer identities.
+///
+/// Every value is drawn from the operating system-seeded cryptographic thread
+/// RNG and retained so a later transfer cannot reuse it in this controller
+/// process. Zero is reserved for malformed/unspecified input.
+#[derive(Debug, Default)]
+pub struct LosslessSessionIdAllocator {
+    issued: HashSet<u64>,
+}
+
+impl LosslessSessionIdAllocator {
+    #[must_use]
+    pub fn allocate(&mut self) -> u64 {
+        loop {
+            let candidate = rand::random::<u64>();
+            if candidate != 0 && self.issued.insert(candidate) {
+                return candidate;
+            }
+        }
+    }
+}
+
 /// Describes a directed path between two nodes as a list of edges.
 pub type RoutePath = Vec<(u32, u32)>;
 /// Aggregates route metadata: source node, destination node, and the path edges.
@@ -78,6 +100,7 @@ pub fn build_flows_for_node(
     flows: Vec<DbFlow>,
     flow_routes: &[DbFlowRoute],
     transport: FlowTransport,
+    session_ids: &mut LosslessSessionIdAllocator,
 ) -> ControllerToDataplane {
     // Build a lookup map from flow_id to route_id
     let route_map: HashMap<i32, i32> = flow_routes
@@ -122,6 +145,8 @@ pub fn build_flows_for_node(
 
         built.push(Flow {
             controller_id: Some(flow.id),
+            lossless_session_id: (transport == FlowTransport::LosslessUnicast)
+                .then(|| session_ids.allocate()),
             src_node_id: flow.src_node_id as usize,
             dst_node_id: flow.dst_node_id as usize,
             route_id,
@@ -693,7 +718,13 @@ mod tests {
             route_id: 99,
         }];
 
-        let message = build_flows_for_node(flows, &flow_routes, FlowTransport::LosslessUnicast);
+        let mut allocator = LosslessSessionIdAllocator::default();
+        let message = build_flows_for_node(
+            flows,
+            &flow_routes,
+            FlowTransport::LosslessUnicast,
+            &mut allocator,
+        );
         match message {
             ControllerToDataplane::AddFlows { flows } => {
                 assert_eq!(flows.len(), 2);
@@ -701,6 +732,7 @@ mod tests {
                 let flow_four = flows.iter().find(|f| f.controller_id == Some(4)).unwrap();
 
                 assert_eq!(flow_one.route_id, Some(99));
+                assert!(flow_one.lossless_session_id.is_some());
                 assert_eq!(flow_one.flow_spec.flow_len, FlowLen::Bytes(128));
                 assert_eq!(flow_four.route_id, None);
                 assert_eq!(flow_four.flow_spec.flow_len, FlowLen::Bytes(32));
@@ -734,7 +766,8 @@ mod tests {
             },
         ];
 
-        let message = build_flows_for_node(flows, &[], FlowTransport::Tcp);
+        let mut allocator = LosslessSessionIdAllocator::default();
+        let message = build_flows_for_node(flows, &[], FlowTransport::Tcp, &mut allocator);
         match message {
             ControllerToDataplane::AddFlows { flows } => {
                 assert_eq!(flows.len(), 2);
@@ -745,9 +778,21 @@ mod tests {
                 assert_eq!(bytes_flow.flow_spec.flow_len, FlowLen::Bytes(0));
                 assert_eq!(duration_flow.route_id, None);
                 assert_eq!(bytes_flow.route_id, None);
+                assert_eq!(duration_flow.lossless_session_id, None);
             }
             _ => panic!("Expected AddFlows message."),
         }
+    }
+
+    #[test]
+    fn lossless_session_id_allocator_never_reuses_an_id_for_transfer_reuse() {
+        let mut allocator = LosslessSessionIdAllocator::default();
+        let first_transfer = allocator.allocate();
+        let reused_flow_transfer = allocator.allocate();
+
+        assert_ne!(first_transfer, 0);
+        assert_ne!(reused_flow_transfer, 0);
+        assert_ne!(first_transfer, reused_flow_transfer);
     }
 
     #[test]

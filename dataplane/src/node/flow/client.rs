@@ -342,6 +342,7 @@ mod tests {
     fn make_flow(dst_node_id: usize, weight: Option<usize>) -> Flow {
         Flow {
             controller_id: Some(42),
+            lossless_session_id: None,
             src_node_id: 1,
             dst_node_id,
             route_id: None,

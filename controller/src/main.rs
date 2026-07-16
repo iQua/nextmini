@@ -11,7 +11,7 @@ mod utils;
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::net::Ipv4Addr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 use std::time::Duration;
 
 use futures_util::stream::{SplitSink, SplitStream};
@@ -40,8 +40,8 @@ use crate::db_sync::spawn_db_sync;
 use crate::models::{DbGroupRoute, DbRoute, Node, Route};
 use crate::new_node::{NodeConnectedEvent, TopologyEvent, new_node_connected};
 use crate::utils::{
-    StartupResponseParams, build_group_routes_for_node_multitree, build_routes_for_node,
-    build_startup_response, canonicalize_group_route_trees,
+    LosslessSessionIdAllocator, StartupResponseParams, build_group_routes_for_node_multitree,
+    build_routes_for_node, build_startup_response, canonicalize_group_route_trees,
 };
 
 type WebSocketReader = SplitStream<WebSocketStream<TcpStream>>;
@@ -115,6 +115,7 @@ async fn main() {
     );
 
     let node_ws: NodeWriterMap = Arc::new(RwLock::new(HashMap::new()));
+    let lossless_session_ids = Arc::new(StdMutex::new(LosslessSessionIdAllocator::default()));
 
     let topology_edges = topology::topo::build_topology(&config).unwrap_or_default();
     let topology_neighbors = Arc::new(build_neighbor_index(&topology_edges));
@@ -145,6 +146,7 @@ async fn main() {
         config.clone(),
         node_ws.clone(),
         db_pool.clone(),
+        lossless_session_ids.clone(),
     ));
 
     let (db_event_sender, db_event_receiver) = mpsc::channel(256);
@@ -153,6 +155,7 @@ async fn main() {
         node_ws.clone(),
         db_event_receiver,
         config.flow_transport,
+        lossless_session_ids,
     );
 
     // Set up database notifications.

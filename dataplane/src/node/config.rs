@@ -11,6 +11,7 @@ use serde::Deserialize;
 use serde::de::Deserializer;
 use tracing::{error, info, warn};
 
+use nextmini_messages::lossless_session::FecFeedbackMode;
 use nextmini_messages::{
     ControllerToDataplane, Flow, FlowLen, FlowSpec, FlowTransport, INVALID, OperatingMode,
     Protocol, SchedulingDiscipline, TokenBucketSpec,
@@ -312,6 +313,7 @@ pub struct LocalConfig {
     /// The flow config received from the controller.
     #[default(vec![Flow {
         controller_id: None,
+        lossless_session_id: None,
         src_node_id: 0,
         dst_node_id: 0,
         route_id: None,
@@ -719,6 +721,10 @@ pub struct LosslessConfig {
     #[serde(default)]
     pub fec_default_scheme: LosslessFecScheme,
 
+    /// Feedback protocol used by FEC sender sessions.
+    #[serde(default)]
+    pub fec_feedback_mode: FecFeedbackMode,
+
     /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
@@ -780,6 +786,7 @@ impl Default for LosslessConfig {
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
             fec_default_scheme: LosslessFecScheme::RaptorQ,
+            fec_feedback_mode: FecFeedbackMode::Rounds,
             fec_default_tree_ids: vec![0],
             fec_default_tree_weights: Vec::new(),
             mettle_default_coded_rate_num: 1,
@@ -992,8 +999,8 @@ fn default_netmask() -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::{
-        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig, LosslessFecScheme,
-        LosslessRuntimeSessionMode, deserialize_edge_pairs,
+        FecFeedbackMode, IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig,
+        LosslessFecScheme, LosslessRuntimeSessionMode, deserialize_edge_pairs,
     };
     use serde::Deserialize;
     use std::net::Ipv4Addr;
@@ -1079,6 +1086,7 @@ mod tests {
         );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
         assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
+        assert_eq!(lossless.fec_feedback_mode, FecFeedbackMode::Rounds);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
         assert!(lossless.fec_default_tree_weights.is_empty());
         assert_eq!(lossless.mettle_default_coded_rate_num, 1);
@@ -1130,6 +1138,28 @@ mod tests {
         assert_eq!(cfg.fec_default_tree_weights, vec![2.0, 1.0]);
         assert_eq!(cfg.mettle_default_coded_rate_num, 21);
         assert_eq!(cfg.mettle_default_coded_rate_den, 20);
+    }
+
+    #[test]
+    fn lossless_carousel_feedback_mode_parses_from_config() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            lossless_runtime_config: LosslessConfig,
+        }
+
+        let parsed: Wrapper = toml::from_str(
+            r#"
+            [lossless_runtime_config]
+            default_block_size = 8192
+            fec_feedback_mode = "carousel"
+            "#,
+        )
+        .expect("carousel feedback mode should parse");
+
+        assert_eq!(
+            parsed.lossless_runtime_config.fec_feedback_mode,
+            FecFeedbackMode::Carousel
+        );
     }
 
     #[test]

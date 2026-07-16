@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Protocol version with explicit FEC coded-rate fields in manifests.
-pub const LOSSLESS_SESSION_VERSION: u8 = 7;
+/// Protocol version with explicit FEC feedback-mode negotiation.
+pub const LOSSLESS_SESSION_VERSION: u8 = 8;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -51,6 +51,34 @@ pub enum FecScheme {
     Mettle = 2,
 }
 
+/// Receiver-feedback protocol negotiated for an FEC transfer.
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FecFeedbackMode {
+    /// Barriered `SourceDone`/`Need` rounds (the pre-v8 behavior).
+    #[default]
+    Rounds = 1,
+    /// Continuous cumulative acknowledgement carousel.
+    Carousel = 2,
+}
+
+impl FecFeedbackMode {
+    #[inline]
+    pub const fn to_wire(self) -> u8 {
+        self as u8
+    }
+
+    #[inline]
+    pub fn from_wire(raw: u8) -> Option<Self> {
+        match raw {
+            x if x == Self::Rounds as u8 => Some(Self::Rounds),
+            x if x == Self::Carousel as u8 => Some(Self::Carousel),
+            _ => None,
+        }
+    }
+}
+
 impl FecScheme {
     #[inline]
     pub const fn to_wire(self) -> u8 {
@@ -76,6 +104,9 @@ pub struct LosslessSessionFecMode {
     pub coded_rate_num: u32,
     /// Finite-stream coded-rate denominator.
     pub coded_rate_den: u32,
+    /// Feedback state machine selected for this transfer.
+    #[serde(default)]
+    pub feedback_mode: FecFeedbackMode,
     pub tree_ids: Vec<u16>,
 }
 
@@ -87,6 +118,7 @@ impl LosslessSessionFecMode {
             symbols_per_block,
             coded_rate_num: 1,
             coded_rate_den: 1,
+            feedback_mode: FecFeedbackMode::Rounds,
             tree_ids,
         }
     }
@@ -108,8 +140,15 @@ impl LosslessSessionFecMode {
             symbols_per_block,
             coded_rate_num,
             coded_rate_den,
+            feedback_mode: FecFeedbackMode::Rounds,
             tree_ids,
         }
+    }
+
+    #[must_use]
+    pub fn with_feedback_mode(mut self, feedback_mode: FecFeedbackMode) -> Self {
+        self.feedback_mode = feedback_mode;
+        self
     }
 
     #[inline]

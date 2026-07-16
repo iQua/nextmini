@@ -276,6 +276,9 @@ pub enum FlowTransport {
 #[derive(Serialize, Deserialize, PartialEq, Debug, Clone)]
 pub struct Flow {
     pub controller_id: Option<i32>,
+    /// Fresh controller-allocated identity for a lossless transfer.
+    #[serde(default)]
+    pub lossless_session_id: Option<u64>,
     pub src_node_id: usize,
     pub dst_node_id: usize,
     #[serde(default)]

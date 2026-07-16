@@ -1,8 +1,16 @@
 //! Wire protocol definitions for dataplane lossless sessions.
 //!
-//! Version 6 is the flag-day `Manifest -> Ready -> payload sweep ->
-//! SourceDone -> Need` protocol with 32-bit FEC `symbols_per_block`.
-//! The normative rewrite rules live in `plans/simple-lossless.md`.
+//! # Version and layout history
+//!
+//! | Version | Fixed header | Manifest body | Completion controls |
+//! |---|---|---|---|
+//! | 6 | 20 bytes | 32-bit FEC `symbols_per_block` | `SourceDone` / `Need` rounds |
+//! | 7 | 20 bytes | Adds finite-stream FEC coded-rate numerator and denominator | `SourceDone` / `Need` rounds |
+//! | 8 | 20 bytes | `mode:u8, scheme:u8, tree_count:u8, feedback:u8, block_size:u32, total_bytes:u64, total_blocks:u64, symbols_per_block:u32, coded_rate_num:u32, coded_rate_den:u32, tree_ids:[u16; tree_count]` | Rounds remain available; carousel adds cumulative completion controls |
+//!
+//! Versions are flag-day incompatible: every header is checked against
+//! [`LOSSLESS_SESSION_VERSION`], and manifest decoding rejects unknown modes.
+//! The normative v8 state machines live in `plans/perfect-fec-runtime.md` §P.
 
 mod block_frames;
 mod control_frames;

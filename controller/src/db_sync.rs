@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
 
 use futures_util::SinkExt;
 use sqlx::{Pool, Postgres};
@@ -12,7 +12,8 @@ use nextmini_messages::{ControllerToDataplane, FlowTransport};
 use crate::db::{DbEvent, RecomputedGroupRoutes};
 use crate::models::{DbFlow, DbFlowRoute, DbRoute, Route};
 use crate::utils::{
-    build_flows_for_node, build_group_routes_for_node_multitree, build_routes_for_node,
+    LosslessSessionIdAllocator, build_flows_for_node, build_group_routes_for_node_multitree,
+    build_routes_for_node,
 };
 use crate::{NodeWriterMap, WebSocketWriter};
 
@@ -21,6 +22,7 @@ pub fn spawn_db_sync(
     node_ws: NodeWriterMap,
     mut receiver: mpsc::Receiver<DbEvent>,
     flow_transport: FlowTransport,
+    lossless_session_ids: Arc<StdMutex<LosslessSessionIdAllocator>>,
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         while let Some(event) = receiver.recv().await {
@@ -31,7 +33,15 @@ pub fn spawn_db_sync(
                     }
                 }
                 DbEvent::FlowInserted { flow_id } => {
-                    if let Err(e) = sync_flow(&db_pool, &node_ws, flow_transport, flow_id).await {
+                    if let Err(e) = sync_flow(
+                        &db_pool,
+                        &node_ws,
+                        flow_transport,
+                        flow_id,
+                        &lossless_session_ids,
+                    )
+                    .await
+                    {
                         error!("Failed to sync flow {}: {}", flow_id, e);
                     }
                 }
@@ -118,6 +128,7 @@ async fn sync_flow(
     node_ws: &NodeWriterMap,
     flow_transport: FlowTransport,
     flow_id: i32,
+    lossless_session_ids: &StdMutex<LosslessSessionIdAllocator>,
 ) -> anyhow::Result<()> {
     let flow = sqlx::query_as::<_, DbFlow>("SELECT * FROM flows WHERE id = $1")
         .bind(flow_id)
@@ -131,7 +142,17 @@ async fn sync_flow(
             .fetch_all(db_pool)
             .await?;
 
-    let msg = build_flows_for_node(vec![flow.clone()], &flow_routes, flow_transport);
+    let msg = {
+        let mut allocator = lossless_session_ids
+            .lock()
+            .expect("lossless session-id allocator mutex poisoned");
+        build_flows_for_node(
+            vec![flow.clone()],
+            &flow_routes,
+            flow_transport,
+            &mut allocator,
+        )
+    };
     let msg_binary = rmp_serde::to_vec(&msg)?;
 
     let src_node_id = flow.src_node_id as usize;
