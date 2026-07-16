@@ -133,3 +133,14 @@ invalidates the Stage 1 protocol design or its committed test evidence.
 The coverage audit initially reported the P2 reuse test as missing; the receiver/runtime review
 located it in `controller/src/utils.rs:788` (it lives in the controller crate). The Stage 1 report's
 claim stands, but the test is weak per T5.
+
+## Follow-up verification (Claude, 2026-07-16)
+
+Fix pass `167661f..eaf7f6c` reviewed and verified: all 8 required fixes, T1–T5, W1, and both timer
+nits are implemented as documented in the report appendix. Hand-verified in code: the actor now uses
+non-blocking `try_send` with cache-first probe handling and a full-inbox liveness regression test
+(M1/R1); quorum completion is checked before disconnect maps to Abort (S1); wait deadlines take
+biased precedence over control input (S2); the pending symbol and its pacing charge survive
+`AllWouldBlock` (S3). Independent Gate 1 re-run on `eaf7f6c`: fmt clean, workspace clippy clean,
+755/755 passed with 17 pre-existing skips; rounds regression source untouched and green.
+**All review items closed. Stage 1 is fully approved; Stage 2 may begin (2.0 spike first).**
