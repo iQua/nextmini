@@ -363,6 +363,6 @@ pub enum LosslessSessionControl {
     SourceDone { round_id: u32 },
     Need { round_id: u32, report: NeedReport },
     BlockAck { ack: BlockAck },
-    AckProbe,
+    AckProbe { target_peer_id: u64 },
     SessionComplete,
 }

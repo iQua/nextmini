@@ -17,7 +17,8 @@ use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, NeedReport,
+    self, BlockAck, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
@@ -25,7 +26,9 @@ use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
-use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
+use crate::node::session::runtime::{
+    CarouselRuntimeConfig, SenderConfig, SessionConfig, TransportRoute,
+};
 use crate::node::session::timing;
 
 use self::cloudcast::CloudcastSender;
@@ -36,12 +39,23 @@ use self::state::{ActiveSessionQuorum, QuorumLiveness};
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Run one sender session until completion or channel shutdown.
+#[allow(dead_code)] // exercised by path-including integration-test harnesses
 pub async fn run(
+    cfg: SenderConfig,
+    ctrl_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+) -> SessionOutcome {
+    run_with_carousel(cfg, ctrl_rx, processors, CarouselRuntimeConfig::default()).await
+}
+
+/// Run one sender with runtime-validated carousel timing.
+pub(super) async fn run_with_carousel(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
+    carousel: CarouselRuntimeConfig,
 ) -> SessionOutcome {
-    let mut sender = match SessionSender::new(cfg, processors) {
+    let mut sender = match SessionSender::new_with_carousel(cfg, processors, carousel) {
         Ok(sender) => sender,
         Err(reason) => {
             warn!(reason, "Lossless sender aborted before start");
@@ -63,6 +77,9 @@ pub(super) trait ModeHooks {
         _report: NeedReport,
     ) {
     }
+
+    /// Join cumulative carousel completion feedback from one receiver.
+    fn on_block_ack(&mut self, _shared: &mut SenderShared, _peer_id: usize, _ack: BlockAck) {}
 
     /// Return the frozen-quorum peers that still owe feedback for the current round.
     fn pending_feedback_peers(&self, shared: &SenderShared) -> Vec<usize> {
@@ -96,13 +113,14 @@ pub(super) struct SenderShared {
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
     pub(super) payload_emitted: bool,
+    pub(super) carousel: CarouselRuntimeConfig,
 }
 
 /// Concrete sender mode selected from the manifest.
 enum SenderMode {
     Plain(PlainSender),
     Cloudcast(CloudcastSender),
-    Fec(FecSender),
+    Fec(Box<FecSender>),
 }
 
 /// Source object wrapper used to derive block payloads and source symbols.
@@ -186,7 +204,16 @@ fn fill_synthetic_payload(offset: u64, total_bytes: u64, out: &mut [u8]) {
 
 impl SessionSender {
     /// Build sender state from the validated runtime configuration.
+    #[cfg(test)]
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
+        Self::new_with_carousel(cfg, processors, CarouselRuntimeConfig::default())
+    }
+
+    fn new_with_carousel(
+        cfg: SenderConfig,
+        processors: ProcessorHandle,
+        carousel: CarouselRuntimeConfig,
+    ) -> Result<Self, &'static str> {
         let manifest = cfg.manifest;
         let block_size =
             usize::try_from(manifest.block_size).map_err(|_| "invalid block size in manifest")?;
@@ -209,7 +236,9 @@ impl SessionSender {
         } else {
             match &manifest.mode {
                 LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-                LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+                LosslessSessionMode::Fec(_) => {
+                    SenderMode::Fec(Box::new(FecSender::new(&manifest, plan)?))
+                }
             }
         };
 
@@ -228,6 +257,7 @@ impl SessionSender {
                 topology_ready: cfg.topology_ready,
                 pacer,
                 payload_emitted: false,
+                carousel,
             },
             mode,
         })
@@ -248,7 +278,7 @@ impl SessionSender {
         let ready = match &mut self.mode {
             SenderMode::Plain(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
             SenderMode::Cloudcast(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
-            SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
+            SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode.as_mut()).await,
         };
         if !ready {
             return SessionOutcome::Aborted;
@@ -470,9 +500,37 @@ impl SenderShared {
         match control {
             LosslessSessionControl::Manifest { .. }
             | LosslessSessionControl::SourceDone { .. }
-            | LosslessSessionControl::BlockAck { .. }
-            | LosslessSessionControl::AckProbe
+            | LosslessSessionControl::AckProbe { .. }
             | LosslessSessionControl::SessionComplete => {}
+            LosslessSessionControl::BlockAck { ack } => {
+                let Some(peer_id) = frame.peer_id else {
+                    warn!(
+                        session_id = self.session.session_id,
+                        "Lossless sender dropped BlockAck without transport peer_id"
+                    );
+                    return;
+                };
+                if !self.active_quorum.active_members().contains(&peer_id) {
+                    warn!(
+                        session_id = self.session.session_id,
+                        peer_id, "Lossless sender ignored BlockAck from non-quorum peer"
+                    );
+                    return;
+                }
+                if let Err(err) = self
+                    .manifest
+                    .validate_control(&LosslessSessionControl::BlockAck { ack: ack.clone() })
+                {
+                    warn!(
+                        session_id = self.session.session_id,
+                        ?err,
+                        peer_id,
+                        "Lossless sender dropped invalid BlockAck for the current manifest"
+                    );
+                    return;
+                }
+                mode.on_block_ack(self, peer_id, ack);
+            }
             LosslessSessionControl::Ready => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
@@ -982,6 +1040,7 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            carousel: CarouselRuntimeConfig::default(),
         }
     }
 

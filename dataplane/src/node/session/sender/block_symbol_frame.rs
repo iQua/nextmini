@@ -43,14 +43,16 @@ pub(super) fn patch_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
     if hdr.kind != LosslessSessionKind::BlockSymbol || hdr.ctrl_kind != 0 {
         return None;
     }
-    if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32
-        || buf.len() < off + hdr.body_len as usize
-    {
+    let body_len = usize::try_from(hdr.body_len).ok()?;
+    let frame_end = off.checked_add(body_len)?;
+    if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32 || buf.len() < frame_end {
         return None;
     }
 
-    let pos = off + (BLOCK_SYMBOL_TREE_ID_OFFSET - LosslessSessionHeader::LEN);
-    buf[pos..pos + 2].copy_from_slice(&tree_id.to_be_bytes());
+    let pos = off.checked_add(BLOCK_SYMBOL_TREE_ID_OFFSET - LosslessSessionHeader::LEN)?;
+    let tree_id_end = pos.checked_add(2)?;
+    buf.get_mut(pos..tree_id_end)?
+        .copy_from_slice(&tree_id.to_be_bytes());
     Some(())
 }
 

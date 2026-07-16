@@ -70,7 +70,8 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
                 extra_completed, ..
             } => BLOCK_ACK_FIXED_BODY_LEN + (extra_completed.len() * BLOCK_ACK_RANGE_LEN),
         },
-        LosslessSessionControl::AckProbe | LosslessSessionControl::SessionComplete => 0,
+        LosslessSessionControl::AckProbe { .. } => 8,
+        LosslessSessionControl::SessionComplete => 0,
     }
 }
 
@@ -222,7 +223,11 @@ fn encode_control_into<'a>(
             }
             LosslessSessionCtrlKind::BlockAck as u8
         }
-        LosslessSessionControl::AckProbe => LosslessSessionCtrlKind::AckProbe as u8,
+        LosslessSessionControl::AckProbe { target_peer_id } => {
+            let body_start = LosslessSessionHeader::LEN;
+            buf[body_start..body_start + 8].copy_from_slice(&target_peer_id.to_be_bytes());
+            LosslessSessionCtrlKind::AckProbe as u8
+        }
         LosslessSessionControl::SessionComplete => LosslessSessionCtrlKind::SessionComplete as u8,
     };
 
@@ -424,10 +429,12 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             LosslessSessionControl::BlockAck { ack }
         }
         x if x == LosslessSessionCtrlKind::AckProbe as u8 => {
-            if !body.is_empty() {
+            if body.len() != 8 {
                 return None;
             }
-            LosslessSessionControl::AckProbe
+            LosslessSessionControl::AckProbe {
+                target_peer_id: u64::from_be_bytes(body.try_into().ok()?),
+            }
         }
         x if x == LosslessSessionCtrlKind::SessionComplete as u8 => {
             if !body.is_empty() {
@@ -505,7 +512,7 @@ mod tests {
                     }],
                 },
             },
-            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::AckProbe { target_peer_id: 22 },
             LosslessSessionControl::SessionComplete,
         ];
 
@@ -529,17 +536,26 @@ mod tests {
     }
 
     #[test]
-    fn carousel_signal_controls_use_empty_bodies() {
-        for control in [
-            LosslessSessionControl::AckProbe,
-            LosslessSessionControl::SessionComplete,
-        ] {
-            let encoded = encode_control(77, &control);
-            let (header, decoded) = decode_control(&encoded).expect("decode carousel signal");
-            assert_eq!(header.body_len, 0);
-            assert_eq!(encoded.len(), LosslessSessionHeader::LEN);
-            assert_eq!(decoded, control);
-        }
+    fn carousel_signal_control_bodies_are_canonical() {
+        let probe = LosslessSessionControl::AckProbe { target_peer_id: 22 };
+        let encoded = encode_control(77, &probe);
+        let (header, decoded) = decode_control(&encoded).expect("decode AckProbe");
+        assert_eq!(header.body_len, 8);
+        assert_eq!(encoded.len(), LosslessSessionHeader::LEN + 8);
+        assert_eq!(decoded, probe);
+
+        let encoded = encode_control(77, &LosslessSessionControl::SessionComplete);
+        let (header, decoded) = decode_control(&encoded).expect("decode SessionComplete");
+        assert_eq!(header.body_len, 0);
+        assert_eq!(encoded.len(), LosslessSessionHeader::LEN);
+        assert_eq!(decoded, LosslessSessionControl::SessionComplete);
+
+        let mut empty_probe = encode_control(77, &LosslessSessionControl::SessionComplete);
+        empty_probe[6] = LosslessSessionCtrlKind::AckProbe as u8;
+        assert!(
+            decode_control(&empty_probe).is_none(),
+            "AckProbe must carry its target peer id"
+        );
     }
 
     #[test]
@@ -757,7 +773,7 @@ mod tests {
                     extra_completed: vec![],
                 },
             },
-            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::AckProbe { target_peer_id: 22 },
             LosslessSessionControl::SessionComplete,
             plain_need(
                 12,
@@ -878,7 +894,7 @@ mod tests {
                     extra_completed: vec![],
                 },
             },
-            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::AckProbe { target_peer_id: 22 },
             LosslessSessionControl::SessionComplete,
         ] {
             manifest
@@ -888,7 +904,7 @@ mod tests {
 
         assert!(
             fec_manifest()
-                .validate_control(&LosslessSessionControl::AckProbe)
+                .validate_control(&LosslessSessionControl::AckProbe { target_peer_id: 22 })
                 .is_err()
         );
         assert!(

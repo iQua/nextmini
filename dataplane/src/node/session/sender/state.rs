@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 
+use nextmini_messages::lossless_session::{BlockAck, CompletedBlockRange};
 use tokio::time::{Duration, Instant};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -43,6 +44,107 @@ impl ActiveSessionQuorum {
 
     pub(super) fn configured_members(&self) -> &BTreeSet<usize> {
         &self.configured
+    }
+}
+
+/// Monotone completion knowledge held for one carousel peer.
+///
+/// The representation is the canonical interval union from protocol P4.  It
+/// deliberately records whether an acknowledgement was observed separately:
+/// for an empty object, an empty set is complete only after the peer has
+/// actually acknowledged the transfer.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(super) struct PeerBlockCompletion {
+    seen_ack: bool,
+    completed_watermark: u64,
+    extra_completed: Vec<CompletedBlockRange>,
+}
+
+impl PeerBlockCompletion {
+    /// Join a validated cumulative acknowledgement into the stored set.
+    ///
+    /// Returns `true` only when the completion set grows. Duplicate and
+    /// reordered snapshots still set `seen_ack`, but are completion no-ops.
+    pub(super) fn join(&mut self, ack: &BlockAck) -> bool {
+        let (completed_watermark, extra_completed) = match ack {
+            BlockAck::Blocks {
+                completed_watermark,
+                extra_completed,
+            } => (completed_watermark, extra_completed),
+            _ => return false,
+        };
+        self.seen_ack = true;
+
+        let previous_watermark = self.completed_watermark;
+        let previous_ranges = self.extra_completed.clone();
+        let mut intervals = Vec::with_capacity(
+            self.extra_completed
+                .len()
+                .saturating_add(extra_completed.len())
+                .saturating_add(2),
+        );
+        if self.completed_watermark > 0 {
+            intervals.push(CompletedBlockRange {
+                start_block_id: 0,
+                end_block_id: self.completed_watermark,
+            });
+        }
+        intervals.extend(self.extra_completed.iter().copied());
+        if *completed_watermark > 0 {
+            intervals.push(CompletedBlockRange {
+                start_block_id: 0,
+                end_block_id: *completed_watermark,
+            });
+        }
+        intervals.extend(extra_completed.iter().copied());
+        intervals.sort_unstable_by_key(|range| (range.start_block_id, range.end_block_id));
+
+        let mut merged: Vec<CompletedBlockRange> = Vec::with_capacity(intervals.len());
+        for range in intervals {
+            if let Some(previous) = merged.last_mut()
+                && range.start_block_id <= previous.end_block_id
+            {
+                previous.end_block_id = previous.end_block_id.max(range.end_block_id);
+                continue;
+            }
+            merged.push(range);
+        }
+
+        self.completed_watermark = 0;
+        self.extra_completed.clear();
+        if merged
+            .first()
+            .is_some_and(|range| range.start_block_id == 0)
+        {
+            self.completed_watermark = merged.remove(0).end_block_id;
+        }
+        self.extra_completed = merged;
+
+        self.completed_watermark != previous_watermark || self.extra_completed != previous_ranges
+    }
+
+    pub(super) fn contains(&self, block_id: u64) -> bool {
+        if block_id < self.completed_watermark {
+            return true;
+        }
+        let index = self
+            .extra_completed
+            .partition_point(|range| range.end_block_id <= block_id);
+        self.extra_completed
+            .get(index)
+            .is_some_and(|range| range.start_block_id <= block_id && block_id < range.end_block_id)
+    }
+
+    pub(super) fn object_complete(&self, total_blocks: u64) -> bool {
+        self.seen_ack && self.completed_watermark == total_blocks
+    }
+
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> BlockAck {
+        BlockAck::Blocks {
+            completed_watermark: self.completed_watermark,
+            extra_completed: self.extra_completed.clone(),
+        }
     }
 }
 
@@ -184,5 +286,48 @@ mod tests {
         );
         assert!(liveness.next_solicitation_at().unwrap() > original);
         assert_eq!(liveness.solicitation_count(), 0);
+    }
+
+    #[test]
+    fn peer_block_completion_joins_reordered_overlapping_snapshots() {
+        let mut completion = PeerBlockCompletion::default();
+        let later = BlockAck::Blocks {
+            completed_watermark: 2,
+            extra_completed: vec![CompletedBlockRange {
+                start_block_id: 5,
+                end_block_id: 7,
+            }],
+        };
+        let earlier = BlockAck::Blocks {
+            completed_watermark: 5,
+            extra_completed: vec![CompletedBlockRange {
+                start_block_id: 7,
+                end_block_id: 9,
+            }],
+        };
+
+        assert!(completion.join(&later));
+        assert!(completion.join(&earlier));
+        assert!(!completion.join(&later));
+        assert_eq!(
+            completion.snapshot(),
+            BlockAck::Blocks {
+                completed_watermark: 9,
+                extra_completed: Vec::new(),
+            }
+        );
+        assert!(completion.contains(8));
+        assert!(!completion.contains(9));
+    }
+
+    #[test]
+    fn empty_object_requires_an_observed_ack() {
+        let mut completion = PeerBlockCompletion::default();
+        assert!(!completion.object_complete(0));
+        assert!(!completion.join(&BlockAck::Blocks {
+            completed_watermark: 0,
+            extra_completed: Vec::new(),
+        }));
+        assert!(completion.object_complete(0));
     }
 }

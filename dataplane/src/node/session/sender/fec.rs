@@ -5,7 +5,8 @@ use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport,
+    BlockAck, FecFeedbackMode, FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedBlock,
+    NeedReport,
 };
 
 use crate::node::processor::SendOutcome;
@@ -17,6 +18,7 @@ use crate::node::session::fec::{BlockParams, Encoder, FecError, FecSymbolIdBound
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
+use super::state::PeerBlockCompletion;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoundPhase {
@@ -30,6 +32,28 @@ enum SymbolKind {
     Repair,
 }
 
+/// Outcome of one non-blocking sweep across the advertised FEC trees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SendSweepOutcome {
+    Queued,
+    AllWouldBlock,
+    AllClosed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CarouselSymbol {
+    block_id: u64,
+    symbol_id: u32,
+    kind: SymbolKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CarouselPaceOutcome {
+    Ready,
+    BlockComplete,
+    Closed,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct TreeScheduleEntry {
     tree_id: u16,
@@ -40,6 +64,7 @@ struct TreeScheduleEntry {
 pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
     scheme: FecScheme,
+    feedback_mode: FecFeedbackMode,
     symbols_per_block: u32,
     initial_symbol_count: u32,
     mettle_stream_symbol_limit: u32,
@@ -58,6 +83,8 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
+    carousel_peer_completion: BTreeMap<usize, PeerBlockCompletion>,
+    carousel_next_repair_block: usize,
     stats: FecSenderStats,
 }
 
@@ -65,6 +92,7 @@ pub(super) struct FecSender {
 struct FecBlockState {
     next_source_symbol: u32,
     next_fountain_symbol: u32,
+    repair_exhausted: bool,
     required_extra_symbols: u32,
     emitted_extra_symbols: u32,
     encoder: Option<Encoder>,
@@ -363,6 +391,7 @@ impl FecSender {
                     } else {
                         initial_symbol_count
                     },
+                    repair_exhausted: false,
                     required_extra_symbols: 0,
                     emitted_extra_symbols: 0,
                     encoder: None,
@@ -370,6 +399,7 @@ impl FecSender {
                 })
                 .collect(),
             scheme,
+            feedback_mode: fec.feedback_mode,
             symbols_per_block: fec.symbols_per_block,
             initial_symbol_count,
             mettle_stream_symbol_limit,
@@ -388,6 +418,8 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
+            carousel_peer_completion: BTreeMap::new(),
+            carousel_next_repair_block: 0,
             stats: FecSenderStats::new(&fec.tree_ids),
         })
     }
@@ -400,6 +432,17 @@ impl FecSender {
     /// encoder's finish tail. SourceDone is not used to estimate a finite
     /// repair budget for METTLE.
     pub(super) async fn run(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> SessionOutcome {
+        match self.feedback_mode {
+            FecFeedbackMode::Rounds => self.run_rounds(shared, ctrl_rx).await,
+            FecFeedbackMode::Carousel => self.run_carousel(shared, ctrl_rx).await,
+        }
+    }
+
+    async fn run_rounds(
         &mut self,
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
@@ -438,6 +481,12 @@ impl FecSender {
                 continue;
             }
 
+            if self.has_exhausted_required_repair() {
+                self.protocol_error = true;
+                self.log_tree_stats(shared, "repair_esi_exhausted");
+                return SessionOutcome::Aborted;
+            }
+
             if !self.round_source_done_sent {
                 self.begin_report_round(shared).await;
                 self.round_source_done_sent = true;
@@ -472,6 +521,379 @@ impl FecSender {
         SessionOutcome::Completed
     }
 
+    /// Work-conserving RaptorQ carousel from protocol P6.
+    async fn run_carousel(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> SessionOutcome {
+        if self.scheme != FecScheme::RaptorQ {
+            warn!(
+                session_id = shared.session.session_id,
+                scheme = ?self.scheme,
+                "Lossless sender rejected a non-RaptorQ carousel session"
+            );
+            return SessionOutcome::Aborted;
+        }
+
+        self.carousel_peer_completion
+            .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
+        for peer_id in shared.active_quorum.active_members() {
+            self.carousel_peer_completion.entry(*peer_id).or_default();
+        }
+
+        if shared.active_quorum_is_empty() {
+            return SessionOutcome::Completed;
+        }
+
+        loop {
+            if !self.drain_carousel_controls(shared, ctrl_rx) {
+                return SessionOutcome::Aborted;
+            }
+            if self.carousel_quorum_complete(shared) {
+                self.send_session_complete(shared).await;
+                return SessionOutcome::Completed;
+            }
+
+            let symbol = match self.next_carousel_symbol(shared) {
+                Ok(Some(symbol)) => symbol,
+                Ok(None) => {
+                    if !self.wait_for_carousel_ack(shared, ctrl_rx).await {
+                        return SessionOutcome::Aborted;
+                    }
+                    continue;
+                }
+                Err(err) => {
+                    // The last valid ESI does not itself abort the session. We
+                    // reach this branch only on the next scheduling decision,
+                    // after queued controls and cumulative completion have
+                    // been re-checked above.
+                    warn!(
+                        session_id = shared.session.session_id,
+                        ?err,
+                        "Lossless carousel sender exhausted its repair ESI namespace while another emission was required"
+                    );
+                    self.protocol_error = true;
+                    return SessionOutcome::Aborted;
+                }
+            };
+
+            let Some(payload) = self.carousel_symbol_payload(shared, symbol) else {
+                self.protocol_error = true;
+                return SessionOutcome::Aborted;
+            };
+
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                continue;
+            }
+            match self
+                .pace_carousel_symbol(shared, ctrl_rx, symbol.block_id, payload.len())
+                .await
+            {
+                CarouselPaceOutcome::Ready => {}
+                CarouselPaceOutcome::BlockComplete => continue,
+                CarouselPaceOutcome::Closed => return SessionOutcome::Aborted,
+            }
+
+            // P6 requires both checks: one after pacing, then one immediately
+            // before the synchronous tree sweep after servicing queued acks.
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                continue;
+            }
+            if !self.drain_carousel_controls(shared, ctrl_rx) {
+                return SessionOutcome::Aborted;
+            }
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                continue;
+            }
+
+            match self.send_symbol(
+                shared,
+                symbol.block_id,
+                symbol.symbol_id,
+                payload.as_ref(),
+                symbol.kind,
+            ) {
+                SendSweepOutcome::Queued => {
+                    if !self.advance_carousel_symbol(shared, symbol) {
+                        self.protocol_error = true;
+                        return SessionOutcome::Aborted;
+                    }
+                }
+                SendSweepOutcome::AllWouldBlock => {
+                    if !self.service_carousel_backpressure(shared, ctrl_rx).await {
+                        return SessionOutcome::Aborted;
+                    }
+                }
+                SendSweepOutcome::AllClosed => return SessionOutcome::Aborted,
+            }
+        }
+    }
+
+    fn next_carousel_symbol(
+        &self,
+        shared: &super::SenderShared,
+    ) -> Result<Option<CarouselSymbol>, FecError> {
+        // Phase A is exactly K source ESIs per globally incomplete block,
+        // with blocks visited in ascending order.
+        for (block_index, block) in self.blocks.iter().enumerate() {
+            let block_id = u64::try_from(block_index)
+                .expect("FEC block index originated from a wire u64 block count");
+            if !self.carousel_block_complete(shared, block_id)
+                && block.next_source_symbol < self.symbols_per_block
+            {
+                return Ok(Some(CarouselSymbol {
+                    block_id,
+                    symbol_id: block.next_source_symbol,
+                    kind: SymbolKind::Source,
+                }));
+            }
+        }
+
+        // Phase B emits one fresh repair for each incomplete block in turn.
+        let block_count = self.blocks.len();
+        let mut exhausted = None;
+        for offset in 0..block_count {
+            let block_index = (self.carousel_next_repair_block + offset) % block_count;
+            let block_id = u64::try_from(block_index)
+                .expect("FEC block index originated from a wire u64 block count");
+            if self.carousel_block_complete(shared, block_id) {
+                continue;
+            }
+            let block = &self.blocks[block_index];
+            if block.repair_exhausted {
+                exhausted.get_or_insert(block.next_fountain_symbol);
+                continue;
+            }
+            self.symbol_id_bounds.validate(block.next_fountain_symbol)?;
+            return Ok(Some(CarouselSymbol {
+                block_id,
+                symbol_id: block.next_fountain_symbol,
+                kind: SymbolKind::Repair,
+            }));
+        }
+
+        if let Some(last_symbol_id) = exhausted {
+            Err(FecError::SymbolIdExhausted {
+                scheme: self.scheme,
+                last_symbol_id,
+            })
+        } else {
+            Ok(None)
+        }
+    }
+
+    fn carousel_symbol_payload(
+        &mut self,
+        shared: &super::SenderShared,
+        symbol: CarouselSymbol,
+    ) -> Option<Bytes> {
+        match symbol.kind {
+            SymbolKind::Source => {
+                self.source_symbol_payload(shared, symbol.block_id, symbol.symbol_id)
+            }
+            SymbolKind::Repair => self
+                .extra_symbol_payload(shared, symbol.block_id, symbol.symbol_id)
+                .map(Bytes::from),
+        }
+    }
+
+    fn advance_carousel_symbol(
+        &mut self,
+        shared: &mut super::SenderShared,
+        symbol: CarouselSymbol,
+    ) -> bool {
+        match symbol.kind {
+            SymbolKind::Source => {
+                let Some(next_symbol) = symbol.symbol_id.checked_add(1) else {
+                    return false;
+                };
+                let Some(block) = fec_block_mut(self, symbol.block_id) else {
+                    return false;
+                };
+                block.next_source_symbol = next_symbol;
+            }
+            SymbolKind::Repair => {
+                let next_symbol = self.next_repair_symbol_id(symbol.symbol_id);
+                let Some(block) = fec_block_mut(self, symbol.block_id) else {
+                    return false;
+                };
+                match next_symbol {
+                    Ok(next_symbol) => block.next_fountain_symbol = next_symbol,
+                    Err(_) => block.repair_exhausted = true,
+                }
+                let Ok(block_index) = usize::try_from(symbol.block_id) else {
+                    return false;
+                };
+                if !self.blocks.is_empty() {
+                    self.carousel_next_repair_block = (block_index + 1) % self.blocks.len();
+                }
+            }
+        }
+        shared.mark_payload_emitted();
+        true
+    }
+
+    fn carousel_block_complete(&self, shared: &super::SenderShared, block_id: u64) -> bool {
+        shared.active_quorum.active_members().iter().all(|peer_id| {
+            self.carousel_peer_completion
+                .get(peer_id)
+                .is_some_and(|completion| completion.contains(block_id))
+        })
+    }
+
+    fn carousel_quorum_complete(&self, shared: &super::SenderShared) -> bool {
+        shared.active_quorum.active_members().iter().all(|peer_id| {
+            self.carousel_peer_completion
+                .get(peer_id)
+                .is_some_and(|completion| completion.object_complete(shared.manifest.total_blocks))
+        })
+    }
+
+    fn drain_carousel_controls(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> bool {
+        const MAX_CONTROLS_PER_BOUNDARY: usize = 64;
+        for _ in 0..MAX_CONTROLS_PER_BOUNDARY {
+            match ctrl_rx.try_recv() {
+                Ok(frame) => shared.handle_control(frame, self),
+                Err(mpsc::error::TryRecvError::Empty) => return true,
+                Err(mpsc::error::TryRecvError::Disconnected) => return false,
+            }
+        }
+        true
+    }
+
+    async fn pace_carousel_symbol(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+        block_id: u64,
+        bytes: usize,
+    ) -> CarouselPaceOutcome {
+        if shared.pacer.is_none() {
+            return CarouselPaceOutcome::Ready;
+        }
+
+        loop {
+            let pacer = shared
+                .pacer
+                .as_mut()
+                .expect("carousel pacer presence checked above");
+            tokio::select! {
+                biased;
+                maybe_frame = ctrl_rx.recv() => {
+                    let Some(frame) = maybe_frame else {
+                        return CarouselPaceOutcome::Closed;
+                    };
+                    shared.handle_control(frame, self);
+                    if self.carousel_block_complete(shared, block_id) {
+                        return CarouselPaceOutcome::BlockComplete;
+                    }
+                }
+                _ = pacer.wait_for_bytes(bytes) => {
+                    return CarouselPaceOutcome::Ready;
+                }
+            }
+        }
+    }
+
+    async fn service_carousel_backpressure(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> bool {
+        tokio::select! {
+            biased;
+            maybe_frame = ctrl_rx.recv() => {
+                let Some(frame) = maybe_frame else {
+                    return false;
+                };
+                shared.handle_control(frame, self);
+            }
+            _ = tokio::task::yield_now() => {}
+        }
+        true
+    }
+
+    async fn wait_for_carousel_ack(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> bool {
+        let missing = shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .copied()
+            .filter(|peer_id| {
+                !self
+                    .carousel_peer_completion
+                    .get(peer_id)
+                    .is_some_and(|completion| {
+                        completion.object_complete(shared.manifest.total_blocks)
+                    })
+            })
+            .collect::<Vec<_>>();
+        debug!(
+            session_id = shared.session.session_id,
+            ?missing,
+            "Lossless carousel sender emitted AckProbe for peers missing completion"
+        );
+        for peer_id in missing {
+            let Ok(target_peer_id) = u64::try_from(peer_id) else {
+                return false;
+            };
+            let _ = control::try_send_control(
+                &shared.processors,
+                control::FrameRoute {
+                    session_id: shared.session.session_id,
+                    tree_id: None,
+                    src_ip: shared.route.src_ip,
+                    src_port: shared.route.src_port,
+                    dst_ip: shared.route.dst_ip,
+                    dst_port: shared.route.dst_port,
+                },
+                &nextmini_messages::lossless_session::LosslessSessionControl::AckProbe {
+                    target_peer_id,
+                },
+            );
+        }
+
+        tokio::select! {
+            maybe_frame = ctrl_rx.recv() => {
+                let Some(frame) = maybe_frame else {
+                    return false;
+                };
+                shared.handle_control(frame, self);
+            }
+            _ = tokio::time::sleep(shared.carousel.ack_probe_interval) => {}
+        }
+        true
+    }
+
+    async fn send_session_complete(&mut self, shared: &super::SenderShared) {
+        for repeat in 0..shared.carousel.session_complete_repeats {
+            let _ = control::try_send_control(
+                &shared.processors,
+                control::FrameRoute {
+                    session_id: shared.session.session_id,
+                    tree_id: None,
+                    src_ip: shared.route.src_ip,
+                    src_port: shared.route.src_port,
+                    dst_ip: shared.route.dst_ip,
+                    dst_port: shared.route.dst_port,
+                },
+                &nextmini_messages::lossless_session::LosslessSessionControl::SessionComplete,
+            );
+            if repeat + 1 < shared.carousel.session_complete_repeats {
+                tokio::time::sleep(shared.carousel.session_complete_interval).await;
+            }
+        }
+    }
+
     pub(super) fn is_complete(&self) -> bool {
         self.round_complete
     }
@@ -497,7 +919,8 @@ impl FecSender {
         }
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
-            if block.emitted_extra_symbols < block.required_extra_symbols {
+            if block.emitted_extra_symbols < block.required_extra_symbols && !block.repair_exhausted
+            {
                 if self.scheme == FecScheme::Mettle
                     && block.next_fountain_symbol >= self.mettle_stream_symbol_limit
                 {
@@ -532,7 +955,7 @@ impl FecSender {
         };
         shared.pace(payload.len()).await;
         if !self
-            .send_symbol(
+            .send_symbol_until_queued(
                 shared,
                 block_id,
                 symbol_id,
@@ -573,18 +996,25 @@ impl FecSender {
         };
         shared.pace(payload.len()).await;
         if !self
-            .send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair)
+            .send_symbol_until_queued(shared, block_id, symbol_id, &payload, SymbolKind::Repair)
             .await
         {
             return false;
         }
 
-        let next_symbol = self.next_repair_symbol_id(symbol_id);
         if let Some(block) = fec_block_mut(self, block_id) {
             block.emitted_extra_symbols = block.emitted_extra_symbols.saturating_add(1);
-            match next_symbol {
-                Ok(next_symbol) => block.next_fountain_symbol = next_symbol,
-                Err(_) => self.protocol_error = true,
+        }
+        match self.next_repair_symbol_id(symbol_id) {
+            Ok(next_symbol) => {
+                if let Some(block) = fec_block_mut(self, block_id) {
+                    block.next_fountain_symbol = next_symbol;
+                }
+            }
+            Err(_) => {
+                if let Some(block) = fec_block_mut(self, block_id) {
+                    block.repair_exhausted = true;
+                }
             }
         }
         self.discard_sent_mettle_symbol(block_id, symbol_id);
@@ -602,8 +1032,109 @@ impl FecSender {
         }
     }
 
-    /// Emit one FEC symbol through the processor ingress path.
-    async fn send_symbol(
+    /// Try one sweep across every tree without waiting for queue capacity.
+    fn send_symbol(
+        &mut self,
+        shared: &mut super::SenderShared,
+        block_id: u64,
+        symbol_id: u32,
+        payload: &[u8],
+        kind: SymbolKind,
+    ) -> SendSweepOutcome {
+        if self.tree_schedule.is_empty() {
+            self.stats.record_stall(kind);
+            self.maybe_log_progress(shared);
+            return SendSweepOutcome::AllClosed;
+        }
+
+        let tree_count = self.tree_ids.len();
+        let schedule_count = self.tree_schedule.len();
+        let start_idx = self.next_tree_rr % schedule_count;
+        let initial_tree_id = self.tree_schedule[start_idx].tree_id;
+        block_symbol_frame::encode_into(
+            &mut self.frame_scratch,
+            shared.session.session_id,
+            block_id,
+            symbol_id,
+            initial_tree_id,
+            payload,
+        );
+
+        let mut saw_would_block = false;
+        let mut frame_tree_id = initial_tree_id;
+        let mut tried_mask = 0u128;
+        let mut tried_large = if tree_count > 128 {
+            Some(vec![false; tree_count])
+        } else {
+            None
+        };
+        let mut attempted_trees = 0usize;
+        for offset in 0..schedule_count {
+            let idx = (start_idx + offset) % schedule_count;
+            let slot = self.tree_schedule[idx];
+            if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
+                continue;
+            }
+            attempted_trees += 1;
+            let tree_id = slot.tree_id;
+            if tree_id != frame_tree_id {
+                block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
+                    .expect("encoded block symbol should accept tree-id patch");
+                frame_tree_id = tree_id;
+            }
+            self.stats.record_attempt(kind, tree_id);
+            let submission = control::try_send_frame(
+                &shared.processors,
+                control::FrameRoute {
+                    session_id: shared.session.session_id,
+                    tree_id: Some(tree_id),
+                    src_ip: shared.route.src_ip,
+                    src_port: shared.route.src_port,
+                    dst_ip: shared.route.dst_ip,
+                    dst_port: shared.route.dst_port,
+                },
+                &self.frame_scratch,
+            );
+            self.stats.record_outcome(kind, tree_id, submission.outcome);
+            match submission.outcome {
+                SendOutcome::Queued => {
+                    self.note_queued_symbol(
+                        shared,
+                        block_id,
+                        symbol_id,
+                        tree_id,
+                        idx,
+                        schedule_count,
+                    );
+                    return SendSweepOutcome::Queued;
+                }
+                SendOutcome::WouldBlock => {
+                    saw_would_block = true;
+                }
+                SendOutcome::Closed => {
+                    warn!(
+                        session_id = shared.session.session_id,
+                        tree_id,
+                        "Lossless sender observed closed processor ingress while sending FEC symbol"
+                    );
+                }
+            }
+            if attempted_trees == tree_count {
+                break;
+            }
+        }
+
+        if saw_would_block {
+            SendSweepOutcome::AllWouldBlock
+        } else {
+            self.stats.record_stall(kind);
+            self.maybe_log_progress(shared);
+            SendSweepOutcome::AllClosed
+        }
+    }
+
+    /// Preserve rounds-mode retry behavior outside the one-sweep primitive.
+    async fn send_symbol_until_queued(
         &mut self,
         shared: &mut super::SenderShared,
         block_id: u64,
@@ -611,97 +1142,12 @@ impl FecSender {
         payload: &[u8],
         kind: SymbolKind,
     ) -> bool {
-        if self.tree_schedule.is_empty() {
-            self.stats.record_stall(kind);
-            self.maybe_log_progress(shared);
-            return false;
-        }
-
-        let tree_count = self.tree_ids.len();
-        let schedule_count = self.tree_schedule.len();
         loop {
-            let start_idx = self.next_tree_rr % schedule_count;
-            let initial_tree_id = self.tree_schedule[start_idx].tree_id;
-            block_symbol_frame::encode_into(
-                &mut self.frame_scratch,
-                shared.session.session_id,
-                block_id,
-                symbol_id,
-                initial_tree_id,
-                payload,
-            );
-
-            let mut saw_would_block = false;
-            let mut frame_tree_id = initial_tree_id;
-            let mut tried_mask = 0u128;
-            let mut tried_large = if tree_count > 128 {
-                Some(vec![false; tree_count])
-            } else {
-                None
-            };
-            let mut attempted_trees = 0usize;
-            for offset in 0..schedule_count {
-                let idx = (start_idx + offset) % schedule_count;
-                let slot = self.tree_schedule[idx];
-                if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
-                    continue;
-                }
-                attempted_trees += 1;
-                let tree_id = slot.tree_id;
-                if tree_id != frame_tree_id {
-                    block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
-                        .expect("encoded block symbol should accept tree-id patch");
-                    frame_tree_id = tree_id;
-                }
-                self.stats.record_attempt(kind, tree_id);
-                let submission = control::try_send_frame(
-                    &shared.processors,
-                    control::FrameRoute {
-                        session_id: shared.session.session_id,
-                        tree_id: Some(tree_id),
-                        src_ip: shared.route.src_ip,
-                        src_port: shared.route.src_port,
-                        dst_ip: shared.route.dst_ip,
-                        dst_port: shared.route.dst_port,
-                    },
-                    &self.frame_scratch,
-                );
-                self.stats.record_outcome(kind, tree_id, submission.outcome);
-                match submission.outcome {
-                    SendOutcome::Queued => {
-                        self.note_queued_symbol(
-                            shared,
-                            block_id,
-                            symbol_id,
-                            tree_id,
-                            idx,
-                            schedule_count,
-                        );
-                        return true;
-                    }
-                    SendOutcome::WouldBlock => {
-                        saw_would_block = true;
-                    }
-                    SendOutcome::Closed => {
-                        warn!(
-                            session_id = shared.session.session_id,
-                            tree_id,
-                            "Lossless sender observed closed processor ingress while sending FEC symbol"
-                        );
-                    }
-                }
-                if attempted_trees == tree_count {
-                    break;
-                }
+            match self.send_symbol(shared, block_id, symbol_id, payload, kind) {
+                SendSweepOutcome::Queued => return true,
+                SendSweepOutcome::AllWouldBlock => tokio::task::yield_now().await,
+                SendSweepOutcome::AllClosed => return false,
             }
-
-            if !saw_would_block {
-                self.stats.record_stall(kind);
-                self.maybe_log_progress(shared);
-                return false;
-            }
-
-            tokio::task::yield_now().await;
         }
     }
 
@@ -870,6 +1316,21 @@ impl FecSender {
 }
 
 impl super::ModeHooks for FecSender {
+    fn on_block_ack(&mut self, shared: &mut super::SenderShared, peer_id: usize, ack: BlockAck) {
+        if self.feedback_mode != FecFeedbackMode::Carousel {
+            return;
+        }
+        let progress = self
+            .carousel_peer_completion
+            .entry(peer_id)
+            .or_default()
+            .join(&ack);
+        debug!(
+            session_id = shared.session.session_id,
+            peer_id, progress, "Lossless carousel sender joined cumulative BlockAck"
+        );
+    }
+
     fn on_need(
         &mut self,
         shared: &mut super::SenderShared,
@@ -1078,6 +1539,7 @@ impl FecSender {
         if block.next_fountain_symbol == 0 || block.next_fountain_symbol >= symbol_limit {
             block.next_fountain_symbol = 0;
             block.mettle_stream = None;
+            block.repair_exhausted = false;
         }
         if symbol_limit == 0 {
             return;
@@ -1105,6 +1567,12 @@ impl FecSender {
             .div_ceil(quorum_size)
             .max(1);
         self.repair_window_symbols = speculative_window.min(total_required);
+    }
+
+    fn has_exhausted_required_repair(&self) -> bool {
+        self.blocks.iter().any(|block| {
+            block.repair_exhausted && block.emitted_extra_symbols < block.required_extra_symbols
+        })
     }
 
     fn maybe_log_progress(&mut self, _shared: &super::SenderShared) {
@@ -1160,10 +1628,12 @@ mod tests {
     use crate::node::config::LocalConfig;
     use crate::node::processor::ProcessorHandle;
     use crate::node::session::plan::BlockPlan;
-    use crate::node::session::runtime::{SessionConfig, TransportRoute};
+    use crate::node::session::runtime::{CarouselRuntimeConfig, SessionConfig, TransportRoute};
     use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
-    use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
+    use nextmini_messages::lossless_session::{
+        BlockAck, FecFeedbackMode, LosslessSessionFecMode, NeedBlock,
+    };
 
     #[test]
     fn fec_tree_schedule_is_one_slot_per_tree_round_robin() {
@@ -1203,6 +1673,153 @@ mod tests {
                 last_symbol_id: last_esi,
             })
         );
+    }
+
+    #[tokio::test]
+    async fn carousel_source_phase_is_block_sequential_and_exactly_k() {
+        let manifest = carousel_manifest(2);
+        let plan = BlockPlan::new(32, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 0,
+                symbol_id: 0,
+                kind: SymbolKind::Source,
+            }))
+        );
+        sender.blocks[0].next_source_symbol = sender.symbols_per_block;
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 1,
+                symbol_id: 0,
+                kind: SymbolKind::Source,
+            }))
+        );
+
+        sender.blocks[1].next_source_symbol = sender.symbols_per_block;
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 0,
+                symbol_id: sender.symbols_per_block,
+                kind: SymbolKind::Repair,
+            }))
+        );
+        sender.carousel_next_repair_block = 1;
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 1,
+                symbol_id: sender.symbols_per_block,
+                kind: SymbolKind::Repair,
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn carousel_requires_every_peer_ack_before_skipping_a_block() {
+        let manifest = carousel_manifest(2);
+        let plan = BlockPlan::new(32, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum = ActiveSessionQuorum::new([22, 23]);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.record_ready(23);
+        shared.active_quorum.freeze();
+        let block_zero_complete = BlockAck::Blocks {
+            completed_watermark: 1,
+            extra_completed: Vec::new(),
+        };
+
+        sender.on_block_ack(&mut shared, 22, block_zero_complete.clone());
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 0,
+                symbol_id: 0,
+                kind: SymbolKind::Source,
+            }))
+        );
+
+        sender.on_block_ack(&mut shared, 23, block_zero_complete);
+        assert_eq!(
+            sender.next_carousel_symbol(&shared),
+            Ok(Some(CarouselSymbol {
+                block_id: 1,
+                symbol_id: 0,
+                kind: SymbolKind::Source,
+            }))
+        );
+    }
+
+    #[tokio::test]
+    async fn last_valid_repair_esi_only_exhausts_on_the_next_required_emission() {
+        let manifest = carousel_manifest(1);
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+        sender.blocks[0].next_source_symbol = sender.symbols_per_block;
+        let last_esi = session_fec::RAPTORQ_SYMBOL_ID_END_EXCLUSIVE - 1;
+        sender.blocks[0].next_fountain_symbol = last_esi;
+
+        assert!(sender.advance_carousel_symbol(
+            &mut shared,
+            CarouselSymbol {
+                block_id: 0,
+                symbol_id: last_esi,
+                kind: SymbolKind::Repair,
+            },
+        ));
+        assert!(sender.blocks[0].repair_exhausted);
+        assert!(!sender.protocol_error);
+        assert!(matches!(
+            sender.next_carousel_symbol(&shared),
+            Err(FecError::SymbolIdExhausted {
+                scheme: FecScheme::RaptorQ,
+                last_symbol_id,
+            }) if last_symbol_id == last_esi
+        ));
+
+        sender.on_block_ack(
+            &mut shared,
+            22,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: Vec::new(),
+            },
+        );
+        assert_eq!(sender.next_carousel_symbol(&shared), Ok(None));
+        assert!(sender.carousel_quorum_complete(&shared));
+        assert!(!sender.protocol_error);
+    }
+
+    #[tokio::test]
+    async fn send_symbol_returns_after_one_all_blocked_tree_sweep() {
+        let manifest = carousel_manifest(1);
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        let mut blocked = false;
+
+        for symbol_id in 0..32 {
+            let outcome =
+                sender.send_symbol(&mut shared, 0, symbol_id, b"abcd", SymbolKind::Source);
+            if outcome == SendSweepOutcome::AllWouldBlock {
+                blocked = true;
+                break;
+            }
+            assert_eq!(outcome, SendSweepOutcome::Queued);
+        }
+
+        assert!(blocked, "the undrained processor queue should become full");
     }
 
     #[tokio::test]
@@ -1658,6 +2275,20 @@ mod tests {
         }
     }
 
+    fn carousel_manifest(total_blocks: u64) -> LosslessSessionManifest {
+        LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: total_blocks
+                .checked_mul(16)
+                .expect("test object length fits"),
+            total_blocks,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_raptorq(4, vec![7, 9])
+                    .with_feedback_mode(FecFeedbackMode::Carousel),
+            ),
+        }
+    }
+
     fn test_sender_shared(manifest: LosslessSessionManifest) -> SenderShared {
         test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefghijklmnop"))
     }
@@ -1703,6 +2334,7 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            carousel: CarouselRuntimeConfig::default(),
         }
     }
 }

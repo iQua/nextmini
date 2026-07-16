@@ -16,6 +16,8 @@
 //! `variant:u8, reserved:u8, range_count:u16, completed_watermark:u64`, then
 //! `range_count` half-open `(start:u64, end:u64)` ranges. Variant 2 is reserved
 //! for METTLE stream progress and is rejected until that layout is specified.
+//! `AckProbe` carries one `target_peer_id:u64`, so multicast control routing
+//! solicits only the missing peer named by the sender.
 
 mod block_frames;
 mod control_frames;

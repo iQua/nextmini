@@ -524,8 +524,10 @@ impl SessionReceiver {
             LosslessSessionControl::Ready
             | LosslessSessionControl::Need { .. }
             | LosslessSessionControl::BlockAck { .. } => {}
-            LosslessSessionControl::AckProbe => {
-                if self.is_carousel() {
+            LosslessSessionControl::AckProbe { target_peer_id } => {
+                if self.is_carousel()
+                    && u64::try_from(self.shared.local_node_id).ok() == Some(target_peer_id)
+                {
                     self.send_carousel_ack().await;
                 }
             }
@@ -723,6 +725,7 @@ impl SessionReceiver {
             return Some(CompletedReceiverReplay::Carousel {
                 route: self.shared.route,
                 ack: self.shared.block_ack()?,
+                local_node_id: self.shared.local_node_id,
                 retain_until: Instant::now() + self.shared.cfg.carousel.receiver_passive_window,
             });
         }
@@ -1333,10 +1336,30 @@ mod tests {
     #[tokio::test]
     async fn carousel_receiver_answers_probes_and_finishes_only_from_passive_state() {
         let (mut receiver, mut packet_rx) = carousel_test_receiver(BTreeSet::new()).await;
+        receiver
+            .handle_control_frame(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    receiver.shared.session_id,
+                    &LosslessSessionControl::AckProbe {
+                        target_peer_id: u64::try_from(RECEIVER_NODE_ID + 1)
+                            .expect("test receiver id fits u64"),
+                    },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("non-target probe should be harmless");
+        assert!(
+            packet_rx.try_recv().is_err(),
+            "a receiver must not answer another peer's targeted probe"
+        );
         let probe = InboundFrame {
             bytes: lossless_session::encode_control(
                 receiver.shared.session_id,
-                &LosslessSessionControl::AckProbe,
+                &LosslessSessionControl::AckProbe {
+                    target_peer_id: u64::try_from(RECEIVER_NODE_ID)
+                        .expect("test receiver id fits u64"),
+                },
             ),
             peer_id: Some(SOURCE_NODE_ID),
         };

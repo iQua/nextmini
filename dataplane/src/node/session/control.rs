@@ -55,6 +55,16 @@ pub fn try_send_frame(
     processors.try_submit_lossless_packet(packet)
 }
 
+/// Encode and submit one control frame without waiting for ingress capacity.
+pub fn try_send_control(
+    processors: &ProcessorHandle,
+    route: FrameRoute,
+    control: &LosslessSessionControl,
+) -> LosslessIngressSubmission {
+    let packet = build_control_packet(route, control);
+    processors.try_submit_lossless_packet(packet)
+}
+
 /// Build one control packet on the control-routing path.
 pub fn build_control_packet(route: FrameRoute, control: &LosslessSessionControl) -> Packet {
     let frame = lossless_session::encode_control(route.session_id, control);

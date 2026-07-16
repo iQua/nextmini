@@ -161,6 +161,7 @@ pub(crate) enum CompletedReceiverReplay {
     Carousel {
         route: TransportRoute,
         ack: BlockAck,
+        local_node_id: usize,
         retain_until: tokio::time::Instant,
     },
 }

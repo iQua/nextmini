@@ -409,7 +409,7 @@ impl LosslessSessionManifest {
                 }
                 ack.validate_against_total_blocks(self.total_blocks)
             }
-            LosslessSessionControl::AckProbe | LosslessSessionControl::SessionComplete => {
+            LosslessSessionControl::AckProbe { .. } | LosslessSessionControl::SessionComplete => {
                 if matches!(
                     &self.mode,
                     LosslessSessionMode::Fec(fec)
@@ -428,9 +428,10 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready | Self::SourceDone { .. } | Self::AckProbe | Self::SessionComplete => {
-                Ok(())
-            }
+            Self::Ready
+            | Self::SourceDone { .. }
+            | Self::AckProbe { .. }
+            | Self::SessionComplete => Ok(()),
             Self::Need { report, .. } => report.validate(),
             Self::BlockAck { ack } => ack.validate(),
         }

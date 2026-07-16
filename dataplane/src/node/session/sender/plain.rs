@@ -414,6 +414,7 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            carousel: crate::node::session::runtime::CarouselRuntimeConfig::default(),
         }
     }
 }
