@@ -250,59 +250,58 @@ impl FecReceiver {
         &mut self,
         shared: &mut super::ReceiverShared,
         frame: InboundFrame,
-    ) {
+    ) -> Result<(), super::SinkWriteError> {
         let Some(manifest) = shared.manifest.as_ref() else {
-            return;
+            return Ok(());
         };
         let LosslessSessionMode::Fec(fec_mode) = manifest.mode.clone() else {
-            return;
+            return Ok(());
         };
         let Some((_, symbol, payload)) = lossless_session::decode_block_symbol(&frame.bytes) else {
-            return;
+            return Ok(());
         };
         if self.symbol_id_bounds.validate(symbol.symbol_id).is_err() {
             self.stats.record_invalid(symbol.tree_id);
-            return;
+            return Ok(());
         }
         if manifest.validate_block_symbol(&symbol).is_err() {
             self.stats.record_invalid(symbol.tree_id);
-            return;
+            return Ok(());
         }
         if payload.len() != self.geometry.symbol_size() {
             self.stats.record_invalid(symbol.tree_id);
-            return;
+            return Ok(());
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
             self.stats.record_complete_block(symbol.tree_id);
-            return;
+            return Ok(());
         }
 
         let Some(scheme) = fec_mode.scheme_kind() else {
             self.stats.record_invalid(symbol.tree_id);
-            return;
+            return Ok(());
         };
 
         if scheme == FecScheme::Mettle {
             let payload = payload.to_vec();
             self.accept_mettle_symbol(shared, &fec_mode, &symbol);
-            let _ = self
-                .try_decode_mettle_symbol(
-                    shared,
-                    &fec_mode,
-                    symbol.block_id,
-                    symbol.symbol_id,
-                    symbol.tree_id,
-                    payload,
-                )
-                .await;
+            self.try_decode_mettle_symbol(
+                shared,
+                &fec_mode,
+                symbol.block_id,
+                symbol.symbol_id,
+                symbol.tree_id,
+                payload,
+            )
+            .await?;
         } else {
             if !self.accept_symbol(shared, &fec_mode, &symbol, payload.to_vec()) {
-                return;
+                return Ok(());
             }
-            let _ = self
-                .try_decode_fec_block(shared, symbol.block_id, &fec_mode)
-                .await;
+            self.try_decode_fec_block(shared, symbol.block_id, &fec_mode)
+                .await?;
         }
+        Ok(())
     }
 
     fn accept_symbol(
@@ -343,24 +342,24 @@ impl FecReceiver {
         shared: &mut super::ReceiverShared,
         block_id: u64,
         fec_mode: &nextmini_messages::lossless_session::LosslessSessionFecMode,
-    ) -> bool {
+    ) -> Result<bool, super::SinkWriteError> {
         let Some(plan) = shared.plan else {
-            return false;
+            return Ok(false);
         };
         let Some(block_state) = self.blocks.get(&block_id) else {
-            return false;
+            return Ok(false);
         };
         let Ok(source_symbols) = usize::try_from(fec_mode.symbols_per_block) else {
-            return false;
+            return Ok(false);
         };
         if block_state.symbols.len() < source_symbols {
-            return false;
+            return Ok(false);
         }
         let Some(block_len) = plan.block_len(block_id) else {
-            return false;
+            return Ok(false);
         };
         let Some(scheme) = fec_mode.scheme_kind() else {
-            return false;
+            return Ok(false);
         };
 
         if scheme != FecScheme::Mettle
@@ -371,8 +370,8 @@ impl FecReceiver {
                 block_len,
             )
         {
-            self.complete_block(shared, block_id, block).await;
-            return true;
+            self.complete_block(shared, block_id, block).await?;
+            return Ok(true);
         }
 
         let params = BlockParams::with_scheme(
@@ -383,13 +382,13 @@ impl FecReceiver {
         );
         let Ok(decoder) = Decoder::from_block(params) else {
             self.stats.record_decode(DecodeStatus::InvalidSymbol);
-            return false;
+            return Ok(false);
         };
         let mut received = Vec::with_capacity(block_state.symbols.len());
 
         for (&symbol_id, payload) in &block_state.symbols {
             if payload.len() != self.geometry.symbol_size() {
-                return false;
+                return Ok(false);
             }
             // RaptorQ's initial ESI range is systematic source data; later
             // ESIs are repair symbols from the same source block encoder.
@@ -400,7 +399,7 @@ impl FecReceiver {
             };
             let Ok(received_symbol) = received_symbol else {
                 self.stats.record_decode(DecodeStatus::InvalidSymbol);
-                return false;
+                return Ok(false);
             };
             received.push(received_symbol);
         }
@@ -413,7 +412,7 @@ impl FecReceiver {
         };
         self.stats.record_decode(decode_status);
         let Ok(output) = decode_result else {
-            return false;
+            return Ok(false);
         };
 
         let Some(block_capacity) = output
@@ -427,7 +426,7 @@ impl FecReceiver {
                 symbol_size = self.geometry.symbol_size(),
                 "Lossless receiver overflowed FEC block allocation geometry"
             );
-            return false;
+            return Ok(false);
         };
         let mut block = Vec::new();
         if block.try_reserve_exact(block_capacity).is_err() {
@@ -437,15 +436,15 @@ impl FecReceiver {
                 block_capacity,
                 "Lossless receiver failed to reserve space for decoded FEC block"
             );
-            return false;
+            return Ok(false);
         }
         for symbol in output.source_symbols {
             block.extend_from_slice(&symbol);
         }
         block.truncate(block_len);
 
-        self.complete_block(shared, block_id, block).await;
-        true
+        self.complete_block(shared, block_id, block).await?;
+        Ok(true)
     }
 
     async fn try_decode_mettle_symbol(
@@ -456,15 +455,15 @@ impl FecReceiver {
         symbol_id: u32,
         _tree_id: u16,
         payload: Vec<u8>,
-    ) -> bool {
+    ) -> Result<bool, super::SinkWriteError> {
         let Some(plan) = shared.plan else {
-            return false;
+            return Ok(false);
         };
         if plan.block_span(block_id).is_none() {
-            return false;
+            return Ok(false);
         }
         let Ok(source_symbols) = usize::try_from(fec_mode.symbols_per_block) else {
-            return false;
+            return Ok(false);
         };
         let needs_mettle = self
             .blocks
@@ -475,7 +474,7 @@ impl FecReceiver {
             let Some(mettle_overhead) = session_fec::mettle_overhead_from_fec_mode(fec_mode) else {
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
-                return false;
+                return Ok(false);
             };
             let Some(mettle) = MettleBlockDecodeState::new(
                 source_symbols,
@@ -485,16 +484,16 @@ impl FecReceiver {
             ) else {
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
-                return false;
+                return Ok(false);
             };
             let Some(state) = self.blocks.get_mut(&block_id) else {
-                return false;
+                return Ok(false);
             };
             state.mettle = Some(mettle);
         }
 
         let Some(state) = self.blocks.get_mut(&block_id) else {
-            return false;
+            return Ok(false);
         };
         let mettle = state
             .mettle
@@ -508,14 +507,14 @@ impl FecReceiver {
                     .record_mettle_decode(MettleDecodeStatus::Pending, decoded_count);
                 self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
-                    .await;
-                false
+                    .await?;
+                Ok(false)
             }
             MettleDecodeOutcome::InvalidSymbol => {
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
                 self.maybe_log_progress(shared);
-                false
+                Ok(false)
             }
             MettleDecodeOutcome::Complete { decoded_sources } => {
                 let decoded_count = decoded_sources.len();
@@ -523,9 +522,9 @@ impl FecReceiver {
                     .record_mettle_decode(MettleDecodeStatus::Complete, decoded_count);
                 self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
-                    .await;
+                    .await?;
                 self.complete_mettle_block(shared, block_id).await;
-                true
+                Ok(true)
             }
         }
     }
@@ -535,7 +534,7 @@ impl FecReceiver {
         shared: &super::ReceiverShared,
         block_id: u64,
         decoded_sources: Vec<(usize, Arc<Vec<u8>>)>,
-    ) {
+    ) -> Result<(), super::SinkWriteError> {
         let mut run_start = None;
         let mut expected_source_index = None;
         let mut run_payload = Vec::new();
@@ -548,7 +547,7 @@ impl FecReceiver {
                 if let Some(start) = run_start.take() {
                     shared
                         .write_symbol_run(block_id, self.geometry, start, &run_payload)
-                        .await;
+                        .await?;
                     run_payload.clear();
                 }
             }
@@ -563,8 +562,9 @@ impl FecReceiver {
         if let Some(start) = run_start {
             shared
                 .write_symbol_run(block_id, self.geometry, start, &run_payload)
-                .await;
+                .await?;
         }
+        Ok(())
     }
 
     async fn complete_mettle_block(&mut self, shared: &mut super::ReceiverShared, block_id: u64) {
@@ -594,14 +594,15 @@ impl FecReceiver {
         shared: &mut super::ReceiverShared,
         block_id: u64,
         block: Vec<u8>,
-    ) {
-        shared.write_block(block_id, &block).await;
+    ) -> Result<(), super::SinkWriteError> {
+        shared.write_block(block_id, &block).await?;
         shared.complete_blocks.insert(block_id);
         self.blocks.remove(&block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
             self.log_tree_stats(shared, "object_complete");
         }
+        Ok(())
     }
 
     /// Compute how many additional source-equivalent symbols are still needed.

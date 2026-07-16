@@ -27,28 +27,28 @@ impl CloudcastReceiver {
         &mut self,
         shared: &mut super::ReceiverShared,
         frame: InboundFrame,
-    ) {
+    ) -> Result<(), super::SinkWriteError> {
         let Some(manifest) = shared.manifest.as_ref() else {
-            return;
+            return Ok(());
         };
         if !matches!(manifest.mode, LosslessSessionMode::Plain) {
-            return;
+            return Ok(());
         }
 
         let Some((_, data, payload)) =
             nextmini_messages::lossless_session::decode_block_data(&frame.bytes)
         else {
-            return;
+            return Ok(());
         };
         if manifest.validate_block_data(&data, payload.len()).is_err() {
-            return;
+            return Ok(());
         }
         if shared.complete_blocks.contains(&data.block_id) {
-            return;
+            return Ok(());
         }
 
         shared.mark_first_payload_unit();
-        shared.write_block(data.block_id, payload).await;
+        shared.write_block(data.block_id, payload).await?;
         shared.complete_blocks.insert(data.block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
@@ -56,6 +56,7 @@ impl CloudcastReceiver {
                 self.report_complete(shared, round_id).await;
             }
         }
+        Ok(())
     }
 
     pub(super) async fn handle_source_done(

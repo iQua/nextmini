@@ -173,6 +173,12 @@ impl LosslessUnicastFlowManager {
                         "LosslessUnicastFlow: sender completion reported failure"
                     );
                 }
+                SessionOutcome::SinkError => {
+                    warn!(
+                        session_id,
+                        "LosslessUnicastFlow: receiver sink rejected transferred data"
+                    );
+                }
             }
         });
     }

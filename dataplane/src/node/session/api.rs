@@ -27,8 +27,12 @@ pub struct InboundFrame {
 /// Final outcome reported by a completed lossless session.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SessionOutcome {
+    /// The protocol completed successfully, including every configured sink.
     Completed,
+    /// The session stopped for a protocol, liveness, or external abort reason.
     Aborted,
+    /// A configured receiver sink rejected sizing or payload data.
+    SinkError,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
