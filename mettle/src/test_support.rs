@@ -121,6 +121,24 @@ impl Decoder {
         ))
     }
 
+    /// Construct the dense, fully precomputed terminated decoder.
+    ///
+    /// This is measurement-only access for the Stage 2 memory/layout spike;
+    /// production callers should use the stable stream or block adapters.
+    pub fn new_terminated_dense(
+        params: MettleParams,
+        source_symbol_bytes: NonZeroUsize,
+        seed: u64,
+        terminal_source_count: u64,
+    ) -> Self {
+        Self(MettleDecoder::new_terminated_with_precomputed_graph(
+            params,
+            source_symbol_bytes,
+            seed,
+            terminal_source_count,
+        ))
+    }
+
     pub fn push_bin(&mut self, bin_id: u128, payload: Vec<u8>) -> Vec<(u64, Vec<u8>)> {
         self.0
             .push_bin(MettleBin::new(bin_id, payload))
@@ -128,6 +146,13 @@ impl Decoder {
             .map(DecodedSource::into_parts)
             .map(|(source_id, payload)| (source_id, payload.as_slice().to_vec()))
             .collect()
+    }
+
+    /// Push a bin and return only the released-source count.
+    ///
+    /// The spike uses this to avoid cloning decoded payloads into its observer.
+    pub fn push_bin_count(&mut self, bin_id: u128, payload: Vec<u8>) -> usize {
+        self.0.push_bin(MettleBin::new(bin_id, payload)).len()
     }
 
     pub fn next_source_id(&self) -> u64 {
