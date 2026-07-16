@@ -1,7 +1,8 @@
 use super::{
-    FecFeedbackMode, LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode,
-    LosslessSessionHeader, LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode,
-    LosslessSessionModeKind, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
+    BLOCK_ACK_BLOCKS_VARIANT, BlockAck, CompletedBlockRange, FecFeedbackMode,
+    LosslessSessionControl, LosslessSessionCtrlKind, LosslessSessionFecMode, LosslessSessionHeader,
+    LosslessSessionKind, LosslessSessionManifest, LosslessSessionMode, LosslessSessionModeKind,
+    MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES,
     MissingBlockRange, NeedBlock, NeedReport,
 };
 
@@ -9,6 +10,8 @@ const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4 + 4 + 4;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
+const BLOCK_ACK_FIXED_BODY_LEN: usize = 1 + 1 + 2 + 8;
+const BLOCK_ACK_RANGE_LEN: usize = 8 + 8;
 
 /// Stack-friendly scratch size for common control frames.
 ///
@@ -21,12 +24,14 @@ const MAX_CONTROL_FRAME_SIZE: usize = LosslessSessionHeader::LEN
         MANIFEST_FIXED_BODY_LEN + (MAX_MANIFEST_TREE_IDS * 2),
         NEED_FIXED_BODY_LEN + (MAX_NEED_RANGES * NEED_RANGE_LEN),
         NEED_FIXED_BODY_LEN + (MAX_NEED_BLOCKS * NEED_BLOCK_LEN),
+        BLOCK_ACK_FIXED_BODY_LEN + (MAX_BLOCK_ACK_RANGES * BLOCK_ACK_RANGE_LEN),
     );
 
 #[cfg(test)]
-const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize) -> usize {
+const fn max_control_body_len(lhs: usize, mid: usize, rhs: usize, fourth: usize) -> usize {
     let first = if lhs > mid { lhs } else { mid };
-    if first > rhs { first } else { rhs }
+    let second = if first > rhs { first } else { rhs };
+    if second > fourth { second } else { fourth }
 }
 
 fn manifest_tree_ids(mode: &LosslessSessionMode) -> &[u16] {
@@ -60,6 +65,12 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
                 }
             }
         },
+        LosslessSessionControl::BlockAck { ack } => match ack {
+            BlockAck::Blocks {
+                extra_completed, ..
+            } => BLOCK_ACK_FIXED_BODY_LEN + (extra_completed.len() * BLOCK_ACK_RANGE_LEN),
+        },
+        LosslessSessionControl::AckProbe | LosslessSessionControl::SessionComplete => 0,
     }
 }
 
@@ -184,6 +195,35 @@ fn encode_control_into<'a>(
             }
             LosslessSessionCtrlKind::Need as u8
         }
+        LosslessSessionControl::BlockAck { ack } => {
+            let body_start = LosslessSessionHeader::LEN;
+            match ack {
+                BlockAck::Blocks {
+                    completed_watermark,
+                    extra_completed,
+                } => {
+                    assert!(
+                        extra_completed.len() <= MAX_BLOCK_ACK_RANGES,
+                        "block-ack ranges exceed wire capacity"
+                    );
+                    buf[body_start] = BLOCK_ACK_BLOCKS_VARIANT;
+                    buf[body_start + 1] = 0;
+                    let count = extra_completed.len() as u16;
+                    buf[body_start + 2..body_start + 4].copy_from_slice(&count.to_be_bytes());
+                    buf[body_start + 4..body_start + 12]
+                        .copy_from_slice(&completed_watermark.to_be_bytes());
+                    let mut pos = body_start + BLOCK_ACK_FIXED_BODY_LEN;
+                    for range in extra_completed {
+                        buf[pos..pos + 8].copy_from_slice(&range.start_block_id.to_be_bytes());
+                        buf[pos + 8..pos + 16].copy_from_slice(&range.end_block_id.to_be_bytes());
+                        pos += BLOCK_ACK_RANGE_LEN;
+                    }
+                }
+            }
+            LosslessSessionCtrlKind::BlockAck as u8
+        }
+        LosslessSessionControl::AckProbe => LosslessSessionCtrlKind::AckProbe as u8,
+        LosslessSessionControl::SessionComplete => LosslessSessionCtrlKind::SessionComplete as u8,
     };
 
     LosslessSessionHeader {
@@ -352,6 +392,49 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             report.validate().ok()?;
             LosslessSessionControl::Need { round_id, report }
         }
+        x if x == LosslessSessionCtrlKind::BlockAck as u8 => {
+            if body.len() < BLOCK_ACK_FIXED_BODY_LEN
+                || body[0] != BLOCK_ACK_BLOCKS_VARIANT
+                || body[1] != 0
+            {
+                return None;
+            }
+            let range_count = usize::from(u16::from_be_bytes(body[2..4].try_into().ok()?));
+            if range_count > MAX_BLOCK_ACK_RANGES
+                || body.len() != BLOCK_ACK_FIXED_BODY_LEN + (range_count * BLOCK_ACK_RANGE_LEN)
+            {
+                return None;
+            }
+            let completed_watermark = u64::from_be_bytes(body[4..12].try_into().ok()?);
+            let mut extra_completed = Vec::with_capacity(range_count);
+            let mut pos = BLOCK_ACK_FIXED_BODY_LEN;
+            for _ in 0..range_count {
+                extra_completed.push(CompletedBlockRange {
+                    start_block_id: u64::from_be_bytes(body[pos..pos + 8].try_into().ok()?),
+                    end_block_id: u64::from_be_bytes(body[pos + 8..pos + 16].try_into().ok()?),
+                });
+                pos += BLOCK_ACK_RANGE_LEN;
+            }
+            let ack = BlockAck::Blocks {
+                completed_watermark,
+                extra_completed,
+            }
+            .canonicalized(u64::MAX)
+            .ok()?;
+            LosslessSessionControl::BlockAck { ack }
+        }
+        x if x == LosslessSessionCtrlKind::AckProbe as u8 => {
+            if !body.is_empty() {
+                return None;
+            }
+            LosslessSessionControl::AckProbe
+        }
+        x if x == LosslessSessionCtrlKind::SessionComplete as u8 => {
+            if !body.is_empty() {
+                return None;
+            }
+            LosslessSessionControl::SessionComplete
+        }
         _ => return None,
     };
     ctrl.validate().ok()?;
@@ -362,10 +445,11 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
 mod tests {
     use super::*;
     use crate::lossless_session::test_support::{
-        fec_manifest, fec_need, plain_manifest, plain_need,
+        carousel_manifest, fec_manifest, fec_need, plain_manifest, plain_need,
     };
     use crate::lossless_session::{
-        FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
+        BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED, BlockAck, CompletedBlockRange, FecScheme,
+        LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
         LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport, encode_block_data,
     };
 
@@ -412,6 +496,17 @@ mod tests {
                     },
                 ],
             ),
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 2,
+                    extra_completed: vec![CompletedBlockRange {
+                        start_block_id: 4,
+                        end_block_id: 6,
+                    }],
+                },
+            },
+            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::SessionComplete,
         ];
 
         for ctrl in ctrls {
@@ -431,6 +526,120 @@ mod tests {
         assert_eq!(hdr.body_len, 0);
         assert_eq!(buf.len(), LosslessSessionHeader::LEN);
         assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn carousel_signal_controls_use_empty_bodies() {
+        for control in [
+            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::SessionComplete,
+        ] {
+            let encoded = encode_control(77, &control);
+            let (header, decoded) = decode_control(&encoded).expect("decode carousel signal");
+            assert_eq!(header.body_len, 0);
+            assert_eq!(encoded.len(), LosslessSessionHeader::LEN);
+            assert_eq!(decoded, control);
+        }
+    }
+
+    #[test]
+    fn block_ack_decode_folds_ranges_touching_watermark() {
+        let encoded = encode_control(
+            77,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 2,
+                    extra_completed: vec![
+                        CompletedBlockRange {
+                            start_block_id: 2,
+                            end_block_id: 4,
+                        },
+                        CompletedBlockRange {
+                            start_block_id: 4,
+                            end_block_id: 7,
+                        },
+                        CompletedBlockRange {
+                            start_block_id: 9,
+                            end_block_id: 10,
+                        },
+                    ],
+                },
+            },
+        );
+
+        let (_, decoded) = decode_control(&encoded).expect("decode foldable block ack");
+        assert_eq!(
+            decoded,
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 7,
+                    extra_completed: vec![CompletedBlockRange {
+                        start_block_id: 9,
+                        end_block_id: 10,
+                    }],
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn block_ack_truncates_to_lowest_wire_ranges() {
+        let ranges: Vec<_> = (0..MAX_BLOCK_ACK_RANGES + 40)
+            .map(|index| CompletedBlockRange {
+                start_block_id: 1 + (index as u64 * 2),
+                end_block_id: 2 + (index as u64 * 2),
+            })
+            .collect();
+        let oversized = BlockAck::Blocks {
+            completed_watermark: 0,
+            extra_completed: ranges.clone(),
+        };
+        assert_eq!(
+            oversized.validate(),
+            Err(
+                super::super::LosslessSessionValidationError::TooManyBlockAckRanges {
+                    configured: ranges.len(),
+                    max: MAX_BLOCK_ACK_RANGES,
+                }
+            )
+        );
+
+        let wire = oversized.for_wire(10_000).expect("truncate valid ranges");
+        let BlockAck::Blocks {
+            extra_completed, ..
+        } = &wire;
+        assert_eq!(extra_completed.len(), MAX_BLOCK_ACK_RANGES);
+        assert_eq!(extra_completed.as_slice(), &ranges[..MAX_BLOCK_ACK_RANGES]);
+
+        let encoded = encode_control(91, &LosslessSessionControl::BlockAck { ack: wire });
+        assert!(decode_control(&encoded).is_some());
+    }
+
+    #[test]
+    fn block_ack_rejects_reserved_variant_and_malformed_shapes() {
+        assert_eq!(BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED, 2);
+        let good = encode_control(
+            92,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 1,
+                    extra_completed: vec![],
+                },
+            },
+        );
+
+        let mut reserved_variant = good.clone();
+        reserved_variant[LosslessSessionHeader::LEN] = BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED;
+        assert!(decode_control(&reserved_variant).is_none());
+
+        let mut reserved_byte = good.clone();
+        reserved_byte[LosslessSessionHeader::LEN + 1] = 1;
+        assert!(decode_control(&reserved_byte).is_none());
+
+        let mut bad_count = good;
+        bad_count[LosslessSessionHeader::LEN + 2..LosslessSessionHeader::LEN + 4]
+            .copy_from_slice(&1u16.to_be_bytes());
+        assert!(decode_control(&bad_count).is_none());
     }
 
     #[test]
@@ -542,6 +751,14 @@ mod tests {
             },
             LosslessSessionControl::Ready,
             LosslessSessionControl::SourceDone { round_id: 11 },
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 3,
+                    extra_completed: vec![],
+                },
+            },
+            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::SessionComplete,
             plain_need(
                 12,
                 vec![MissingBlockRange {
@@ -652,6 +869,36 @@ mod tests {
     }
 
     #[test]
+    fn carousel_controls_validate_against_carousel_manifest() {
+        let manifest = carousel_manifest();
+        for control in [
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: manifest.total_blocks,
+                    extra_completed: vec![],
+                },
+            },
+            LosslessSessionControl::AckProbe,
+            LosslessSessionControl::SessionComplete,
+        ] {
+            manifest
+                .validate_control(&control)
+                .expect("carousel control should match manifest");
+        }
+
+        assert!(
+            fec_manifest()
+                .validate_control(&LosslessSessionControl::AckProbe)
+                .is_err()
+        );
+        assert!(
+            manifest
+                .validate_control(&LosslessSessionControl::SourceDone { round_id: 0 })
+                .is_err()
+        );
+    }
+
+    #[test]
     fn decode_control_rejects_removed_legacy_control_ids() {
         let mut legacy_source_done =
             encode_control(16, &LosslessSessionControl::SourceDone { round_id: 16 });
@@ -668,10 +915,10 @@ mod tests {
                 report: NeedReport::Complete,
             },
         );
-        legacy_need[6] = 7;
+        legacy_need[6] = 4;
         assert!(
             decode_control(&legacy_need).is_none(),
-            "removed ctrl_kind=7 must not be reinterpreted as a live control"
+            "removed ctrl_kind=4 must not be reinterpreted as a live control"
         );
     }
 
@@ -846,6 +1093,37 @@ mod tests {
                 decode_control(&candidate).is_some(),
                 report_count == 1,
                 "one encoded range is canonical only when the peer count is one"
+            );
+        }
+
+        let ack_frame = encode_control(
+            24,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 0,
+                    extra_completed: vec![CompletedBlockRange {
+                        start_block_id: 1,
+                        end_block_id: 2,
+                    }],
+                },
+            },
+        );
+        for body_len in (0..=96).chain([u32::MAX]) {
+            let mut candidate = ack_frame.clone();
+            candidate[16..20].copy_from_slice(&body_len.to_be_bytes());
+            let _ = decode_control(&candidate);
+            for truncated_len in 0..candidate.len() {
+                let _ = decode_control(&candidate[..truncated_len]);
+            }
+        }
+        for range_count in 0..=u16::MAX {
+            let mut candidate = ack_frame.clone();
+            candidate[LosslessSessionHeader::LEN + 2..LosslessSessionHeader::LEN + 4]
+                .copy_from_slice(&range_count.to_be_bytes());
+            assert_eq!(
+                decode_control(&candidate).is_some(),
+                range_count == 1,
+                "one encoded completion range is valid only when the peer count is one"
             );
         }
     }

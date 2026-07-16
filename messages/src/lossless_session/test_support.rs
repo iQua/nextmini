@@ -1,6 +1,6 @@
 use super::{
-    LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest, LosslessSessionMode,
-    MissingBlockRange, NeedBlock, NeedReport,
+    FecFeedbackMode, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
+    LosslessSessionMode, MissingBlockRange, NeedBlock, NeedReport,
 };
 
 pub(super) fn plain_manifest() -> LosslessSessionManifest {
@@ -18,6 +18,16 @@ pub(super) fn fec_manifest() -> LosslessSessionManifest {
         total_bytes: 2500,
         total_blocks: 3,
         mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(8, vec![1, 3, 5])),
+    }
+}
+
+pub(super) fn carousel_manifest() -> LosslessSessionManifest {
+    LosslessSessionManifest {
+        mode: LosslessSessionMode::Fec(
+            LosslessSessionFecMode::new_raptorq(8, vec![1, 3, 5])
+                .with_feedback_mode(FecFeedbackMode::Carousel),
+        ),
+        ..fec_manifest()
     }
 }
 

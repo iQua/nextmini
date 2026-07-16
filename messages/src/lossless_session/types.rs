@@ -24,6 +24,9 @@ pub enum LosslessSessionCtrlKind {
     Ready = 2,
     SourceDone = 5,
     Need = 6,
+    BlockAck = 7,
+    AckProbe = 8,
+    SessionComplete = 9,
 }
 
 #[repr(u8)]
@@ -207,6 +210,28 @@ pub struct NeedBlock {
     pub deficit_symbols: u16,
 }
 
+/// Canonical half-open interval of completed logical blocks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CompletedBlockRange {
+    pub start_block_id: u64,
+    pub end_block_id: u64,
+}
+
+/// Cumulative carousel feedback.
+///
+/// Variant `1` on the wire is this block-completion snapshot. Wire variant `2`
+/// is reserved for the Stage 2 METTLE stream-progress acknowledgement.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub enum BlockAck {
+    Blocks {
+        /// Every block below this exclusive watermark is complete.
+        completed_watermark: u64,
+        /// Canonical completed islands strictly above the watermark.
+        extra_completed: Vec<CompletedBlockRange>,
+    },
+}
+
 /// End-of-round receiver feedback emitted after `SourceDone`.
 ///
 /// Empty plain/FEC payloads are canonicalized to `Complete` on encode.
@@ -284,10 +309,36 @@ pub enum LosslessSessionValidationError {
         configured: usize,
         max: usize,
     },
+    BlockAckWatermarkOutOfRange {
+        completed_watermark: u64,
+        total_blocks: u64,
+    },
+    CompletedBlockRangeInvalid {
+        start_block_id: u64,
+        end_block_id: u64,
+    },
+    BlockAckRangeBeforeWatermark {
+        start_block_id: u64,
+        completed_watermark: u64,
+    },
+    BlockAckRangeOutOfRange {
+        end_block_id: u64,
+        total_blocks: u64,
+    },
+    BlockAckRangesMustBeSortedMerged,
+    TooManyBlockAckRanges {
+        configured: usize,
+        max: usize,
+    },
+    CarouselControlRequiresCarouselMode,
+    RoundsControlRequiresRoundsMode,
 }
 
 pub const MAX_NEED_RANGES: usize = u8::MAX as usize;
 pub const MAX_NEED_BLOCKS: usize = u16::MAX as usize;
+pub const MAX_BLOCK_ACK_RANGES: usize = MAX_NEED_RANGES;
+pub const BLOCK_ACK_BLOCKS_VARIANT: u8 = 1;
+pub const BLOCK_ACK_METTLE_STREAM_VARIANT_RESERVED: u8 = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LosslessSessionBlockData {
@@ -303,12 +354,15 @@ pub struct LosslessSessionBlockSymbol {
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// Version 5 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
-/// -> Need` protocol. `Need` is the only live receiver-to-sender report.
+/// Rounds use `SourceDone`/`Need`; carousel uses cumulative `BlockAck`,
+/// `AckProbe`, and one-way `SessionComplete` controls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
     Manifest { manifest: LosslessSessionManifest },
     Ready,
     SourceDone { round_id: u32 },
     Need { round_id: u32, report: NeedReport },
+    BlockAck { ack: BlockAck },
+    AckProbe,
+    SessionComplete,
 }

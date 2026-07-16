@@ -836,6 +836,9 @@ fn control_kind_name(control: &LosslessSessionControl) -> &'static str {
         LosslessSessionControl::Ready => "Ready",
         LosslessSessionControl::Need { .. } => "Need",
         LosslessSessionControl::SourceDone { .. } => "SourceDone",
+        LosslessSessionControl::BlockAck { .. } => "BlockAck",
+        LosslessSessionControl::AckProbe => "AckProbe",
+        LosslessSessionControl::SessionComplete => "SessionComplete",
     }
 }
 

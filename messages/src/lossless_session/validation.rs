@@ -1,8 +1,8 @@
 use super::{
-    LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionControl,
-    LosslessSessionManifest, LosslessSessionMode, LosslessSessionValidationError,
-    MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS, MAX_NEED_RANGES, NeedReport, WireFecGeometry,
-    WireFecGeometryError,
+    BlockAck, FecFeedbackMode, LosslessSessionBlockData, LosslessSessionBlockSymbol,
+    LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode,
+    LosslessSessionValidationError, MAX_BLOCK_ACK_RANGES, MAX_MANIFEST_TREE_IDS, MAX_NEED_BLOCKS,
+    MAX_NEED_RANGES, NeedReport, WireFecGeometry, WireFecGeometryError,
 };
 
 impl NeedReport {
@@ -84,6 +84,108 @@ impl NeedReport {
                 Ok(())
             }
         }
+    }
+}
+
+impl BlockAck {
+    /// Canonicalize a received cumulative snapshot against the manifest's block
+    /// count. Completion islands that touch the watermark are folded into it.
+    pub fn canonicalized(self, total_blocks: u64) -> Result<Self, LosslessSessionValidationError> {
+        match self {
+            Self::Blocks {
+                completed_watermark,
+                extra_completed,
+            } => {
+                if completed_watermark > total_blocks {
+                    return Err(
+                        LosslessSessionValidationError::BlockAckWatermarkOutOfRange {
+                            completed_watermark,
+                            total_blocks,
+                        },
+                    );
+                }
+
+                let original_watermark = completed_watermark;
+                let mut completed_watermark = completed_watermark;
+                let mut canonical = Vec::with_capacity(extra_completed.len());
+                let mut previous_extra_end = None;
+
+                for range in extra_completed {
+                    if range.start_block_id >= range.end_block_id {
+                        return Err(LosslessSessionValidationError::CompletedBlockRangeInvalid {
+                            start_block_id: range.start_block_id,
+                            end_block_id: range.end_block_id,
+                        });
+                    }
+                    if range.start_block_id < original_watermark {
+                        return Err(
+                            LosslessSessionValidationError::BlockAckRangeBeforeWatermark {
+                                start_block_id: range.start_block_id,
+                                completed_watermark: original_watermark,
+                            },
+                        );
+                    }
+                    if range.end_block_id > total_blocks {
+                        return Err(LosslessSessionValidationError::BlockAckRangeOutOfRange {
+                            end_block_id: range.end_block_id,
+                            total_blocks,
+                        });
+                    }
+
+                    if canonical.is_empty() && range.start_block_id == completed_watermark {
+                        completed_watermark = range.end_block_id;
+                        continue;
+                    }
+                    if range.start_block_id < completed_watermark
+                        || previous_extra_end
+                            .is_some_and(|previous_end| range.start_block_id <= previous_end)
+                    {
+                        return Err(
+                            LosslessSessionValidationError::BlockAckRangesMustBeSortedMerged,
+                        );
+                    }
+                    previous_extra_end = Some(range.end_block_id);
+                    canonical.push(range);
+                }
+
+                Ok(Self::Blocks {
+                    completed_watermark,
+                    extra_completed: canonical,
+                })
+            }
+        }
+    }
+
+    /// Produce the deterministic wire snapshot: canonical form followed by
+    /// lowest-block-id truncation to the protocol range capacity.
+    pub fn for_wire(self, total_blocks: u64) -> Result<Self, LosslessSessionValidationError> {
+        let mut canonical = self.canonicalized(total_blocks)?;
+        let Self::Blocks {
+            extra_completed, ..
+        } = &mut canonical;
+        extra_completed.truncate(MAX_BLOCK_ACK_RANGES);
+        Ok(canonical)
+    }
+
+    pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
+        let Self::Blocks {
+            extra_completed, ..
+        } = self;
+        if extra_completed.len() > MAX_BLOCK_ACK_RANGES {
+            return Err(LosslessSessionValidationError::TooManyBlockAckRanges {
+                configured: extra_completed.len(),
+                max: MAX_BLOCK_ACK_RANGES,
+            });
+        }
+        self.clone().canonicalized(u64::MAX).map(|_| ())
+    }
+
+    pub fn validate_against_total_blocks(
+        &self,
+        total_blocks: u64,
+    ) -> Result<(), LosslessSessionValidationError> {
+        self.validate()?;
+        self.clone().canonicalized(total_blocks).map(|_| ())
     }
 }
 
@@ -272,8 +374,52 @@ impl LosslessSessionManifest {
         control.validate()?;
         match control {
             LosslessSessionControl::Manifest { manifest } => manifest.validate(),
-            LosslessSessionControl::Ready | LosslessSessionControl::SourceDone { .. } => Ok(()),
-            LosslessSessionControl::Need { report, .. } => self.validate_need_report(report),
+            LosslessSessionControl::Ready => Ok(()),
+            LosslessSessionControl::SourceDone { .. } => {
+                if matches!(
+                    &self.mode,
+                    LosslessSessionMode::Fec(fec)
+                        if fec.feedback_mode == FecFeedbackMode::Carousel
+                ) {
+                    Err(LosslessSessionValidationError::RoundsControlRequiresRoundsMode)
+                } else {
+                    Ok(())
+                }
+            }
+            LosslessSessionControl::Need { report, .. } => {
+                if matches!(
+                    &self.mode,
+                    LosslessSessionMode::Fec(fec)
+                        if fec.feedback_mode == FecFeedbackMode::Carousel
+                ) {
+                    Err(LosslessSessionValidationError::RoundsControlRequiresRoundsMode)
+                } else {
+                    self.validate_need_report(report)
+                }
+            }
+            LosslessSessionControl::BlockAck { ack } => {
+                if !matches!(
+                    &self.mode,
+                    LosslessSessionMode::Fec(fec)
+                        if fec.feedback_mode == FecFeedbackMode::Carousel
+                ) {
+                    return Err(
+                        LosslessSessionValidationError::CarouselControlRequiresCarouselMode,
+                    );
+                }
+                ack.validate_against_total_blocks(self.total_blocks)
+            }
+            LosslessSessionControl::AckProbe | LosslessSessionControl::SessionComplete => {
+                if matches!(
+                    &self.mode,
+                    LosslessSessionMode::Fec(fec)
+                        if fec.feedback_mode == FecFeedbackMode::Carousel
+                ) {
+                    Ok(())
+                } else {
+                    Err(LosslessSessionValidationError::CarouselControlRequiresCarouselMode)
+                }
+            }
         }
     }
 }
@@ -282,8 +428,11 @@ impl LosslessSessionControl {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
         match self {
             Self::Manifest { manifest } => manifest.validate(),
-            Self::Ready | Self::SourceDone { .. } => Ok(()),
+            Self::Ready | Self::SourceDone { .. } | Self::AckProbe | Self::SessionComplete => {
+                Ok(())
+            }
             Self::Need { report, .. } => report.validate(),
+            Self::BlockAck { ack } => ack.validate(),
         }
     }
 }
@@ -292,11 +441,12 @@ impl LosslessSessionControl {
 mod tests {
     use super::*;
     use crate::lossless_session::test_support::{
-        fec_manifest, fec_need, plain_manifest, plain_need,
+        carousel_manifest, fec_manifest, fec_need, plain_manifest, plain_need,
     };
     use crate::lossless_session::{
-        LosslessSessionBlockData, LosslessSessionBlockSymbol, LosslessSessionFecMode,
-        LosslessSessionManifest, LosslessSessionMode, MissingBlockRange, NeedBlock,
+        CompletedBlockRange, LosslessSessionBlockData, LosslessSessionBlockSymbol,
+        LosslessSessionFecMode, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+        NeedBlock,
     };
 
     #[test]
@@ -513,6 +663,89 @@ mod tests {
         assert_eq!(
             control.validate(),
             Err(LosslessSessionValidationError::ZeroDeficitSymbols)
+        );
+    }
+
+    #[test]
+    fn block_ack_validation_enforces_manifest_bounds_and_canonical_ranges() {
+        let manifest = carousel_manifest();
+        let watermark_past_end = BlockAck::Blocks {
+            completed_watermark: manifest.total_blocks + 1,
+            extra_completed: vec![],
+        };
+        assert_eq!(
+            watermark_past_end.validate_against_total_blocks(manifest.total_blocks),
+            Err(
+                LosslessSessionValidationError::BlockAckWatermarkOutOfRange {
+                    completed_watermark: manifest.total_blocks + 1,
+                    total_blocks: manifest.total_blocks,
+                }
+            )
+        );
+
+        let touching_ranges = BlockAck::Blocks {
+            completed_watermark: 0,
+            extra_completed: vec![
+                CompletedBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                },
+                CompletedBlockRange {
+                    start_block_id: 2,
+                    end_block_id: 3,
+                },
+            ],
+        };
+        assert_eq!(
+            touching_ranges.validate_against_total_blocks(manifest.total_blocks),
+            Err(LosslessSessionValidationError::BlockAckRangesMustBeSortedMerged)
+        );
+
+        let range_past_end = BlockAck::Blocks {
+            completed_watermark: 1,
+            extra_completed: vec![CompletedBlockRange {
+                start_block_id: 2,
+                end_block_id: manifest.total_blocks + 1,
+            }],
+        };
+        assert_eq!(
+            range_past_end.validate_against_total_blocks(manifest.total_blocks),
+            Err(LosslessSessionValidationError::BlockAckRangeOutOfRange {
+                end_block_id: manifest.total_blocks + 1,
+                total_blocks: manifest.total_blocks,
+            })
+        );
+    }
+
+    #[test]
+    fn block_ack_canonicalization_folds_only_the_contiguous_watermark_prefix() {
+        let ack = BlockAck::Blocks {
+            completed_watermark: 1,
+            extra_completed: vec![
+                CompletedBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                },
+                CompletedBlockRange {
+                    start_block_id: 2,
+                    end_block_id: 4,
+                },
+                CompletedBlockRange {
+                    start_block_id: 6,
+                    end_block_id: 7,
+                },
+            ],
+        };
+
+        assert_eq!(
+            ack.canonicalized(8).expect("canonical ack"),
+            BlockAck::Blocks {
+                completed_watermark: 4,
+                extra_completed: vec![CompletedBlockRange {
+                    start_block_id: 6,
+                    end_block_id: 7,
+                }],
+            }
         );
     }
 

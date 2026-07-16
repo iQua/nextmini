@@ -468,8 +468,11 @@ impl SenderShared {
         };
 
         match control {
-            LosslessSessionControl::Manifest { .. } | LosslessSessionControl::SourceDone { .. } => {
-            }
+            LosslessSessionControl::Manifest { .. }
+            | LosslessSessionControl::SourceDone { .. }
+            | LosslessSessionControl::BlockAck { .. }
+            | LosslessSessionControl::AckProbe
+            | LosslessSessionControl::SessionComplete => {}
             LosslessSessionControl::Ready => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
