@@ -26,6 +26,7 @@ use crate::topology::topo;
 #[derive(Debug, Default)]
 pub struct LosslessSessionIdAllocator {
     issued: HashSet<u64>,
+    claimed_flow_ids: HashSet<i32>,
 }
 
 impl LosslessSessionIdAllocator {
@@ -37,6 +38,16 @@ impl LosslessSessionIdAllocator {
                 return candidate;
             }
         }
+    }
+
+    /// Claim one database flow before assigning its transfer incarnation.
+    /// Both startup sync and incremental DB sync share this registry, so a
+    /// duplicate delivery cannot allocate a second live session.
+    fn claim_flow(&mut self, flow_id: i32) -> Option<u64> {
+        if !self.claimed_flow_ids.insert(flow_id) {
+            return None;
+        }
+        Some(self.allocate())
     }
 }
 
@@ -143,10 +154,22 @@ pub fn build_flows_for_node(
         // Look up route_id from flow_routes table
         let route_id = route_map.get(&flow.id).map(|&r| r as usize);
 
+        let lossless_session_id = if transport == FlowTransport::LosslessUnicast {
+            let Some(session_id) = session_ids.claim_flow(flow.id) else {
+                debug!(
+                    "Skipping duplicate delivery for lossless flow id {}",
+                    flow.id
+                );
+                continue;
+            };
+            Some(session_id)
+        } else {
+            None
+        };
+
         built.push(Flow {
             controller_id: Some(flow.id),
-            lossless_session_id: (transport == FlowTransport::LosslessUnicast)
-                .then(|| session_ids.allocate()),
+            lossless_session_id,
             src_node_id: flow.src_node_id as usize,
             dst_node_id: flow.dst_node_id as usize,
             route_id,
@@ -793,6 +816,44 @@ mod tests {
         assert_ne!(first_transfer, 0);
         assert_ne!(reused_flow_transfer, 0);
         assert_ne!(first_transfer, reused_flow_transfer);
+    }
+
+    #[test]
+    fn duplicate_lossless_flow_delivery_is_claimed_before_session_allocation() {
+        let flow = DbFlow {
+            id: 44,
+            src_node_id: 1,
+            dst_node_id: 2,
+            flow_len_type: "bytes".to_string(),
+            flow_len_bytes: Some(128),
+            flow_len_duration: None,
+            flow_rate: None,
+            flow_weight: None,
+        };
+        let mut allocator = LosslessSessionIdAllocator::default();
+
+        let ControllerToDataplane::AddFlows { flows: first } = build_flows_for_node(
+            vec![flow.clone()],
+            &[],
+            FlowTransport::LosslessUnicast,
+            &mut allocator,
+        ) else {
+            panic!("flow builder must return AddFlows");
+        };
+        let ControllerToDataplane::AddFlows { flows: duplicate } = build_flows_for_node(
+            vec![flow],
+            &[],
+            FlowTransport::LosslessUnicast,
+            &mut allocator,
+        ) else {
+            panic!("flow builder must return AddFlows");
+        };
+
+        assert_eq!(first.len(), 1);
+        assert!(first[0].lossless_session_id.is_some());
+        assert!(duplicate.is_empty());
+        assert_eq!(allocator.issued.len(), 1);
+        assert_eq!(allocator.claimed_flow_ids, HashSet::from([44]));
     }
 
     #[test]
