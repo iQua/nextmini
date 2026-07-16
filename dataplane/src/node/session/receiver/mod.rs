@@ -433,7 +433,10 @@ impl SessionReceiver {
                 else {
                     return;
                 };
-                ReceiverMode::Fec(FecReceiver::new(geometry))
+                ReceiverMode::Fec(FecReceiver::new(
+                    geometry,
+                    validated_geometry.symbol_id_bounds(),
+                ))
             }
         };
 
@@ -943,6 +946,7 @@ mod tests {
                 .ok()
                 .and_then(|plan| plan.symbol_geometry(4).ok())
                 .expect("valid geometry"),
+            crate::node::session::fec::FecSymbolIdBounds::raptorq(),
         );
         receiver.blocks = BTreeMap::from([(
             0,
@@ -1006,7 +1010,10 @@ mod tests {
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
         };
-        let receiver = FecReceiver::new(geometry);
+        let receiver = FecReceiver::new(
+            geometry,
+            crate::node::session::fec::FecSymbolIdBounds::raptorq(),
+        );
 
         let NeedReport::Fec { blocks } = receiver.need_report(&shared).expect("status") else {
             panic!("expected missing-block status");
@@ -1124,7 +1131,9 @@ mod tests {
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
         };
-        let mut receiver = FecReceiver::new(geometry);
+        let symbol_id_bounds =
+            test_fec_symbol_id_bounds(shared.manifest.as_ref().expect("METTLE manifest"));
+        let mut receiver = FecReceiver::new(geometry, symbol_id_bounds);
         let payload = vec![0; geometry.symbol_size()];
         let frame = InboundFrame {
             bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload),
@@ -1162,7 +1171,12 @@ mod tests {
             total_blocks: 1,
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
         });
-        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
+        let symbol_id_bounds =
+            test_fec_symbol_id_bounds(receiver.shared.manifest.as_ref().expect("METTLE manifest"));
+        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(
+            geometry,
+            symbol_id_bounds,
+        )));
 
         let source_symbol_bytes =
             std::num::NonZeroUsize::new(geometry.symbol_size()).expect("non-zero symbol size");
@@ -1219,7 +1233,12 @@ mod tests {
             total_blocks: 1,
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
         });
-        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
+        let symbol_id_bounds =
+            test_fec_symbol_id_bounds(receiver.shared.manifest.as_ref().expect("METTLE manifest"));
+        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(
+            geometry,
+            symbol_id_bounds,
+        )));
 
         let (control_tx, mut control_rx) = mpsc::channel(8);
         let (data_tx, mut data_rx) = mpsc::channel(8);
@@ -1298,6 +1317,37 @@ mod tests {
                 })
                 .is_none(),
             "malformed FEC symbol payloads must be dropped before insertion"
+        );
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_rejects_out_of_range_peer_esi_before_storage() {
+        let (mut receiver, _packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+
+        receiver
+            .handle_block_symbol_frame(InboundFrame {
+                bytes: lossless_session::encode_block_symbol(
+                    receiver.shared.session_id,
+                    0,
+                    crate::node::session::fec::RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+                    0,
+                    &[1, 2],
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await;
+
+        assert!(
+            receiver
+                .mode
+                .as_ref()
+                .and_then(|mode| match mode {
+                    ReceiverMode::Fec(fec) => fec.blocks.get(&0),
+                    ReceiverMode::Plain(_) | ReceiverMode::Cloudcast(_) => None,
+                })
+                .is_none(),
+            "out-of-range peer ESIs must be dropped before storage or decoder input"
         );
     }
 
@@ -1857,7 +1907,10 @@ mod tests {
                 plan: BlockPlan::new(8, 8).ok(),
                 complete_blocks: BTreeSet::from([0]),
             },
-            mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
+            mode: Some(ReceiverMode::Fec(FecReceiver::new(
+                geometry,
+                crate::node::session::fec::FecSymbolIdBounds::raptorq(),
+            ))),
             lifecycle: ReceiverLifecycle::Active,
             passive_complete_deadline: None,
             pending_control_frames: VecDeque::new(),
@@ -2288,6 +2341,17 @@ mod tests {
         )
     }
 
+    fn test_fec_symbol_id_bounds(
+        manifest: &LosslessSessionManifest,
+    ) -> crate::node::session::fec::FecSymbolIdBounds {
+        let LosslessSessionMode::Fec(fec_mode) = &manifest.mode else {
+            panic!("test manifest must use FEC mode");
+        };
+        crate::node::session::fec::validate_fec_geometry(manifest.block_size, fec_mode)
+            .expect("valid test FEC geometry")
+            .symbol_id_bounds()
+    }
+
     async fn fec_test_receiver(
         total_bytes: u64,
         complete_blocks: BTreeSet<u64>,
@@ -2328,7 +2392,10 @@ mod tests {
         let plan = BlockPlan::new(total_bytes, 8).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");
 
-        let mut fec = FecReceiver::new(geometry);
+        let mut fec = FecReceiver::new(
+            geometry,
+            crate::node::session::fec::FecSymbolIdBounds::raptorq(),
+        );
         fec.blocks = blocks
             .into_iter()
             .map(|(block_id, symbols)| {

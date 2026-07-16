@@ -17,6 +17,8 @@ const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
 
 /// RFC 6330 maximum source symbols in one source block.
 pub(crate) const RAPTORQ_MAX_SOURCE_SYMBOLS: u32 = 56_403;
+/// RaptorQ encoding symbol identifiers are unsigned 24-bit values.
+pub(crate) const RAPTORQ_SYMBOL_ID_END_EXCLUSIVE: u32 = 1 << 24;
 
 /// Checked FEC construction and adapter failures.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -60,6 +62,30 @@ pub enum FecError {
     SourceBlockLengthMismatch {
         expected: usize,
         actual: usize,
+    },
+    SymbolIdOutOfRange {
+        scheme: FecScheme,
+        symbol_id: u32,
+        end_exclusive: u32,
+    },
+    SourceSymbolIdOutOfRange {
+        symbol_id: u32,
+        source_symbols: u32,
+    },
+    CodedSymbolIdBeforeRepairRange {
+        symbol_id: u32,
+        source_symbols: u32,
+    },
+    SymbolPayloadLengthMismatch {
+        expected: usize,
+        actual: usize,
+    },
+    SymbolIdExhausted {
+        scheme: FecScheme,
+        last_symbol_id: u32,
+    },
+    GeneratedSymbolMissing {
+        symbol_id: u32,
     },
 }
 
@@ -113,6 +139,42 @@ impl std::fmt::Display for FecError {
                 f,
                 "source block length {actual} does not match checked padded length {expected}"
             ),
+            Self::SymbolIdOutOfRange {
+                scheme,
+                symbol_id,
+                end_exclusive,
+            } => write!(
+                f,
+                "{scheme:?} symbol id {symbol_id} is outside 0..{end_exclusive}"
+            ),
+            Self::SourceSymbolIdOutOfRange {
+                symbol_id,
+                source_symbols,
+            } => write!(
+                f,
+                "source symbol id {symbol_id} is outside 0..{source_symbols}"
+            ),
+            Self::CodedSymbolIdBeforeRepairRange {
+                symbol_id,
+                source_symbols,
+            } => write!(
+                f,
+                "coded symbol id {symbol_id} is below source-symbol count {source_symbols}"
+            ),
+            Self::SymbolPayloadLengthMismatch { expected, actual } => write!(
+                f,
+                "symbol payload length {actual} does not match expected length {expected}"
+            ),
+            Self::SymbolIdExhausted {
+                scheme,
+                last_symbol_id,
+            } => write!(
+                f,
+                "{scheme:?} symbol-id space exhausted after {last_symbol_id}"
+            ),
+            Self::GeneratedSymbolMissing { symbol_id } => {
+                write!(f, "codec did not generate requested symbol {symbol_id}")
+            }
         }
     }
 }
@@ -129,6 +191,7 @@ impl From<WireFecGeometryError> for FecError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ValidatedFecGeometry {
     wire: WireFecGeometry,
+    scheme: FecScheme,
     mettle_stream_symbol_limit: Option<u32>,
 }
 
@@ -139,6 +202,66 @@ impl ValidatedFecGeometry {
 
     pub(crate) const fn mettle_stream_symbol_limit(self) -> Option<u32> {
         self.mettle_stream_symbol_limit
+    }
+
+    pub(crate) const fn symbol_id_bounds(self) -> FecSymbolIdBounds {
+        FecSymbolIdBounds {
+            scheme: self.scheme,
+            end_exclusive: match self.mettle_stream_symbol_limit {
+                Some(limit) => limit,
+                None => RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+            },
+        }
+    }
+}
+
+/// Scheme-specific symbol-id namespace accepted by a validated session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FecSymbolIdBounds {
+    scheme: FecScheme,
+    end_exclusive: u32,
+}
+
+impl FecSymbolIdBounds {
+    #[cfg(test)]
+    pub(crate) const fn raptorq() -> Self {
+        Self {
+            scheme: FecScheme::RaptorQ,
+            end_exclusive: RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+        }
+    }
+
+    pub(crate) fn validate(self, symbol_id: u32) -> Result<(), FecError> {
+        if symbol_id >= self.end_exclusive {
+            return Err(FecError::SymbolIdOutOfRange {
+                scheme: self.scheme,
+                symbol_id,
+                end_exclusive: self.end_exclusive,
+            });
+        }
+        Ok(())
+    }
+
+    pub(crate) fn next_after(self, symbol_id: u32) -> Result<u32, FecError> {
+        self.validate(symbol_id)?;
+        let next = symbol_id
+            .checked_add(1)
+            .ok_or(FecError::SymbolIdExhausted {
+                scheme: self.scheme,
+                last_symbol_id: symbol_id,
+            })?;
+        if next >= self.end_exclusive {
+            return Err(FecError::SymbolIdExhausted {
+                scheme: self.scheme,
+                last_symbol_id: symbol_id,
+            });
+        }
+        Ok(next)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn end_exclusive(self) -> u32 {
+        self.end_exclusive
     }
 }
 
@@ -205,6 +328,7 @@ pub(crate) fn validate_fec_geometry(
 
     Ok(ValidatedFecGeometry {
         wire,
+        scheme,
         mettle_stream_symbol_limit,
     })
 }
@@ -401,8 +525,12 @@ impl Encoder {
     }
 
     /// Generates a deterministic RaptorQ repair symbol payload for the provided ESI.
-    #[must_use]
-    pub fn coded_symbol(&self, esi: u32) -> Option<Vec<u8>> {
+    pub fn coded_symbol(&self, esi: u32) -> Result<Vec<u8>, FecError> {
+        let bounds = FecSymbolIdBounds {
+            scheme: FecScheme::RaptorQ,
+            end_exclusive: RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+        };
+        bounds.validate(esi)?;
         match &self.inner {
             EncoderInner::RaptorQ(inner) => {
                 let repair_index = self.repair_index(esi)?;
@@ -411,12 +539,22 @@ impl Encoder {
                     .into_iter()
                     .next()
                     .map(|packet| packet.data().to_vec())
+                    .ok_or(FecError::GeneratedSymbolMissing { symbol_id: esi })
             }
         }
     }
 
-    fn repair_index(&self, esi: u32) -> Option<u32> {
-        esi.checked_sub(u32::try_from(self.k).ok()?)
+    fn repair_index(&self, esi: u32) -> Result<u32, FecError> {
+        let source_symbols =
+            u32::try_from(self.k).map_err(|_| FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols: u32::MAX,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            })?;
+        esi.checked_sub(source_symbols)
+            .ok_or(FecError::CodedSymbolIdBeforeRepairRange {
+                symbol_id: esi,
+                source_symbols,
+            })
     }
 }
 
@@ -461,32 +599,69 @@ impl Decoder {
     }
 
     /// Builds a source symbol in decoder input format.
-    #[must_use]
-    pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        assert!((esi as usize) < self.k, "source ESI must be less than K");
-        assert_eq!(
-            self.params.scheme,
-            FecScheme::RaptorQ,
-            "METTLE uses the streaming decoder path, not block decoder symbols"
-        );
-        ReceivedSymbol {
+    pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> Result<ReceivedSymbol, FecError> {
+        self.validate_payload(&payload)?;
+        self.validate_adapter_scheme()?;
+        let source_symbols =
+            u32::try_from(self.k).map_err(|_| FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols: u32::MAX,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            })?;
+        if esi >= source_symbols {
+            return Err(FecError::SourceSymbolIdOutOfRange {
+                symbol_id: esi,
+                source_symbols,
+            });
+        }
+        Ok(ReceivedSymbol {
             kind: ReceivedSymbolKind::RaptorQ { esi },
             payload,
-        }
+        })
     }
 
     /// Builds a coded symbol in decoder input format.
-    #[must_use]
-    pub fn coded_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        assert_eq!(
-            self.params.scheme,
-            FecScheme::RaptorQ,
-            "METTLE uses the streaming decoder path, not block decoder symbols"
-        );
-        ReceivedSymbol {
+    pub fn coded_symbol(&self, esi: u32, payload: Vec<u8>) -> Result<ReceivedSymbol, FecError> {
+        self.validate_payload(&payload)?;
+        self.validate_adapter_scheme()?;
+        let source_symbols =
+            u32::try_from(self.k).map_err(|_| FecError::RaptorQSourceSymbolsOutOfRange {
+                source_symbols: u32::MAX,
+                max: RAPTORQ_MAX_SOURCE_SYMBOLS,
+            })?;
+        if esi < source_symbols {
+            return Err(FecError::CodedSymbolIdBeforeRepairRange {
+                symbol_id: esi,
+                source_symbols,
+            });
+        }
+        FecSymbolIdBounds {
+            scheme: FecScheme::RaptorQ,
+            end_exclusive: RAPTORQ_SYMBOL_ID_END_EXCLUSIVE,
+        }
+        .validate(esi)?;
+        Ok(ReceivedSymbol {
             kind: ReceivedSymbolKind::RaptorQ { esi },
             payload,
+        })
+    }
+
+    fn validate_adapter_scheme(&self) -> Result<(), FecError> {
+        if self.params.scheme != FecScheme::RaptorQ {
+            return Err(FecError::UnsupportedAdapterScheme {
+                scheme: self.params.scheme,
+            });
         }
+        Ok(())
+    }
+
+    fn validate_payload(&self, payload: &[u8]) -> Result<(), FecError> {
+        if payload.len() != self.symbol_size {
+            return Err(FecError::SymbolPayloadLengthMismatch {
+                expected: self.symbol_size,
+                actual: payload.len(),
+            });
+        }
+        Ok(())
     }
 
     /// Attempt to reconstruct the source symbols from the received symbol set.
@@ -502,10 +677,10 @@ impl Decoder {
         let packets: Vec<EncodingPacket> = symbols
             .iter()
             .map(|sym| match sym.kind {
-                ReceivedSymbolKind::RaptorQ { esi } => Ok(EncodingPacket::new(
-                    PayloadId::new(0, esi),
-                    sym.payload.clone(),
-                )),
+                ReceivedSymbolKind::RaptorQ { esi } if esi < RAPTORQ_SYMBOL_ID_END_EXCLUSIVE => Ok(
+                    EncodingPacket::new(PayloadId::new(0, esi), sym.payload.clone()),
+                ),
+                ReceivedSymbolKind::RaptorQ { .. } => Err(DecodeError::InvalidSymbol),
             })
             .collect::<Result<_, _>>()?;
         match decoder.decode(packets) {
@@ -640,6 +815,42 @@ mod tests {
     }
 
     #[test]
+    fn peer_raptorq_symbol_inputs_are_checked_before_codec_construction() {
+        let decoder =
+            Decoder::from_block(BlockParams::new(4, 2, 0)).expect("valid RaptorQ decoder geometry");
+        let bounds = FecSymbolIdBounds::raptorq();
+        let mut symbol_ids = vec![
+            0,
+            3,
+            4,
+            bounds.end_exclusive() - 1,
+            bounds.end_exclusive(),
+            u32::MAX,
+        ];
+        let mut state = 0xA5A5_5A5Au32;
+        for _ in 0..512 {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            symbol_ids.push(state);
+        }
+
+        for symbol_id in symbol_ids {
+            for payload_len in 0..=4 {
+                let payload = vec![0; payload_len];
+                assert_eq!(
+                    decoder.source_symbol(symbol_id, payload.clone()).is_ok(),
+                    payload_len == 2 && symbol_id < 4,
+                    "source classification mismatch for ESI {symbol_id} and length {payload_len}"
+                );
+                assert_eq!(
+                    decoder.coded_symbol(symbol_id, payload).is_ok(),
+                    payload_len == 2 && (4..bounds.end_exclusive()).contains(&symbol_id),
+                    "repair classification mismatch for ESI {symbol_id} and length {payload_len}"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn encode_decode_roundtrip() {
         let k = 32usize;
         let symbol_size = 64;
@@ -658,7 +869,8 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
-            .collect();
+            .collect::<Result<_, _>>()
+            .expect("valid source symbols");
         let output = decoder.decode(&symbols).unwrap();
         for (i, (decoded, expected)) in output
             .source_symbols
@@ -696,10 +908,13 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
-            .collect();
+            .collect::<Result<_, _>>()
+            .expect("valid source symbols");
         symbols.extend((0..(k - half_k)).map(|offset| {
             let esi = k as u32 + offset as u32;
-            decoder.coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
+            decoder
+                .coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
+                .expect("valid coded symbol")
         }));
 
         let output = decoder.decode(&symbols).unwrap();
@@ -739,10 +954,13 @@ mod tests {
             .iter()
             .enumerate()
             .map(|(esi, payload)| decoder.source_symbol(esi as u32, payload.clone()))
-            .collect();
+            .collect::<Result<_, _>>()
+            .expect("valid source symbols");
         symbols.extend((0..(k - half_k)).map(|offset| {
             let esi = k as u32 + offset as u32;
-            decoder.coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
+            decoder
+                .coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
+                .expect("valid coded symbol")
         }));
 
         let output = decoder.decode(&symbols).unwrap();

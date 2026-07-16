@@ -83,7 +83,10 @@ fn set_block_symbol_tree_id(buf: &mut [u8], tree_id: u16) -> Option<()> {
         return None;
     }
     if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32
-        || buf.len() < off + hdr.body_len as usize
+        || usize::try_from(hdr.body_len)
+            .ok()
+            .and_then(|body_len| off.checked_add(body_len))
+            .is_none_or(|frame_end| buf.len() < frame_end)
     {
         return None;
     }
@@ -104,7 +107,7 @@ pub fn decode_block_data(
     if hdr.body_len < 8 {
         return None;
     }
-    let payload_end = off + hdr.body_len as usize;
+    let payload_end = off.checked_add(usize::try_from(hdr.body_len).ok()?)?;
     if buf.len() != payload_end {
         return None;
     }
@@ -129,7 +132,7 @@ pub fn decode_block_symbol(
     if hdr.body_len < LOSSLESS_BLOCK_SYMBOL_METADATA_LEN as u32 {
         return None;
     }
-    let payload_end = off + hdr.body_len as usize;
+    let payload_end = off.checked_add(usize::try_from(hdr.body_len).ok()?)?;
     if buf.len() != payload_end {
         return None;
     }
@@ -273,5 +276,28 @@ mod tests {
         let mut symbol = Vec::new();
         encode_block_symbol_into(&mut symbol, 1, 0, 0, 1, b"y");
         assert!(decode_block_data(&symbol).is_none());
+    }
+
+    #[test]
+    fn block_frame_decoders_are_total_over_peer_body_lengths() {
+        let frames = [
+            encode_block_data(21, 4, b"payload"),
+            encode_block_symbol(21, 4, u32::MAX, 7, b"symbol"),
+        ];
+
+        for frame in frames {
+            for body_len in (0..=96).chain([u32::MAX]) {
+                let mut candidate = frame.clone();
+                candidate[16..20].copy_from_slice(&body_len.to_be_bytes());
+                let _ = decode_block_data(&candidate);
+                let _ = decode_block_symbol(&candidate);
+
+                for truncated_len in 0..candidate.len() {
+                    let truncated = &candidate[..truncated_len];
+                    let _ = decode_block_data(truncated);
+                    let _ = decode_block_symbol(truncated);
+                }
+            }
+        }
     }
 }

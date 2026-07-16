@@ -205,10 +205,11 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
     if hdr.kind != LosslessSessionKind::Control {
         return None;
     }
-    if buf.len() < off + hdr.body_len as usize {
+    let body_end = off.checked_add(usize::try_from(hdr.body_len).ok()?)?;
+    if buf.len() < body_end {
         return None;
     }
-    let body = &buf[off..off + hdr.body_len as usize];
+    let body = &buf[off..body_end];
     let ctrl = match hdr.ctrl_kind {
         x if x == LosslessSessionCtrlKind::Manifest as u8 => {
             if body.len() < MANIFEST_FIXED_BODY_LEN {
@@ -759,5 +760,39 @@ mod tests {
     fn control_decoding_stays_separate_from_block_frames() {
         let payload = encode_block_data(1, 1, b"x");
         assert!(decode_control(&payload).is_none());
+    }
+
+    #[test]
+    fn control_decoder_is_total_over_peer_body_lengths_and_range_counts() {
+        let range_frame = encode_control(
+            23,
+            &plain_need(
+                23,
+                vec![MissingBlockRange {
+                    start_block_id: 1,
+                    end_block_id: 2,
+                }],
+            ),
+        );
+
+        for body_len in (0..=96).chain([u32::MAX]) {
+            let mut candidate = range_frame.clone();
+            candidate[16..20].copy_from_slice(&body_len.to_be_bytes());
+            let _ = decode_control(&candidate);
+            for truncated_len in 0..candidate.len() {
+                let _ = decode_control(&candidate[..truncated_len]);
+            }
+        }
+
+        for report_count in 0..=u16::MAX {
+            let mut candidate = range_frame.clone();
+            candidate[LosslessSessionHeader::LEN + 5..LosslessSessionHeader::LEN + 7]
+                .copy_from_slice(&report_count.to_be_bytes());
+            assert_eq!(
+                decode_control(&candidate).is_some(),
+                report_count == 1,
+                "one encoded range is canonical only when the peer count is one"
+            );
+        }
     }
 }

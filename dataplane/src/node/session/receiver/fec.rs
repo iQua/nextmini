@@ -9,7 +9,7 @@ use tracing::warn;
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
-use crate::node::session::fec::{BlockParams, Decoder};
+use crate::node::session::fec::{BlockParams, Decoder, FecSymbolIdBounds};
 use crate::node::session::plan::SymbolGeometry;
 
 const METTLE_DECODED_WRITE_BATCH_BYTES: usize = 1024 * 1024;
@@ -108,6 +108,7 @@ fn streaming_mettle_repair_deficit(remaining_sources: usize) -> u16 {
 /// FEC-mode receiver state machine.
 pub(super) struct FecReceiver {
     pub(super) geometry: SymbolGeometry,
+    symbol_id_bounds: FecSymbolIdBounds,
     pub(super) blocks: BTreeMap<u64, FecBlockState>,
     pub(super) last_source_done_round_id: Option<u32>,
     pub(super) last_round_need: Option<NeedReport>,
@@ -232,9 +233,10 @@ impl FecReceiver {
     }
 
     /// Build receiver-side FEC state from the negotiated symbol geometry.
-    pub(super) fn new(geometry: SymbolGeometry) -> Self {
+    pub(super) fn new(geometry: SymbolGeometry, symbol_id_bounds: FecSymbolIdBounds) -> Self {
         Self {
             geometry,
+            symbol_id_bounds,
             blocks: BTreeMap::new(),
             last_source_done_round_id: None,
             last_round_need: None,
@@ -258,6 +260,10 @@ impl FecReceiver {
         let Some((_, symbol, payload)) = lossless_session::decode_block_symbol(&frame.bytes) else {
             return;
         };
+        if self.symbol_id_bounds.validate(symbol.symbol_id).is_err() {
+            self.stats.record_invalid(symbol.tree_id);
+            return;
+        }
         if manifest.validate_block_symbol(&symbol).is_err() {
             self.stats.record_invalid(symbol.tree_id);
             return;
@@ -387,11 +393,16 @@ impl FecReceiver {
             }
             // RaptorQ's initial ESI range is systematic source data; later
             // ESIs are repair symbols from the same source block encoder.
-            if symbol_id < fec_mode.symbols_per_block {
-                received.push(decoder.source_symbol(symbol_id, payload.clone()));
+            let received_symbol = if symbol_id < fec_mode.symbols_per_block {
+                decoder.source_symbol(symbol_id, payload.clone())
             } else {
-                received.push(decoder.coded_symbol(symbol_id, payload.clone()));
-            }
+                decoder.coded_symbol(symbol_id, payload.clone())
+            };
+            let Ok(received_symbol) = received_symbol else {
+                self.stats.record_decode(DecodeStatus::InvalidSymbol);
+                return false;
+            };
+            received.push(received_symbol);
         }
 
         let decode_result = decoder.decode(&received);

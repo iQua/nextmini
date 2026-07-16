@@ -13,7 +13,7 @@ use crate::node::session::api::InboundFrame;
 use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
-use crate::node::session::fec::{BlockParams, Encoder};
+use crate::node::session::fec::{BlockParams, Encoder, FecError, FecSymbolIdBounds};
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
@@ -43,6 +43,7 @@ pub(super) struct FecSender {
     symbols_per_block: u32,
     initial_symbol_count: u32,
     mettle_stream_symbol_limit: u32,
+    symbol_id_bounds: FecSymbolIdBounds,
     mettle_overhead: mettle::OverheadRatio,
     tree_ids: Vec<u16>,
     tree_schedule: Vec<TreeScheduleEntry>,
@@ -372,6 +373,7 @@ impl FecSender {
             symbols_per_block: fec.symbols_per_block,
             initial_symbol_count,
             mettle_stream_symbol_limit,
+            symbol_id_bounds: validated_geometry.symbol_id_bounds(),
             mettle_overhead,
             tree_ids: fec.tree_ids.clone(),
             tree_schedule,
@@ -521,6 +523,10 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
+        if self.symbol_id_bounds.validate(symbol_id).is_err() {
+            self.protocol_error = true;
+            return false;
+        }
         let Some(payload) = self.source_symbol_payload(shared, block_id, symbol_id) else {
             return false;
         };
@@ -557,6 +563,10 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> bool {
+        if self.symbol_id_bounds.validate(symbol_id).is_err() {
+            self.protocol_error = true;
+            return false;
+        }
         let Some(payload) = self.extra_symbol_payload(shared, block_id, symbol_id) else {
             self.protocol_error = true;
             return false;
@@ -569,13 +579,27 @@ impl FecSender {
             return false;
         }
 
+        let next_symbol = self.next_repair_symbol_id(symbol_id);
         if let Some(block) = fec_block_mut(self, block_id) {
             block.emitted_extra_symbols = block.emitted_extra_symbols.saturating_add(1);
-            block.next_fountain_symbol += 1;
+            match next_symbol {
+                Ok(next_symbol) => block.next_fountain_symbol = next_symbol,
+                Err(_) => self.protocol_error = true,
+            }
         }
         self.discard_sent_mettle_symbol(block_id, symbol_id);
         shared.mark_payload_emitted();
         true
+    }
+
+    fn next_repair_symbol_id(&self, symbol_id: u32) -> Result<u32, FecError> {
+        match self.scheme {
+            FecScheme::RaptorQ => self.symbol_id_bounds.next_after(symbol_id),
+            FecScheme::Mettle => symbol_id.checked_add(1).ok_or(FecError::SymbolIdExhausted {
+                scheme: self.scheme,
+                last_symbol_id: symbol_id,
+            }),
+        }
     }
 
     /// Emit one FEC symbol through the processor ingress path.
@@ -752,7 +776,7 @@ impl FecSender {
 
         fec_block_ref(self, block_id)
             .and_then(|block| block.encoder.as_ref())
-            .and_then(|encoder| encoder.coded_symbol(symbol_id))
+            .and_then(|encoder| encoder.coded_symbol(symbol_id).ok())
     }
 
     fn mettle_symbol_payload(
@@ -1161,6 +1185,23 @@ mod tests {
                     tree_index: 2,
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn raptorq_repair_generator_stops_before_esi_wrap() {
+        let manifest = test_manifest();
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let last_esi = session_fec::RAPTORQ_SYMBOL_ID_END_EXCLUSIVE - 1;
+
+        assert_eq!(sender.next_repair_symbol_id(last_esi - 1), Ok(last_esi));
+        assert_eq!(
+            sender.next_repair_symbol_id(last_esi),
+            Err(FecError::SymbolIdExhausted {
+                scheme: FecScheme::RaptorQ,
+                last_symbol_id: last_esi,
+            })
         );
     }
 
