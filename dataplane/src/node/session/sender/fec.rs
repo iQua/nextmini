@@ -48,6 +48,12 @@ struct CarouselSymbol {
     kind: SymbolKind,
 }
 
+struct PendingCarouselSymbol {
+    symbol: CarouselSymbol,
+    payload: Bytes,
+    paced: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CarouselPaceOutcome {
     Ready,
@@ -559,89 +565,139 @@ impl FecSender {
             return SessionOutcome::Completed;
         }
 
+        let mut pending = None;
         loop {
-            if !self.drain_carousel_controls(shared, ctrl_rx) {
-                return SessionOutcome::Aborted;
-            }
+            let controls_open = self.drain_carousel_controls(shared, ctrl_rx);
             if self.carousel_quorum_complete(shared) {
                 self.carousel_final_ack_processed = true;
                 self.send_session_complete(shared).await;
                 return SessionOutcome::Completed;
             }
+            if !controls_open {
+                return SessionOutcome::Aborted;
+            }
             if !self.service_due_carousel_timers(shared, tokio::time::Instant::now()) {
                 return SessionOutcome::Aborted;
             }
 
-            let symbol = match self.next_carousel_symbol(shared) {
-                Ok(Some(symbol)) => symbol,
-                Ok(None) => {
-                    let wait_started = tokio::time::Instant::now();
-                    let waited = self.wait_for_carousel_ack(shared, ctrl_rx).await;
-                    shared
-                        .metrics
-                        .record_wait(SenderWaitState::Feedback, wait_started.elapsed());
-                    if !waited {
+            if pending.is_none() {
+                let symbol = match self.next_carousel_symbol(shared) {
+                    Ok(Some(symbol)) => symbol,
+                    Ok(None) => {
+                        let wait_started = tokio::time::Instant::now();
+                        let waited = self.wait_for_carousel_ack(shared, ctrl_rx).await;
+                        shared
+                            .metrics
+                            .record_wait(SenderWaitState::Feedback, wait_started.elapsed());
+                        if !waited && !self.carousel_quorum_complete(shared) {
+                            return SessionOutcome::Aborted;
+                        }
+                        continue;
+                    }
+                    Err(err) => {
+                        // The last valid ESI does not itself abort the session. We
+                        // reach this branch only on the next scheduling decision,
+                        // after queued controls and cumulative completion have
+                        // been re-checked above.
+                        warn!(
+                            session_id = shared.session.session_id,
+                            ?err,
+                            "Lossless carousel sender exhausted its repair ESI namespace while another emission was required"
+                        );
+                        self.protocol_error = true;
                         return SessionOutcome::Aborted;
                     }
-                    continue;
-                }
-                Err(err) => {
-                    // The last valid ESI does not itself abort the session. We
-                    // reach this branch only on the next scheduling decision,
-                    // after queued controls and cumulative completion have
-                    // been re-checked above.
-                    warn!(
-                        session_id = shared.session.session_id,
-                        ?err,
-                        "Lossless carousel sender exhausted its repair ESI namespace while another emission was required"
-                    );
+                };
+
+                let Some(payload) = self.carousel_symbol_payload(shared, symbol) else {
                     self.protocol_error = true;
                     return SessionOutcome::Aborted;
-                }
-            };
+                };
+                pending = Some(PendingCarouselSymbol {
+                    symbol,
+                    payload,
+                    paced: false,
+                });
+            }
 
-            let Some(payload) = self.carousel_symbol_payload(shared, symbol) else {
-                self.protocol_error = true;
-                return SessionOutcome::Aborted;
-            };
-
+            let symbol = pending
+                .as_ref()
+                .expect("pending carousel symbol was initialized")
+                .symbol;
             if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
                 continue;
             }
-            let pacing_started = tokio::time::Instant::now();
-            let pacing_enabled = shared.pacer.is_some();
-            let pacing_outcome = self
-                .pace_carousel_symbol(shared, ctrl_rx, symbol.block_id, payload.len())
-                .await;
-            if pacing_enabled {
-                shared
-                    .metrics
-                    .record_wait(SenderWaitState::Pacing, pacing_started.elapsed());
-            }
-            match pacing_outcome {
-                CarouselPaceOutcome::Ready => {}
-                CarouselPaceOutcome::BlockComplete => continue,
-                CarouselPaceOutcome::Timer => continue,
-                CarouselPaceOutcome::Closed => return SessionOutcome::Aborted,
+
+            if !pending
+                .as_ref()
+                .expect("pending carousel symbol exists")
+                .paced
+            {
+                let pacing_started = tokio::time::Instant::now();
+                let pacing_enabled = shared.pacer.is_some();
+                let pacing_outcome = self
+                    .pace_carousel_symbol(
+                        shared,
+                        ctrl_rx,
+                        symbol.block_id,
+                        pending
+                            .as_ref()
+                            .expect("pending carousel symbol exists")
+                            .payload
+                            .len(),
+                    )
+                    .await;
+                if pacing_enabled {
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Pacing, pacing_started.elapsed());
+                }
+                match pacing_outcome {
+                    CarouselPaceOutcome::Ready => {
+                        pending
+                            .as_mut()
+                            .expect("pending carousel symbol exists")
+                            .paced = true;
+                    }
+                    CarouselPaceOutcome::BlockComplete => {
+                        pending = None;
+                        continue;
+                    }
+                    CarouselPaceOutcome::Timer => continue,
+                    CarouselPaceOutcome::Closed => {
+                        if self.carousel_quorum_complete(shared) {
+                            continue;
+                        }
+                        return SessionOutcome::Aborted;
+                    }
+                }
             }
 
             // P6 requires both checks: one after pacing, then one immediately
             // before the synchronous tree sweep after servicing queued acks.
             if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
                 continue;
             }
-            if !self.drain_carousel_controls(shared, ctrl_rx) {
-                return SessionOutcome::Aborted;
-            }
+            let controls_open = self.drain_carousel_controls(shared, ctrl_rx);
             if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
                 continue;
+            }
+            if !controls_open {
+                return SessionOutcome::Aborted;
             }
 
             match self.send_symbol(
                 shared,
                 symbol.block_id,
                 symbol.symbol_id,
-                payload.as_ref(),
+                pending
+                    .as_ref()
+                    .expect("pending carousel symbol exists")
+                    .payload
+                    .as_ref(),
                 symbol.kind,
             ) {
                 SendSweepOutcome::Queued => {
@@ -665,6 +721,7 @@ impl FecSender {
                         self.protocol_error = true;
                         return SessionOutcome::Aborted;
                     }
+                    pending = None;
                 }
                 SendSweepOutcome::AllWouldBlock => {
                     shared.metrics.record_backpressure_sweep();
@@ -673,7 +730,7 @@ impl FecSender {
                     shared
                         .metrics
                         .record_wait(SenderWaitState::Backpressure, wait_started.elapsed());
-                    if !serviced {
+                    if !serviced && !self.carousel_quorum_complete(shared) {
                         return SessionOutcome::Aborted;
                     }
                 }
@@ -932,6 +989,9 @@ impl FecSender {
                 .expect("carousel pacer presence checked above");
             tokio::select! {
                 biased;
+                _ = tokio::time::sleep_until(timer_at) => {
+                    return CarouselPaceOutcome::Timer;
+                }
                 maybe_frame = ctrl_rx.recv() => {
                     let Some(frame) = maybe_frame else {
                         return CarouselPaceOutcome::Closed;
@@ -940,9 +1000,6 @@ impl FecSender {
                     if self.carousel_block_complete(shared, block_id) {
                         return CarouselPaceOutcome::BlockComplete;
                     }
-                }
-                _ = tokio::time::sleep_until(timer_at) => {
-                    return CarouselPaceOutcome::Timer;
                 }
                 _ = pacer.wait_for_bytes(bytes) => {
                     return CarouselPaceOutcome::Ready;
@@ -961,13 +1018,13 @@ impl FecSender {
         };
         tokio::select! {
             biased;
+            _ = tokio::time::sleep_until(timer_at) => {}
             maybe_frame = ctrl_rx.recv() => {
                 let Some(frame) = maybe_frame else {
                     return false;
                 };
                 shared.handle_control(frame, self);
             }
-            _ = tokio::time::sleep_until(timer_at) => {}
             _ = tokio::task::yield_now() => {}
         }
         true
@@ -983,13 +1040,13 @@ impl FecSender {
         };
         tokio::select! {
             biased;
+            _ = tokio::time::sleep_until(timer_at) => {}
             maybe_frame = ctrl_rx.recv() => {
                 let Some(frame) = maybe_frame else {
                     return false;
                 };
                 shared.handle_control(frame, self);
             }
-            _ = tokio::time::sleep_until(timer_at) => {}
         }
         true
     }
@@ -1772,7 +1829,7 @@ mod tests {
     use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
     use nextmini_messages::lossless_session::{
-        BlockAck, FecFeedbackMode, LosslessSessionFecMode, NeedBlock,
+        BlockAck, FecFeedbackMode, LosslessSessionControl, LosslessSessionFecMode, NeedBlock,
     };
 
     #[test]
@@ -1939,6 +1996,44 @@ mod tests {
         assert_eq!(sender.next_carousel_symbol(&shared), Ok(None));
         assert!(sender.carousel_quorum_complete(&shared));
         assert!(!sender.protocol_error);
+    }
+
+    #[tokio::test]
+    async fn queued_final_ack_beats_control_channel_disconnect() {
+        let manifest = carousel_manifest(1);
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+        let (ctrl_tx, mut ctrl_rx) = mpsc::channel(1);
+        ctrl_tx
+            .send(InboundFrame {
+                bytes: nextmini_messages::lossless_session::encode_control(
+                    shared.session.session_id,
+                    &LosslessSessionControl::BlockAck {
+                        ack: BlockAck::Blocks {
+                            completed_watermark: 1,
+                            extra_completed: Vec::new(),
+                        },
+                    },
+                ),
+                peer_id: Some(22),
+            })
+            .await
+            .expect("final ack should enqueue");
+        drop(ctrl_tx);
+
+        assert_eq!(
+            tokio::time::timeout(
+                Duration::from_secs(1),
+                sender.run_carousel(&mut shared, &mut ctrl_rx),
+            )
+            .await
+            .expect("sender should not wait after its final ack"),
+            SessionOutcome::Completed
+        );
+        assert!(sender.carousel_final_ack_processed);
     }
 
     #[tokio::test]
