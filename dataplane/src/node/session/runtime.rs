@@ -417,30 +417,37 @@ impl LosslessRuntime {
             }
         }
 
-        let control_kind = lossless_session::decode_control(&frame.bytes)
-            .map(|(_, control)| control_kind_name(&control));
+        let decoded_control =
+            lossless_session::decode_control(&frame.bytes).map(|(_, control)| control);
+        let control_kind = decoded_control.as_ref().map(control_kind_name);
 
-        match self.deliver_live_receiver(session, frame.clone()).await {
+        // Once the receiver has installed its final carousel replay, probes
+        // and completion frames belong to that replay even until SessionExited
+        // removes the now-idle live inboxes. This closes the handoff window in
+        // which a control could otherwise be accepted by an inbox nobody reads.
+        if matches!(
+            decoded_control,
+            Some(LosslessSessionControl::AckProbe { .. } | LosslessSessionControl::SessionComplete)
+        ) && matches!(
+            self.completed_receivers.get(&session),
+            Some(CompletedReceiverReplay::Carousel { .. })
+        ) && self.replay_completed_receiver(session, frame.clone()).await
+        {
+            return;
+        }
+
+        match self.deliver_live_receiver(session, &frame) {
             LiveDeliveryOutcome::Delivered => return,
-            LiveDeliveryOutcome::Closed => {
-                if self.replay_completed_receiver(session, frame.clone()).await {
-                    return;
-                }
-                if let Some(control_kind) = control_kind {
-                    warn!(
-                        session_id = session,
-                        peer_id = frame.peer_id,
-                        control_kind,
-                        "Lossless runtime: live session inbox closed while delivering control frame."
-                    );
-                }
-                warn!(
+            LiveDeliveryOutcome::Full if control_kind.is_none() => {
+                debug!(
                     session_id = session,
-                    "Lossless runtime: session dropped inbound frame."
+                    "Lossless runtime dropped data from a full receiver inbox"
                 );
                 return;
             }
-            LiveDeliveryOutcome::Missing => {}
+            LiveDeliveryOutcome::Full
+            | LiveDeliveryOutcome::Closed
+            | LiveDeliveryOutcome::Missing => {}
         }
 
         if self.replay_completed_receiver(session, frame.clone()).await {
@@ -777,10 +784,10 @@ impl LosslessRuntime {
         }
     }
 
-    async fn deliver_live_receiver(
+    fn deliver_live_receiver(
         &self,
         session: SessionId,
-        frame: InboundFrame,
+        frame: &InboundFrame,
     ) -> LiveDeliveryOutcome {
         let Some(entry) = self.sessions.get(&session) else {
             return LiveDeliveryOutcome::Missing;
@@ -797,11 +804,11 @@ impl LosslessRuntime {
             );
             return LiveDeliveryOutcome::Delivered;
         };
-        if inbox.send(frame).await.is_ok() {
-            return LiveDeliveryOutcome::Delivered;
+        match inbox.try_send(frame.clone()) {
+            Ok(()) => LiveDeliveryOutcome::Delivered,
+            Err(mpsc::error::TrySendError::Full(_)) => LiveDeliveryOutcome::Full,
+            Err(mpsc::error::TrySendError::Closed(_)) => LiveDeliveryOutcome::Closed,
         }
-
-        LiveDeliveryOutcome::Closed
     }
 
     fn derive_cloudcast_config(&self) -> Result<Option<CloudcastRuntimeConfig>, StartError> {
@@ -945,6 +952,7 @@ fn control_kind_name(control: &LosslessSessionControl) -> &'static str {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum LiveDeliveryOutcome {
     Delivered,
+    Full,
     Closed,
     Missing,
 }
@@ -1114,6 +1122,90 @@ mod tests {
             .await;
 
         assert_carousel_ack(&mut packet_rx, final_ack).await;
+    }
+
+    #[tokio::test]
+    async fn carousel_conformance_full_data_inbox_cannot_deadlock_completion_handoff() {
+        let (mut runtime, mut packet_rx, route) = test_runtime().await;
+        let session_id = 0xA11C_E40D;
+        let (control_inbox, _control_rx) = mpsc::channel(1);
+        let (data_inbox, _data_rx) = mpsc::channel(1);
+        let tail = InboundFrame {
+            bytes: lossless_session::encode_block_symbol(session_id, 0, 4, 0, b"tail"),
+            peer_id: Some(SOURCE_NODE_ID),
+        };
+        data_inbox
+            .try_send(tail.clone())
+            .expect("receiver data inbox should be full before handoff");
+        let (state_sender, _) = watch::channel(SessionState::Running);
+        let abort_task = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_secs(60)).await;
+        });
+        runtime.sessions.insert(
+            session_id,
+            SessionEntry {
+                control_inbox,
+                data_inbox: Some(data_inbox),
+                state_sender,
+                abort_handle: abort_task.abort_handle(),
+            },
+        );
+
+        let message_sender = runtime.message_sender.clone();
+        let runtime_task = tokio::spawn(async move {
+            runtime.run().await;
+        });
+        message_sender
+            .send(LosslessRuntimeMessage::Deliver {
+                session: session_id,
+                frame: tail,
+            })
+            .await
+            .expect("tail delivery should enqueue ahead of completion handoff");
+
+        let final_ack = BlockAck::Blocks {
+            completed_watermark: 1,
+            extra_completed: Vec::new(),
+        };
+        let (handoff_ack_tx, handoff_ack_rx) = oneshot::channel();
+        message_sender
+            .send(LosslessRuntimeMessage::ReceiverCompleted {
+                session_id,
+                replay: CompletedReceiverReplay::Carousel {
+                    route,
+                    ack: final_ack.clone(),
+                    local_node_id: RECEIVER_NODE_ID,
+                    retain_until: tokio::time::Instant::now() + Duration::from_secs(1),
+                },
+                ack: handoff_ack_tx,
+            })
+            .await
+            .expect("completion handoff should enqueue behind the tail");
+        timeout(Duration::from_secs(1), handoff_ack_rx)
+            .await
+            .expect("runtime actor deadlocked behind a full receiver data inbox")
+            .expect("runtime dropped the handoff acknowledgement");
+
+        message_sender
+            .send(LosslessRuntimeMessage::Deliver {
+                session: session_id,
+                frame: InboundFrame {
+                    bytes: lossless_session::encode_control(
+                        session_id,
+                        &LosslessSessionControl::AckProbe {
+                            target_peer_id: u64::try_from(RECEIVER_NODE_ID)
+                                .expect("receiver id fits u64"),
+                        },
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                },
+            })
+            .await
+            .expect("post-handoff probe should enqueue");
+        assert_carousel_ack(&mut packet_rx, final_ack).await;
+
+        runtime_task.abort();
+        abort_task.abort();
     }
 
     #[tokio::test]

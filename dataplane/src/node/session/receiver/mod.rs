@@ -297,7 +297,8 @@ impl SessionReceiver {
 
         if self.reported_complete() {
             self.shared.log_payload_phase_throughput();
-            self.register_completed_replay(runtime_sender).await;
+            self.register_completed_replay(runtime_sender, control_rx, data_rx)
+                .await;
         }
 
         debug!(
@@ -740,8 +741,10 @@ impl SessionReceiver {
     }
 
     async fn register_completed_replay(
-        &self,
+        &mut self,
         runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
+        control_rx: &mut mpsc::Receiver<InboundFrame>,
+        data_rx: &mut mpsc::Receiver<InboundFrame>,
     ) {
         let Some(runtime_sender) = runtime_sender else {
             return;
@@ -760,7 +763,32 @@ impl SessionReceiver {
             .await
             .is_ok()
         {
-            let _ = ack_rx.await;
+            tokio::pin!(ack_rx);
+            let mut control_open = true;
+            let mut data_open = true;
+            loop {
+                tokio::select! {
+                    biased;
+                    _ = &mut ack_rx => break,
+                    maybe_frame = control_rx.recv(), if control_open => {
+                        if let Some(frame) = maybe_frame {
+                            // Keep the live receiver responsive until the actor
+                            // confirms that its replay is installed. In
+                            // particular, an AckProbe queued ahead of
+                            // ReceiverCompleted still receives the final ack.
+                            let _ = self.handle_control_frame(frame).await;
+                        } else {
+                            control_open = false;
+                        }
+                    }
+                    maybe_frame = data_rx.recv(), if data_open => {
+                        if maybe_frame.is_none() {
+                            data_open = false;
+                        }
+                        // Completed payload tails are intentionally discarded.
+                    }
+                }
+            }
         }
     }
 
@@ -2657,8 +2685,12 @@ mod tests {
         assert!(receiver.is_complete());
 
         let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
+        let (_control_tx, mut control_rx) = mpsc::channel(1);
+        let (_data_tx, mut data_rx) = mpsc::channel(1);
         let register_task = tokio::spawn(async move {
-            receiver.register_completed_replay(Some(runtime_tx)).await;
+            receiver
+                .register_completed_replay(Some(runtime_tx), &mut control_rx, &mut data_rx)
+                .await;
         });
 
         let LosslessRuntimeMessage::ReceiverCompleted {
@@ -2684,6 +2716,73 @@ mod tests {
         ack.send(())
             .expect("replay registration should still await ack");
 
+        register_task
+            .await
+            .expect("replay registration task should exit cleanly");
+    }
+
+    #[tokio::test]
+    async fn completed_carousel_receiver_answers_probe_while_replay_install_is_pending() {
+        let (mut receiver, mut packet_rx) =
+            fec_test_receiver(8, BTreeSet::from([0]), BTreeMap::new()).await;
+        let manifest = receiver
+            .shared
+            .manifest
+            .as_mut()
+            .expect("test receiver has a manifest");
+        let LosslessSessionMode::Fec(fec_mode) = &mut manifest.mode else {
+            panic!("test receiver must use FEC");
+        };
+        fec_mode.feedback_mode = FecFeedbackMode::Carousel;
+        receiver.carousel_ack = Some(CarouselAckState::new(
+            Instant::now(),
+            receiver.shared.cfg.carousel,
+        ));
+        receiver.lifecycle = ReceiverLifecycle::SessionFinished;
+        let session_id = receiver.shared.session_id;
+
+        let (runtime_tx, mut runtime_rx) = mpsc::channel(8);
+        let (control_tx, mut control_rx) = mpsc::channel(1);
+        let (_data_tx, mut data_rx) = mpsc::channel(1);
+        let register_task = tokio::spawn(async move {
+            receiver
+                .register_completed_replay(Some(runtime_tx), &mut control_rx, &mut data_rx)
+                .await;
+        });
+
+        let LosslessRuntimeMessage::ReceiverCompleted { replay, ack, .. } =
+            timeout(Duration::from_secs(2), runtime_rx.recv())
+                .await
+                .expect("timed out waiting for carousel replay registration")
+                .expect("runtime channel closed unexpectedly")
+        else {
+            panic!("unexpected runtime message");
+        };
+        assert!(matches!(replay, CompletedReceiverReplay::Carousel { .. }));
+
+        control_tx
+            .send(InboundFrame {
+                bytes: lossless_session::encode_control(
+                    session_id,
+                    &LosslessSessionControl::AckProbe {
+                        target_peer_id: u64::try_from(RECEIVER_NODE_ID)
+                            .expect("receiver id fits u64"),
+                    },
+                ),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("probe should reach receiver during replay handoff");
+        assert_eq!(
+            recv_block_ack(&mut packet_rx).await,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: Vec::new(),
+            }
+        );
+
+        ack.send(())
+            .expect("runtime should acknowledge replay install");
         register_task
             .await
             .expect("replay registration task should exit cleanly");
