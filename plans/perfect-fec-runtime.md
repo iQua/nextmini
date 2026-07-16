@@ -1,175 +1,272 @@
-# Perfect FEC Runtime — Master Plan
+# Perfect FEC Runtime — Master Plan (v2)
+
+v2 incorporates the Codex plan review (`plans/perfect-fec-runtime-review-codex.md`, 2026-07-16) in full:
+all 7 Critical and 7 High findings accepted. Stage 4 (multi-pass reseed) is extracted to
+`plans/rateless-mettle-vnext.md` and no longer gates this branch.
 
 Branch: `perfect-fec-runtime` (worktree `/Users/winifred/nextmini-perfect-fec`, forked from
 `codex/tree-scoped-transports-main` @ e7aae32). **Never touch `main` or any other branch. Never push.**
 Commit per sub-stage. Commit messages: imperative, no Co-Authored-By / Generated-by footers.
 
-Roles: Claude = plan owner + per-stage reviewer. Codex = implementer (and plan reviewer before Stage 0).
-If a decision is ambiguous during implementation, STOP, append the question to
-`plans/perfect-fec-runtime-questions.md`, commit, and move to the next unblocked item.
+Roles: Claude = plan owner + per-stage reviewer. Codex = implementer.
+Ambiguity rule: STOP, append the question to `plans/perfect-fec-runtime-questions.md`, commit, continue
+with the next unblocked item.
 
 ## 0. What "perfect" means (theory → construction contract)
 
-The theory (paper `problem.tex` Dec_b semantics + the rank/DoF analysis) has three layers. Each layer
-maps to a construction invariant that must become CI-checkable:
-
 | Layer | Theory statement | Construction invariant |
 |---|---|---|
-| L1 pooling | Decoding depends only on the pooled per-block symbol set, never on tree identity (Prop 1) | Receiver decoder state keyed by (block, symbol) only; `tree_id` used for routing/stats exclusively. Already true — keep a regression test. |
-| L2 no ownership | Any symbol may ride any tree; no per-tree quotas (dominance over striping, Prop 2) | Flat round-robin schedule + WouldBlock→next-tree + all-blocked→yield loop in `send_symbol`. Already true — keep `fec_tree_schedule_is_one_slot_per_tree_round_robin` + backpressure tests. |
-| L3 work conservation | Sender never idles while some receiver still needs DoF and some tree can accept a frame; every emission is a fresh (never-before-sent) symbol id of a globally-incomplete block (Prop 3 hypothesis) | NEW: carousel mode (Stage 1). Invariants: (a) monotone fresh ids per block, (b) zero sender wait states other than backpressure/pacing while work exists, (c) emission for a block stops once every active peer acked it. |
+| L1 pooling | Decoding depends only on the pooled per-block symbol set, never on tree identity | Decoder state keyed by (block, symbol) only; `tree_id` routing/stats only. Already true — regression test pins it (permute tree labels for the same pooled set → same completion). |
+| L2 no ownership | Any symbol may ride any tree; no per-tree quotas | Flat round-robin + WouldBlock→next-tree sweep. Already true — existing tests pin it. |
+| L3 work conservation | While some active peer still needs DoF: the sender is either emitting a fresh id of a globally-incomplete block, blocked on backpressure/pacing, or servicing controls/timers — never in any other wait state; emission for a block stops once its completion joins to global | NEW (Stage 1). Defined over the explicit sender state machine below; enforced by event-boundary counters (`queued_after_final_ack_processed == 0`, wait-state enumeration), not by unobservable "in-flight tail" claims. |
 
-Honest limits (state these in docs/tests, do not claim past them):
-- Backend gap: RaptorQ needs K..K+2 symbols w.h.p. (measure `h`); METTLE approaches the ideal only
-  after Stages 2–4. τ-side optimality is "first instant the pooled history is backend-decodable" —
-  exactly Dec_b — not "exactly K packets".
-- Feedback-latency tail: symbols in flight when the last ack is generated are unavoidable waste
-  (≈ rate×RTT bandwidth, zero effect on completion time). Counted by a metric, never hidden.
-- The theory is conditional on the realized delivery processes; nothing here claims extra capacity.
+Honest limits (stated in docs and tests): backend gap (RaptorQ needs K..K+h; h histogram measured, pinned
+only on deterministic fixtures; METTLE approaches ideal only after Stages 2–3); feedback-latency tail
+(in-flight symbols when the last ack is generated are unavoidable bandwidth waste, zero τ effect —
+measured receiver-side as `symbols_received_after_local_block_complete`, never inferred sender-side);
+the theory is conditional on realized delivery processes.
+
+## P. Protocol assumptions and state machines (normative; precedes all stages)
+
+P1 Loss model. Control frames may be lost, duplicated, reordered, and arbitrarily delayed (fair-loss:
+infinite retransmissions eventually deliver). Under permanent control-path failure the session ends by
+timeout abort. The sender NEVER reports success without holding cumulative completion from every frozen
+active peer; it never depends on a receiver confirming `SessionComplete`.
+
+P2 Session identity. Normative precondition: `session_id` is a fresh cryptographically random `u64`
+per transfer (allocator change + reuse test). All completion state is scoped to it. If the allocator
+cannot guarantee this, add an explicit `transfer_incarnation` nonce bound into Manifest, Ready,
+BlockAck, AckProbe, SessionComplete (decision recorded in the questions file before Stage 1 starts).
+
+P3 Quorum. The active quorum is frozen at Ready (existing semantics). No per-peer removal mid-session.
+Empty active quorum after the grace period ⇒ immediate trivial success (existing rounds behavior, kept
+and tested). Liveness violations abort the whole session (existing semantics).
+
+P4 BlockAck canonical form and join. Payload: extensible enum, v1 variant
+`Blocks { completed_watermark: u64, extra_completed: canonical ranges }`, reserved discriminant for the
+METTLE stream-progress variant (Stage 2). Validation: `0 ≤ watermark ≤ total_blocks`; ranges canonical,
+disjoint, non-touching, within `[watermark, total_blocks)`; ranges touching the watermark are folded
+into it on receipt (not rejected). Sender peer state is a join-semilattice: accepted acks UNION with
+stored completion, then canonicalize; completion never regresses. Duplicates/reorders are completion
+no-ops but valid alive-signals. Range overflow: if a snapshot exceeds `MAX_NEED_RANGES`-style wire
+capacity, the receiver sends the watermark plus the lowest-id ranges that fit (deterministic
+truncation); monotone watermark advance guarantees eventual convergence. Property test: every
+permutation + duplication of an increasing snapshot sequence yields the same final state.
+
+P5 Receiver states. `Active → LocallyComplete (passive) → Finished`.
+- Active: decode eagerly; advertise cumulative BlockAck on debounce (≈5–10 ms), heartbeat
+  (≈250–500 ms), and on `AckProbe`.
+- LocallyComplete: object fully decoded AND committed to sinks (P8); keep answering heartbeats and
+  `AckProbe` with the final cumulative ack until `SessionComplete` arrives or the passive window
+  expires. The passive replay window (in-process, plus the runtime replay cache in
+  `session/api.rs`/`runtime.rs` after exit) MUST be ≥ the sender's abort budget + margin; both
+  configurable, inequality documented and asserted in config validation.
+- Finished: on `SessionComplete` or window expiry.
+
+P6 Sender states. `Sending → Probing → Finished`.
+- Sending: the work-conserving loop (Stage 1.3). Transitions per block on ack joins.
+- Probing: no globally-incomplete block remains un-emittable but some peer's cumulative completion is
+  missing ⇒ periodically send `AckProbe` to exactly the peers whose acks are missing (also used when
+  the ESI cap nears). Payload emission may continue concurrently for blocks that are still incomplete.
+- Finished: cumulative completion held from every active peer ⇒ broadcast `SessionComplete` (best
+  effort, fire-and-forget with a small repeat count), report `SessionOutcome::Completed`.
+
+P7 Liveness clocks (per peer, replacing round-barrier liveness):
+- `last_ack_seen` — any valid ack/heartbeat/probe-answer; expiry = silence timeout ⇒ session abort.
+- `last_ack_progress` — only when the joined completion set strictly grows; expiry = stall timeout
+  (separate, longer, configurable) ⇒ session abort.
+Clocks start at the Ready-quorum freeze. `quorum_liveness` in `sender/state.rs` is global and
+solicitation-oriented; it is replaced (not reused) for carousel. Tests: long healthy transfer, silent
+peer, live-but-stalled peer, heterogeneous progress rates.
+
+P8 Completion semantics. "Complete" = decoded AND accepted by every configured sink. Sink writes become
+fallible; a sink error aborts the receiver session with a distinct outcome and is never acked.
+Vocabulary used by all metrics/tests: emitted (frame handed to a tree queue) / queued (accepted by the
+queue) / delivered (received by peer) / decoded / complete (P8).
+
+P9 Wire versioning. Manifest/control/frame layout changes bump the lossless protocol version (currently
+7 → 8). A normative version/layout table lives in `messages/src/lossless_session/mod.rs` docs;
+`docs/perfect-runtime-invariants.md` (Stage 5) links to it. Receivers reject unknown modes/versions at
+manifest validation.
 
 ## Stage 0 — Foundations (audit fixes + green baseline)
 
-Source: `plans/raptorq-mettle-audit-2026-07-12.md` (copied into this branch).
+Source: `plans/raptorq-mettle-audit-2026-07-12.md`.
 
-0.1 Checked FEC geometry (audit P1). One fallible scheme-aware constructor used by manifest
-validation, sender, receiver: RaptorQ `1 ≤ K ≤ 56_403`, checked `K*T`, `1 ≤ T ≤` actual packet-envelope
-payload ceiling (not bare u16::MAX), `oti()` → `Result`, no lossy `as` casts.
-Files: `dataplane/src/node/session/fec.rs`, `fec_policy.rs`, `plan.rs`, `messages/src/lossless_session/validation.rs`.
-Tests: rejected-geometry cases; the audit's `block_size=2_097_152, K=32` config must be rejected at
-manifest time, not panic at first repair.
+0.1 Checked FEC geometry, layered by dependency (review edit #2): a dependency-free wire-geometry
+type in `messages` (pure arithmetic: K/T bounds, checked `K*T`, symbol-payload ceiling derived from the
+frame/envelope constants in ONE place — currently 65,535 − 20 (IPv4) − 36 (TCP+lossless option) − 20
+(lossless header) − 16 (BlockSymbol metadata) = 65,443 — exported, never duplicated); codec-specific
+caps (RaptorQ `1 ≤ K ≤ 56_403`, ESI < 2^24; METTLE terminated-stream bin bound) layered in dataplane
+`fec_policy`/`session/fec.rs` after syntactic validation. `oti()` → `Result`; no lossy `as` casts.
+The audit's `block_size=2_097_152, K=32` config is rejected at manifest time.
 
-0.2 Symbol-id bounds (audit P1). Scheme-aware `symbol_id` validation before storing/decoding:
-RaptorQ ESI < 2^24 and locally generated repair ESIs capped; METTLE bin ids bounded by the terminated
-stream limit. A malformed peer must not be able to panic the receiver (turn crate asserts into errors).
+0.2 Symbol-id bounds: scheme-aware `symbol_id` validation before store/decode; local repair-ESI
+generator stops before wrap with a protocol error; crate asserts unreachable from peer input
+(fuzz/property tests over body lengths, ids, range counts).
 
-0.3 Test baseline. Fix `sink_file` fixtures (`dataplane/tests/fec_receiver.rs`,
-`fec_round_regressions.rs`, `multiblock_transfer.rs`), clippy `while_let_loop` in `mettle/src/block.rs`.
-Resolve the `fec_mettle_session.rs` SourceDone contract: in rounds mode, document + test that the
-initial phase is the full terminated codeword (current sender behavior); update the stale test contract.
+0.3 Fallible sink path: `write_block`/METTLE source-run writes return errors; receiver aborts with a
+distinct outcome on sink failure (P8 groundwork; benefits rounds mode too). Injected sink-error test.
+
+0.4 Test baseline: fix `sink_file` fixtures (`fec_receiver.rs`, `fec_round_regressions.rs`,
+`multiblock_transfer.rs`), clippy `while_let_loop` in `mettle/src/block.rs`. Resolve the
+`fec_mettle_session.rs` SourceDone contract: rounds mode initial phase = full terminated codeword
+(current sender behavior); update the stale test and document.
+
+0.5 Boundary tests (review "Stage 0 boundaries" list, verbatim adopted): K ∈ {1, 56_403} accepted,
+{0, 56_404} rejected; symbol size min/max and max+1; checked `K*T`, padding, last partial block, empty
+object, usize conversion failures; ESI 2^24−1 accepted, 2^24 rejected; METTLE last terminated bin
+accepted, `terminal_end_exclusive` rejected.
+
 Gate 0: `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`,
-`cargo nextest run` all green (controller tests may need Postgres via `./start-database.sh`; if
-unavailable, record the skip in the questions file).
+`cargo nextest run` green (controller tests need Postgres via `./start-database.sh`; if unavailable,
+record the skip in the questions file).
 
-## Stage 1 — BlockAck + work-conserving carousel (RaptorQ-first)
+## Stage 1 — Carousel protocol slice (RaptorQ-first)
 
-Protocol (new session feedback mode, manifest-negotiated: `fec_feedback_mode = rounds | carousel`;
-default stays `rounds`; receivers reject unknown modes at manifest validation).
+1.0 Protocol plumbing: `FecFeedbackMode { Rounds, Carousel }` in config + manifest (default Rounds);
+protocol version bump per P9; P2 session-id allocator change + reuse test. Surface inventory (review
+H7): `messages/{types,control_frames,validation,header,mod}.rs` + test support;
+`dataplane/node/config.rs`, `session/fec_policy.rs`; `session/sender/{mod,state,fec}.rs`;
+`session/receiver/{mod,fec}.rs`; `session/{api,runtime}.rs`.
 
-1.1 `BlockAck` control frame (messages crate). Session-level, never assigned to a payload tree.
-Cumulative + self-healing: `{ completed_watermark: u64, extra_completed: ranges }` (all blocks below
-watermark complete; ranges reuse the `MissingBlockRange`-style encoding). Emission policy: batched on
-completion (≈5–10 ms debounce) AND periodic heartbeat re-advertisement (≈250–500 ms) while the session
-is incomplete, so any single ack loss self-heals. Include round-trip-free validation + encode/decode
-unit tests mirroring the existing Need frame tests.
+1.1 BlockAck + AckProbe + SessionComplete control frames per P4/P5/P6, with encode/decode/validation
+unit tests mirroring the Need-frame tests, including >wire-max disjoint ranges and truncation.
 
-1.2 Receiver changes. On block completion (where `shared.complete_blocks` is updated), enqueue ack
-state; a small timer flushes the cumulative digest. Keep the rounds-mode Need path untouched.
+1.2 Receiver: ack state machine per P5 (debounce, heartbeat, probe answers, passive window, runtime
+replay cache extension keyed by session).
 
-1.3 Carousel sender (`dataplane/src/node/session/sender/fec.rs`, new mode next to rounds):
-- State: per-peer cumulative ack (watermark + set), per-block `globally_complete` flag.
-- Loop: (a) drain controls; (b) Phase A: emit initial symbols block-sequentially (RaptorQ: source
-  ESIs `0..K`; keep the configured initial overhead as a config default that carousel may set to 0);
-  (c) Phase B: round-robin one fresh repair symbol per globally-incomplete block (`next_fountain_symbol`
-  monotone; never reuse an id; hard-stop with protocol error at the ESI cap instead of wrapping);
-  (d) finish when every block is acked by every active quorum member, then run the existing session
-  teardown/Complete path.
-- Tree selection: reuse `send_symbol` unchanged (L2 invariant).
-- No SourceDone / Need / repair_window in this mode.
-- On ack marking a block globally complete: stop emitting it immediately (already-queued frames in
-  tree channels are accounted as tail waste, not drained).
+1.3 Sender carousel loop per P6 with the send-path refactor (review C2, prerequisite):
+- `send_symbol` becomes a single sweep returning `Queued | AllWouldBlock | AllClosed`; it never owns a
+  wait loop. The outer loop is a control-aware `select!` over {control inbox, per-peer timers,
+  pacing} — on `AllWouldBlock` it services controls/timers, then retries only if the block is still
+  globally incomplete. Completion is re-checked after pacing and immediately before frame submission.
+- Emission order: Phase A source ESIs `0..K` block-sequential (RaptorQ initial phase is exactly K
+  source symbols — there is no initial-overhead knob); Phase B one fresh repair ESI per
+  globally-incomplete block, round-robin across blocks, monotone `next_fountain_symbol`.
+- Ack join marks a block globally complete ⇒ no further emission for it (already-queued frames in tree
+  channels are not drained; the receiver-side tail metric accounts for them).
 
-1.4 Liveness. Rounds mode used the round barrier as liveness; carousel replaces it with: per-peer
-last-ack-progress timestamp (heartbeats count), fed into the existing `quorum_liveness` policy with the
-same timeout/abort semantics.
+1.4 Liveness per P7 (new per-peer clocks; whole-session abort semantics preserved; empty-quorum
+trivial-success test).
 
-1.5 Metrics (the L3 proof hooks), exposed via the existing stats structs:
-`carousel_backpressure_yields`, `sender_wait_states` (must be 0 outside backpressure/pacing/control-drain
-while work exists), `symbols_after_global_complete` (tail waste), per-block `emitted_fresh_ids`;
-receiver: `duplicate_symbols` (must be 0 in carousel for RaptorQ), `symbols_at_decode - K` histogram (h).
+1.5 Metrics/test-observer surface (review H4): a shared per-session `SessionMetrics` (Arc) exposed via
+a deterministic test hook, replacing the no-op logging stubs. Counters defined by event boundaries:
+`queued_after_final_ack_processed` (MUST be 0), `carousel_backpressure_sweeps`, enumerated
+`sender_wait_states` durations, per-block monotone ESI check (start/end/count, every increment
+checked), receiver `symbols_received_after_local_block_complete`, receiver duplicate count (measured,
+deduped safely — NOT a sender-proof invariant; the enforceable invariant is the scheduler never emits
+the same (block, ESI) twice), `symbols_at_decode − K` histogram.
 
-1.6 Conformance test (the theory test). In-process multi-tree lossy session (reuse
-`fec_multitree.rs` harness style): record each receiver's per-block delivery count timeline; assert
-(a) receiver completes at the first symbol arrival that makes the pooled set decodable (Dec_b eagerness),
-(b) sender work-conservation counters hold, (c) measured `h` ≤ 2 for RaptorQ in the test seeds,
-(d) with one artificially slow tree, carousel barrier completion ≤ rounds barrier completion on the
-same loss trace (dominance smoke test).
-Gate 1: Gate 0 checks + new tests green; rounds-mode regression suite untouched and green.
+1.6 Conformance suite (review Stage-1 list, adopted): a new deterministic harness with loss, delay,
+reorder, duplication, backpressure, per-peer observation (fec_multitree.rs is style precedent only).
+Required tests: ack-join permutation property; ack-loss liveness (first ack, N heartbeats, final ack);
+completion handoff (drop SessionComplete, recover via probe/replay); incarnation/stale-frame safety;
+backpressure responsiveness (ack delivered while all trees blocked terminates work without a tree
+opening); pacing race; freshness under tree fallback + control reorder; quorum safety incl. empty
+quorum; timer fairness under paused Tokio time; range scaling; eager decode + L1 tree-permutation;
+metric semantics. Rounds-vs-carousel comparison on matched seeds is recorded as BENCHMARK EVIDENCE
+with stated tolerances (review H5) — not a pass/fail gate.
 
-## Stage 2 — METTLE single object stream (paper-native)
+Gate 1: Gate-0 checks + the full 1.6 suite green + rounds-mode regression suite untouched and green.
 
-Kills the per-block stream resets (audit P1-repro): one terminated METTLE stream over the object's
-source symbols (paper model: k ~ 10^5+; tail `(1+c)w/2` amortizes to ~0.01% at 2M sources instead of
-135% at K=256).
+## Stage 2 — Single-stream METTLE (paper-native), memory-first
 
-2.1 Sender: one `mettle_stream` per object (or per configurable mega-prefix if decoder memory
-requires; measure first, see 2.4). Source id ↔ object offset mapping via `BlockPlan` geometry;
-`block_id` in frames becomes the stream id (0) for METTLE mode — keep the wire format, change semantics
-behind the scheme check. Departure = bin-id order.
+Mode matrix (review H2, decided): `Rounds + METTLE` remains the legacy finite-block adaptation,
+regression-frozen, explicitly named "finite-block METTLE adaptation" in docs. Paper-native
+object-stream METTLE exists only under Carousel. No implicit behavior change behind existing fields.
 
-2.2 Ack semantics for METTLE carousel: METTLE releases decoded sources in order (ordered release in
-`mettle/src/decoder.rs`), so the natural ack is `{ decoded_source_watermark: u64, stalled: ranges }`.
-Reuse the BlockAck frame with a scheme-tagged payload variant. Sender completion: every peer watermark
-== total sources.
+2.0 Memory/layout spike (moved first, review H1): benchmark the dense precomputed graph AND the
+existing internal rolling terminated decoder (`MettleDecoder::new_terminated`; only the public
+`stream::Decoder::new_terminated` forces dense — expose the rolling path) at representative source
+counts (up to ~2^21), production symbol sizes, loss/reorder patterns, worst stalls. Measure
+construction latency, steady/peak RSS, peak buffered-payload bytes, event-loop blocking. Set an
+explicit budget; choose object-stream vs negotiated mega-prefix streams. Decoder construction happens
+before Ready or off the receive loop; allocation failure = clean manifest rejection.
 
-2.3 Interim repair (until Stage 3): receiver reports missing-bin ranges below its receive frontier
-(erasure gaps are directly visible as bin-id gaps); sender re-emits the union across peers, stall-region
-first. This replaces the current whole-stream replay (`schedule_mettle_repair_pass` reset-to-0 path) —
-strictly less duplicate traffic; keep replay only as a last-resort fallback after k rounds of no progress.
+2.1 Object symbol plan: a dedicated `ObjectSymbolPlan` (NOT overloaded `BlockPlan`): global source
+segmentation `ceil(total_bytes / T)` with padding only on the final source; explicit mapping
+source id ↔ object offset ↔ sink write; if mega-prefixes: deterministic stream ids, per-stream source
+counts, seed derivation (`block_seed(session_id, stream_id)`), all manifest-negotiated (every receiver
+must build the same graph).
 
-2.4 Decoder memory measurement: dense precomputed graph at n≈2^21 sources (audit P2 concern) —
-measure peak RSS + construction time in a bench; if unacceptable, gate object-stream size to mega-prefix
-streams and record the tradeoff; rolling/hash-reconstructed decoder is a stretch goal, not required here.
+2.2 Wire/feedback: METTLE progress variant of BlockAck (reserved discriminant from P4):
+`{ stream_id, decoded_source_watermark, stalled evidence }` — per-stream when prefixes are used.
+Manifest fields for stream geometry; validation.
 
-2.5 Fix audit P3 (`repair_deficit` hard-codes zero overhead): make overhead part of the validated
-parameter bundle or delete the dead METTLE branch.
-Gate 2: green suite; mettle paper harness (fixed accounting, see 2.6) shows total overhead ≈ interior c
-+ `(1+c)w/2n` tail on the object-stream path; the K=256-style pathology is gone from the codec sweep.
+2.3 Sender/receiver single-stream implementation: one terminated stream per object/prefix; departure in
+bin-id order; sink writes via `ObjectSymbolPlan`; kill per-block stream resets on the carousel path.
 
-2.6 Harness accounting fix (audit P1-experimental): report actual transmitted overhead
-(`terminal_symbol_count/K − 1`), solve interior c to hit a target total, assert it in the test.
+2.4 Reorder-safe targeted repair (review C5): NO frontier-gap inference. Design: numbered repair
+epochs — the sender emits a departure checkpoint control (epoch n covers bins < B_n) only after all
+epoch-n payload frames have been queued to tree channels; receivers age gaps against the checkpoint
+plus a configured reorder budget before reporting `missing bin ranges (epoch-tagged)`; the sender
+dedupes requests per epoch and re-emits the union. Full-stream replay remains the fallback after a
+precisely defined no-progress count (epochs without watermark advance). Tests: extreme cross-tree
+reorder with zero loss ⇒ zero retransmissions classified required; known losses near/far from the
+watermark ⇒ targeted recovery; duplicate-traffic is MEASURED (no "strictly less" claim until measured).
 
-## Stage 3 — Reservoir repair (fresh multicast repair for METTLE)
+2.5 Delete dead `repair_deficit` METTLE branch (audit P3) — deletion preferred since carousel no longer
+uses it.
 
-Rationale: paper Part II §1.2.3 endorses feedback + rate adaptation; encode CPU is O(l) per source
-independent of c, so extra bins cost memory, not throughput.
+2.6 Harness accounting fix (audit P1-experimental, moved before Stage 3): report actual transmitted
+overhead (`terminal_symbol_count/K − 1` incl. compressed tail); solve interior c for a target total;
+assert in test; enough trials to support stated failure probabilities.
 
-3.1 Params: `c_total = c_wire + c_reserve`. Build the graph at `c_total`. Reserve set = seeded PRF
-over non-TLE bins only (TLE bins are peeling anchors), |reserve| ≈ c_reserve·n. Initial departure =
-non-reserve bins in id order (receiver sees reserve bins as ordinary erasures). Repair = emit reserve
-bins, stall-overlapping first, then in id order — every reserve bin is fresh for every receiver.
-Fallback when reserve exhausted: Stage 2.3 targeted re-send.
+Gate 2: green suite; RSS/construction thresholds and max simultaneous streams explicit and met;
+mode-matrix tests prove rounds untouched; object round-trip property tests (padding, partial final
+source, prefix boundaries) pass; codec sweep shows the K=256-style tail pathology gone.
 
-3.2 Simulation sweep (extend the mettle paper harness): (c_wire, c_reserve) × BEC p ∈ {0.1–2%} →
-one-shot stall probability, repair rounds to completion, duplicate count (must be 0 until reserve
-exhausted). Pick defaults hitting rounds-mode wire overhead at equal or better completion.
-Gate 3: sweep results recorded under `results/` + defaults wired into config + session tests green.
+## Stage 3 — Reservoir repair (simulation-first, research-gated)
 
-## Stage 4 — Multi-pass reseed = rateless METTLE (research-grade, optional)
+Documented from the start as an extension BEYOND the METTLE paper (the paper endorses feedback/rate
+adaptation, not this construction).
 
-4.1 Namespace: top 8 bits of the u128 bin id = pass index; pass p uses seed_p = H(base_seed, p)
-(stable hash, documented). Wire format unchanged (bin id already travels in the METTLE payload).
+3.0 Deterministic puncturing + storage prototype: exact reserve-set selection (seeded PRF over bin
+positions that are not any source's TLE bin — precise definition accounting for TLE positions also
+receiving non-TLE edges), stable test vectors, exact reserve cardinality after tail effects;
+sender-side reserve payload strategy measured against a hard budget (retention ≈ c_reserve×object
+bytes vs recompute vs spill — recomputing a bin is not the O(l) streaming path; measure it).
 
-4.2 Decoder: N edge-generators sharing one recovered-source set; a degree-1 bin from any pass peels;
-recovered sources XOR out of neighbors in every pass's received bins. Complexity stays O(l) per
-recovery per pass.
+3.1 Simulation sweep on ACTUAL finite counts (needs 2.6): (c_wire, c_reserve) × BEC p ∈ {0.1–2%} AND
+GE/bursty traces; report completion probability with confidence intervals, actual total overhead,
+repair latency, duplicate traffic, sender memory.
 
-4.3 Sender: when reserve is exhausted, open pass p+1 instead of replaying — unlimited fresh
-equations; carousel then treats METTLE exactly like RaptorQ (A3 holds unconditionally).
-Gate 4: harness curves (decode success vs cumulative overhead across passes) recorded; memory bounded;
-this stage may land as experimental config default-off.
+3.2 Integration only if 3.1 passes its gate: manifest fields (`c_total`, `c_wire`, reserve cardinality,
+PRF version, seed derivation); receiver reconstructs the reserve set and classifies intentional holes
+as non-loss in 2.4 feedback (never "ordinary erasures"); repair emits unsent reserve bins overlapping
+stalled source regions first; freshness is a sender-emission property — per-peer loss of an emitted
+reserve bin is handled by 2.4 retransmission and counted separately; reserve-exhausted ⇒ 2.4 fallback.
+
+Gate 3: 3.1 report recorded under `results/`; storage within budget; session tests green; each reserve
+id emitted at most once before exhaustion under reordered stall reports from multiple peers.
+
+## Stage 4 — extracted
+
+Multi-pass reseed (rateless METTLE) moved to `plans/rateless-mettle-vnext.md` (separate,
+protocol-versioned research effort; wire id width, pass bounds, seed-hash vectors, recovered-source
+backing, eviction, equation-freshness measurement). It no longer gates this branch (review C6).
 
 ## Stage 5 — Docs + conformance polish
 
-Update `docs/mettle-paper-notes.md` deviations section (block-adaptation → object-stream; reservoir;
-multi-pass as extensions beyond the paper), metrics documentation, and a short
-`docs/perfect-runtime-invariants.md` mapping L1/L2/L3 to the tests that enforce them.
+`docs/perfect-runtime-invariants.md`: L1/L2/L3 → enforcing tests map, protocol state machines (from §P,
+kept normative there), version/layout table link, measured-vs-guaranteed claims table. Update
+`docs/mettle-paper-notes.md` deviations (finite-block adaptation vs object-stream; reservoir as
+extension). Rounds-vs-carousel benchmark results recorded with methodology.
 
 ## Standing constraints
 
-- Worktree `/Users/winifred/nextmini-perfect-fec` only; branch `perfect-fec-runtime` only; no push;
-  never touch `main` or `codex/tree-scoped-transports-main`.
-- Every commit: `cargo fmt --all`, clippy `-D warnings` clean for touched crates, `cargo nextest run`
-  for touched crates minimum; full workspace at stage gates.
-- Rounds mode must keep passing its existing regression suite at every stage (A/B ability is a
-  deliverable, not a casualty).
-- Tracing via `tracing::*`, actionable ids (session, block, tree, peer) per AGENTS.md.
+- Worktree `/Users/winifred/nextmini-perfect-fec`, branch `perfect-fec-runtime` only; no push; never
+  touch `main` or `codex/tree-scoped-transports-main`.
+- Every commit: `cargo fmt --all`; clippy `-D warnings` clean and `cargo nextest run` for touched
+  crates; full workspace at stage gates.
+- Rounds mode keeps passing its existing regression suite at every stage.
+- Tracing via `tracing::*` with actionable ids (session, block/stream, tree, peer) per AGENTS.md.
+
+## Dependency order (review-recommended, adopted)
+
+1. Stage 0 (incl. wire geometry + fallible sinks) → 2. §P normative protocol + P2 allocator →
+3. send-loop refactor + metrics surface → 4. RaptorQ carousel + full 1.6 adversarial suite →
+5. METTLE 2.0 memory/layout spike + negotiated geometry → 6. single-stream METTLE + 2.4 repair +
+2.6 accounting → 7. reservoir 3.0/3.1, integrate on pass → 8. docs/conformance → 9. vNext reseed
+(separate plan).
