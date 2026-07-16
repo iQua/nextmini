@@ -83,6 +83,16 @@ fn encode_control_into<'a>(
     session_id: u64,
     control: &LosslessSessionControl,
 ) -> &'a [u8] {
+    let canonical_control = match control {
+        LosslessSessionControl::BlockAck { ack } => Some(LosslessSessionControl::BlockAck {
+            ack: ack
+                .clone()
+                .canonicalized(u64::MAX)
+                .expect("lossless BlockAck must canonicalize before encoding"),
+        }),
+        _ => None,
+    };
+    let control = canonical_control.as_ref().unwrap_or(control);
     control
         .validate()
         .expect("lossless control must validate before encoding");
@@ -247,7 +257,8 @@ fn encode_control_into<'a>(
 /// Encode a CONTROL frame (header + control body) into a fresh `Vec<u8>`.
 pub fn encode_control(session_id: u64, control: &LosslessSessionControl) -> Vec<u8> {
     let mut buf = vec![0u8; LosslessSessionHeader::LEN + control_body_len(control)];
-    encode_control_into(&mut buf, session_id, control);
+    let encoded_len = encode_control_into(&mut buf, session_id, control).len();
+    buf.truncate(encoded_len);
     buf
 }
 
@@ -599,6 +610,43 @@ mod tests {
     }
 
     #[test]
+    fn block_ack_encode_uses_canonical_wire_bytes() {
+        let unfolded = LosslessSessionControl::BlockAck {
+            ack: BlockAck::Blocks {
+                completed_watermark: 2,
+                extra_completed: vec![
+                    CompletedBlockRange {
+                        start_block_id: 2,
+                        end_block_id: 4,
+                    },
+                    CompletedBlockRange {
+                        start_block_id: 4,
+                        end_block_id: 7,
+                    },
+                    CompletedBlockRange {
+                        start_block_id: 9,
+                        end_block_id: 10,
+                    },
+                ],
+            },
+        };
+        let canonical = LosslessSessionControl::BlockAck {
+            ack: BlockAck::Blocks {
+                completed_watermark: 7,
+                extra_completed: vec![CompletedBlockRange {
+                    start_block_id: 9,
+                    end_block_id: 10,
+                }],
+            },
+        };
+
+        assert_eq!(
+            encode_control(77, &unfolded),
+            encode_control(77, &canonical)
+        );
+    }
+
+    #[test]
     fn block_ack_truncates_to_lowest_wire_ranges() {
         let ranges: Vec<_> = (0..MAX_BLOCK_ACK_RANGES + 40)
             .map(|index| CompletedBlockRange {
@@ -907,6 +955,18 @@ mod tests {
                 .validate_control(&LosslessSessionControl::AckProbe { target_peer_id: 22 })
                 .is_err()
         );
+        let block_ack = LosslessSessionControl::BlockAck {
+            ack: BlockAck::Blocks {
+                completed_watermark: 0,
+                extra_completed: Vec::new(),
+            },
+        };
+        for non_carousel in [plain_manifest(), fec_manifest()] {
+            assert_eq!(
+                non_carousel.validate_control(&block_ack),
+                Err(super::super::LosslessSessionValidationError::CarouselControlRequiresCarouselMode)
+            );
+        }
         assert!(
             manifest
                 .validate_control(&LosslessSessionControl::SourceDone { round_id: 0 })
