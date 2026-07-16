@@ -15,6 +15,7 @@ use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder, FecError, FecSymbolIdBounds};
+use crate::node::session::metrics::SenderWaitState;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
@@ -87,6 +88,7 @@ pub(super) struct FecSender {
     carousel_peer_completion: BTreeMap<usize, PeerBlockCompletion>,
     carousel_peer_liveness: BTreeMap<usize, CarouselPeerLiveness>,
     carousel_next_repair_block: usize,
+    carousel_final_ack_processed: bool,
     stats: FecSenderStats,
 }
 
@@ -423,6 +425,7 @@ impl FecSender {
             carousel_peer_completion: BTreeMap::new(),
             carousel_peer_liveness: BTreeMap::new(),
             carousel_next_repair_block: 0,
+            carousel_final_ack_processed: false,
             stats: FecSenderStats::new(&fec.tree_ids),
         })
     }
@@ -561,6 +564,7 @@ impl FecSender {
                 return SessionOutcome::Aborted;
             }
             if self.carousel_quorum_complete(shared) {
+                self.carousel_final_ack_processed = true;
                 self.send_session_complete(shared).await;
                 return SessionOutcome::Completed;
             }
@@ -571,7 +575,12 @@ impl FecSender {
             let symbol = match self.next_carousel_symbol(shared) {
                 Ok(Some(symbol)) => symbol,
                 Ok(None) => {
-                    if !self.wait_for_carousel_ack(shared, ctrl_rx).await {
+                    let wait_started = tokio::time::Instant::now();
+                    let waited = self.wait_for_carousel_ack(shared, ctrl_rx).await;
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Feedback, wait_started.elapsed());
+                    if !waited {
                         return SessionOutcome::Aborted;
                     }
                     continue;
@@ -599,10 +608,17 @@ impl FecSender {
             if self.carousel_block_complete(shared, symbol.block_id) {
                 continue;
             }
-            match self
+            let pacing_started = tokio::time::Instant::now();
+            let pacing_enabled = shared.pacer.is_some();
+            let pacing_outcome = self
                 .pace_carousel_symbol(shared, ctrl_rx, symbol.block_id, payload.len())
-                .await
-            {
+                .await;
+            if pacing_enabled {
+                shared
+                    .metrics
+                    .record_wait(SenderWaitState::Pacing, pacing_started.elapsed());
+            }
+            match pacing_outcome {
                 CarouselPaceOutcome::Ready => {}
                 CarouselPaceOutcome::BlockComplete => continue,
                 CarouselPaceOutcome::Timer => continue,
@@ -629,13 +645,35 @@ impl FecSender {
                 symbol.kind,
             ) {
                 SendSweepOutcome::Queued => {
+                    if self.carousel_final_ack_processed {
+                        shared.metrics.record_queued_after_final_ack();
+                    }
+                    if !shared
+                        .metrics
+                        .record_sender_esi(symbol.block_id, symbol.symbol_id)
+                    {
+                        warn!(
+                            session_id = shared.session.session_id,
+                            block_id = symbol.block_id,
+                            symbol_id = symbol.symbol_id,
+                            "Lossless carousel sender violated monotone ESI freshness"
+                        );
+                        self.protocol_error = true;
+                        return SessionOutcome::Aborted;
+                    }
                     if !self.advance_carousel_symbol(shared, symbol) {
                         self.protocol_error = true;
                         return SessionOutcome::Aborted;
                     }
                 }
                 SendSweepOutcome::AllWouldBlock => {
-                    if !self.service_carousel_backpressure(shared, ctrl_rx).await {
+                    shared.metrics.record_backpressure_sweep();
+                    let wait_started = tokio::time::Instant::now();
+                    let serviced = self.service_carousel_backpressure(shared, ctrl_rx).await;
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Backpressure, wait_started.elapsed());
+                    if !serviced {
                         return SessionOutcome::Aborted;
                     }
                 }
@@ -971,7 +1009,11 @@ impl FecSender {
                 &nextmini_messages::lossless_session::LosslessSessionControl::SessionComplete,
             );
             if repeat + 1 < shared.carousel.session_complete_repeats {
+                let wait_started = tokio::time::Instant::now();
                 tokio::time::sleep(shared.carousel.session_complete_interval).await;
+                shared
+                    .metrics
+                    .record_wait(SenderWaitState::CompletionRepeat, wait_started.elapsed());
             }
         }
     }
@@ -1125,7 +1167,6 @@ impl FecSender {
     ) -> SendSweepOutcome {
         if self.tree_schedule.is_empty() {
             self.stats.record_stall(kind);
-            self.maybe_log_progress(shared);
             return SendSweepOutcome::AllClosed;
         }
 
@@ -1210,7 +1251,6 @@ impl FecSender {
             SendSweepOutcome::AllWouldBlock
         } else {
             self.stats.record_stall(kind);
-            self.maybe_log_progress(shared);
             SendSweepOutcome::AllClosed
         }
     }
@@ -1249,7 +1289,6 @@ impl FecSender {
             );
         }
         self.next_tree_rr = (idx + 1) % schedule_count;
-        self.maybe_log_progress(shared);
     }
 
     /// Return the next initial data-phase symbol payload for one block.
@@ -1413,6 +1452,9 @@ impl super::ModeHooks for FecSender {
                 progress,
                 shared.carousel.ack_probe_interval,
             );
+        }
+        if shared.active_quorum.is_frozen() && self.carousel_quorum_complete(shared) {
+            self.carousel_final_ack_processed = true;
         }
         debug!(
             session_id = shared.session.session_id,
@@ -1664,13 +1706,22 @@ impl FecSender {
         })
     }
 
-    fn maybe_log_progress(&mut self, _shared: &super::SenderShared) {
-        // Intentionally empty: the per-symbol progress instrumentation is too
-        // expensive for WAN throughput measurements.
-    }
-
-    fn log_tree_stats(&self, _shared: &super::SenderShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
+    fn log_tree_stats(&self, shared: &super::SenderShared, reason: &'static str) {
+        debug!(
+            session_id = shared.session.session_id,
+            reason,
+            source_attempts = self.stats.source_attempts,
+            source_queued = self.stats.source_queued,
+            source_would_block = self.stats.source_would_block,
+            source_closed = self.stats.source_closed,
+            repair_attempts = self.stats.repair_attempts,
+            repair_queued = self.stats.repair_queued,
+            repair_would_block = self.stats.repair_would_block,
+            repair_closed = self.stats.repair_closed,
+            source_send_stalls = self.stats.source_send_stalls,
+            repair_send_stalls = self.stats.repair_send_stalls,
+            "Lossless FEC sender session counters"
+        );
     }
 }
 
@@ -2424,6 +2475,7 @@ mod tests {
             pacer: None,
             payload_emitted: false,
             carousel: CarouselRuntimeConfig::default(),
+            metrics: std::sync::Arc::new(crate::node::session::metrics::SessionMetrics::default()),
         }
     }
 }

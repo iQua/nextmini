@@ -14,6 +14,7 @@ use std::collections::{BTreeSet, VecDeque};
 use std::future::pending;
 use std::io::{self, Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
+use std::sync::Arc;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -30,6 +31,7 @@ use crate::node::session::api::{
     CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage, SessionId, SessionOutcome,
 };
 use crate::node::session::control;
+use crate::node::session::metrics::SessionMetrics;
 use crate::node::session::plan::{BlockPlan, SymbolGeometry};
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
@@ -51,12 +53,43 @@ pub async fn run(
 
 pub(super) async fn run_with_runtime(
     cfg: ReceiverConfig,
+    control_rx: mpsc::Receiver<InboundFrame>,
+    data_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
+) -> SessionOutcome {
+    run_with_runtime_and_metrics(
+        cfg,
+        control_rx,
+        data_rx,
+        processors,
+        runtime_sender,
+        Arc::new(SessionMetrics::default()),
+    )
+    .await
+}
+
+/// Deterministic receiver test hook with caller-owned control/data inboxes and observer.
+#[allow(dead_code)] // consumed by external and path-including conformance tests
+pub async fn run_observed(
+    cfg: ReceiverConfig,
+    control_rx: mpsc::Receiver<InboundFrame>,
+    data_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    metrics: Arc<SessionMetrics>,
+) -> SessionOutcome {
+    run_with_runtime_and_metrics(cfg, control_rx, data_rx, processors, None, metrics).await
+}
+
+async fn run_with_runtime_and_metrics(
+    cfg: ReceiverConfig,
     mut control_rx: mpsc::Receiver<InboundFrame>,
     mut data_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
     runtime_sender: Option<mpsc::Sender<LosslessRuntimeMessage>>,
+    metrics: Arc<SessionMetrics>,
 ) -> SessionOutcome {
-    let mut receiver = SessionReceiver::new(cfg, processors);
+    let mut receiver = SessionReceiver::new_with_metrics(cfg, processors, metrics);
     receiver
         .run(&mut control_rx, &mut data_rx, runtime_sender)
         .await
@@ -133,6 +166,7 @@ pub(super) struct ReceiverShared {
     pub(super) manifest: Option<LosslessSessionManifest>,
     pub(super) plan: Option<BlockPlan>,
     pub(super) complete_blocks: BTreeSet<u64>,
+    pub(super) metrics: Arc<SessionMetrics>,
 }
 
 #[derive(Debug)]
@@ -186,7 +220,16 @@ enum ReceiverMode {
 
 impl SessionReceiver {
     /// Build receiver state for one lossless session.
+    #[cfg(test)]
     fn new(cfg: ReceiverConfig, processors: ProcessorHandle) -> Self {
+        Self::new_with_metrics(cfg, processors, Arc::new(SessionMetrics::default()))
+    }
+
+    fn new_with_metrics(
+        cfg: ReceiverConfig,
+        processors: ProcessorHandle,
+        metrics: Arc<SessionMetrics>,
+    ) -> Self {
         Self {
             shared: ReceiverShared {
                 session_id: cfg.session_id,
@@ -197,6 +240,7 @@ impl SessionReceiver {
                 manifest: None,
                 plan: None,
                 complete_blocks: BTreeSet::new(),
+                metrics,
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
@@ -1250,6 +1294,7 @@ mod tests {
             }),
             plan: BlockPlan::new(16, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
         let mut receiver = FecReceiver::new(
             BlockPlan::new(16, 8)
@@ -1506,6 +1551,7 @@ mod tests {
             }),
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
         let receiver = FecReceiver::new(
             geometry,
@@ -1559,6 +1605,7 @@ mod tests {
                 }),
                 plan: BlockPlan::new(16, 8).ok(),
                 complete_blocks: BTreeSet::from([0, 1]),
+                metrics: Arc::new(SessionMetrics::default()),
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
@@ -1634,6 +1681,7 @@ mod tests {
             }),
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
         let symbol_id_bounds =
             test_fec_symbol_id_bounds(shared.manifest.as_ref().expect("METTLE manifest"));
@@ -1859,6 +1907,45 @@ mod tests {
                 .is_none(),
             "out-of-range peer ESIs must be dropped before storage or decoder input"
         );
+    }
+
+    #[tokio::test]
+    async fn fec_receiver_metrics_count_duplicates_decode_overhead_and_completion_tail() {
+        let (mut receiver, _packet_rx) =
+            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
+        let session_id = receiver.shared.session_id;
+
+        for (symbol_id, payload) in [
+            (0, [0, 1]),
+            (0, [0, 1]),
+            (1, [2, 3]),
+            (2, [4, 5]),
+            (3, [6, 7]),
+        ] {
+            receiver
+                .handle_block_symbol_frame(InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(
+                        session_id, 0, symbol_id, 0, &payload,
+                    ),
+                    peer_id: Some(SOURCE_NODE_ID),
+                })
+                .await
+                .expect("test receiver sink should accept frame");
+        }
+
+        assert!(receiver.shared.has_all_blocks());
+        receiver
+            .handle_block_symbol_frame(InboundFrame {
+                bytes: lossless_session::encode_block_symbol(session_id, 0, 4, 1, &[8, 9]),
+                peer_id: Some(SOURCE_NODE_ID),
+            })
+            .await
+            .expect("post-completion symbol should be accounted and ignored");
+
+        let snapshot = receiver.shared.metrics.snapshot();
+        assert_eq!(snapshot.receiver_duplicate_symbols, 1);
+        assert_eq!(snapshot.symbols_received_after_local_block_complete, 1);
+        assert_eq!(snapshot.symbols_at_decode_minus_k, BTreeMap::from([(0, 1)]));
     }
 
     #[tokio::test]
@@ -2245,6 +2332,7 @@ mod tests {
             }),
             plan: BlockPlan::new(8, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
 
         shared.mark_first_payload_unit();
@@ -2290,6 +2378,7 @@ mod tests {
             }),
             plan: BlockPlan::new(8, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
 
         shared.mark_object_complete();
@@ -2348,6 +2437,7 @@ mod tests {
             }),
             plan: BlockPlan::new(10, 10).ok(),
             complete_blocks: BTreeSet::new(),
+            metrics: Arc::new(SessionMetrics::default()),
         };
 
         shared
@@ -2537,6 +2627,7 @@ mod tests {
                 }),
                 plan: BlockPlan::new(8, 8).ok(),
                 complete_blocks: BTreeSet::from([0]),
+                metrics: Arc::new(SessionMetrics::default()),
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(
                 geometry,
@@ -2967,6 +3058,7 @@ mod tests {
                     }),
                     plan: BlockPlan::new(total_blocks * 8, 8).ok(),
                     complete_blocks,
+                    metrics: Arc::new(SessionMetrics::default()),
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
@@ -3078,6 +3170,7 @@ mod tests {
                     }),
                     plan: Some(plan),
                     complete_blocks,
+                    metrics: Arc::new(SessionMetrics::default()),
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,

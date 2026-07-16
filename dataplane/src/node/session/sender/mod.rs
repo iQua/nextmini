@@ -12,6 +12,7 @@ mod plain;
 mod state;
 
 use bytes::Bytes;
+use std::sync::Arc;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
@@ -25,6 +26,7 @@ use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
+use crate::node::session::metrics::SessionMetrics;
 use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{
     CarouselRuntimeConfig, SenderConfig, SessionConfig, TransportRoute,
@@ -48,14 +50,49 @@ pub async fn run(
     run_with_carousel(cfg, ctrl_rx, processors, CarouselRuntimeConfig::default()).await
 }
 
+/// Deterministic sender test hook with a caller-owned session observer.
+#[allow(dead_code)] // consumed by external and path-including conformance tests
+pub async fn run_observed(
+    cfg: SenderConfig,
+    ctrl_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    metrics: Arc<SessionMetrics>,
+) -> SessionOutcome {
+    run_with_carousel_and_metrics(
+        cfg,
+        ctrl_rx,
+        processors,
+        CarouselRuntimeConfig::default(),
+        metrics,
+    )
+    .await
+}
+
 /// Run one sender with runtime-validated carousel timing.
 pub(super) async fn run_with_carousel(
+    cfg: SenderConfig,
+    ctrl_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    carousel: CarouselRuntimeConfig,
+) -> SessionOutcome {
+    run_with_carousel_and_metrics(
+        cfg,
+        ctrl_rx,
+        processors,
+        carousel,
+        Arc::new(SessionMetrics::default()),
+    )
+    .await
+}
+
+async fn run_with_carousel_and_metrics(
     cfg: SenderConfig,
     mut ctrl_rx: mpsc::Receiver<InboundFrame>,
     processors: ProcessorHandle,
     carousel: CarouselRuntimeConfig,
+    metrics: Arc<SessionMetrics>,
 ) -> SessionOutcome {
-    let mut sender = match SessionSender::new_with_carousel(cfg, processors, carousel) {
+    let mut sender = match SessionSender::new_with_metrics(cfg, processors, carousel, metrics) {
         Ok(sender) => sender,
         Err(reason) => {
             warn!(reason, "Lossless sender aborted before start");
@@ -114,6 +151,7 @@ pub(super) struct SenderShared {
     pub(super) pacer: Option<TokenBucket>,
     pub(super) payload_emitted: bool,
     pub(super) carousel: CarouselRuntimeConfig,
+    pub(super) metrics: Arc<SessionMetrics>,
 }
 
 /// Concrete sender mode selected from the manifest.
@@ -209,10 +247,25 @@ impl SessionSender {
         Self::new_with_carousel(cfg, processors, CarouselRuntimeConfig::default())
     }
 
+    #[cfg(test)]
     fn new_with_carousel(
         cfg: SenderConfig,
         processors: ProcessorHandle,
         carousel: CarouselRuntimeConfig,
+    ) -> Result<Self, &'static str> {
+        Self::new_with_metrics(
+            cfg,
+            processors,
+            carousel,
+            Arc::new(SessionMetrics::default()),
+        )
+    }
+
+    fn new_with_metrics(
+        cfg: SenderConfig,
+        processors: ProcessorHandle,
+        carousel: CarouselRuntimeConfig,
+        metrics: Arc<SessionMetrics>,
     ) -> Result<Self, &'static str> {
         let manifest = cfg.manifest;
         let block_size =
@@ -258,6 +311,7 @@ impl SessionSender {
                 pacer,
                 payload_emitted: false,
                 carousel,
+                metrics,
             },
             mode,
         })
@@ -1115,6 +1169,7 @@ mod tests {
             pacer: None,
             payload_emitted: false,
             carousel: CarouselRuntimeConfig::default(),
+            metrics: Arc::new(SessionMetrics::default()),
         }
     }
 

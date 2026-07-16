@@ -1,11 +1,11 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
 };
-use tracing::warn;
+use tracing::{debug, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
@@ -20,6 +20,9 @@ pub(super) struct FecBlockState {
     /// RaptorQ needs retained payloads for block decode. METTLE streams bins
     /// directly into its decoder and leaves this map empty.
     pub(super) symbols: BTreeMap<u32, Vec<u8>>,
+    /// All accepted ESIs, including METTLE bins whose payloads stream directly
+    /// into the decoder instead of being retained in `symbols`.
+    pub(super) seen_symbol_ids: BTreeSet<u32>,
     pub(super) mettle: Option<MettleBlockDecodeState>,
 }
 
@@ -274,6 +277,7 @@ impl FecReceiver {
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
             self.stats.record_complete_block(symbol.tree_id);
+            shared.metrics.record_receiver_tail_symbol();
             return Ok(());
         }
 
@@ -284,7 +288,9 @@ impl FecReceiver {
 
         if scheme == FecScheme::Mettle {
             let payload = payload.to_vec();
-            self.accept_mettle_symbol(shared, &fec_mode, &symbol);
+            if !self.accept_mettle_symbol(shared, &fec_mode, &symbol) {
+                return Ok(());
+            }
             self.try_decode_mettle_symbol(
                 shared,
                 &fec_mode,
@@ -314,13 +320,14 @@ impl FecReceiver {
         let state = self.blocks.entry(symbol.block_id).or_default();
         if state.symbols.contains_key(&symbol.symbol_id) {
             self.stats.record_duplicate(symbol.tree_id);
+            shared.metrics.record_receiver_duplicate();
             return false;
         }
         shared.mark_first_payload_unit();
+        state.seen_symbol_ids.insert(symbol.symbol_id);
         state.symbols.insert(symbol.symbol_id, stored_payload);
         self.stats
             .record_accepted(symbol.tree_id, symbol.symbol_id, fec_mode.symbols_per_block);
-        self.maybe_log_progress(shared);
         true
     }
 
@@ -329,11 +336,17 @@ impl FecReceiver {
         shared: &mut super::ReceiverShared,
         fec_mode: &nextmini_messages::lossless_session::LosslessSessionFecMode,
         symbol: &nextmini_messages::lossless_session::LosslessSessionBlockSymbol,
-    ) {
-        self.blocks.entry(symbol.block_id).or_default();
+    ) -> bool {
+        let state = self.blocks.entry(symbol.block_id).or_default();
+        if !state.seen_symbol_ids.insert(symbol.symbol_id) {
+            self.stats.record_duplicate(symbol.tree_id);
+            shared.metrics.record_receiver_duplicate();
+            return false;
+        }
         shared.mark_first_payload_unit();
         self.stats
             .record_accepted(symbol.tree_id, symbol.symbol_id, fec_mode.symbols_per_block);
+        true
     }
 
     /// Attempt to decode a complete-enough FEC block.
@@ -370,6 +383,9 @@ impl FecReceiver {
                 block_len,
             )
         {
+            shared
+                .metrics
+                .record_symbols_at_decode(fec_mode.symbols_per_block, block_state.symbols.len());
             self.complete_block(shared, block_id, block).await?;
             return Ok(true);
         }
@@ -414,6 +430,9 @@ impl FecReceiver {
         let Ok(output) = decode_result else {
             return Ok(false);
         };
+        shared
+            .metrics
+            .record_symbols_at_decode(fec_mode.symbols_per_block, block_state.symbols.len());
 
         let Some(block_capacity) = output
             .source_symbols
@@ -505,7 +524,6 @@ impl FecReceiver {
                 let decoded_count = decoded_sources.len();
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::Pending, decoded_count);
-                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await?;
                 Ok(false)
@@ -513,16 +531,23 @@ impl FecReceiver {
             MettleDecodeOutcome::InvalidSymbol => {
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
-                self.maybe_log_progress(shared);
                 Ok(false)
             }
             MettleDecodeOutcome::Complete { decoded_sources } => {
                 let decoded_count = decoded_sources.len();
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::Complete, decoded_count);
-                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await?;
+                if let Some(unique_symbols) = self
+                    .blocks
+                    .get(&block_id)
+                    .map(|state| state.seen_symbol_ids.len())
+                {
+                    shared
+                        .metrics
+                        .record_symbols_at_decode(fec_mode.symbols_per_block, unique_symbols);
+                }
                 self.complete_mettle_block(shared, block_id).await;
                 Ok(true)
             }
@@ -740,13 +765,26 @@ impl FecReceiver {
         self.complete_reported
     }
 
-    fn maybe_log_progress(&mut self, _shared: &super::ReceiverShared) {
-        // Intentionally empty: the receiver progress log was temporary
-        // instrumentation and adds work on every accepted METTLE bin.
-    }
-
-    fn log_tree_stats(&self, _shared: &super::ReceiverShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
+    fn log_tree_stats(&self, shared: &super::ReceiverShared, reason: &'static str) {
+        debug!(
+            session_id = shared.session_id,
+            reason,
+            accepted_symbols = self.stats.accepted_symbols,
+            source_symbols = self.stats.source_symbols,
+            repair_symbols = self.stats.repair_symbols,
+            duplicate_symbols = self.stats.duplicate_symbols,
+            complete_block_symbols = self.stats.complete_block_symbols,
+            invalid_symbols = self.stats.invalid_symbols,
+            decode_attempts = self.stats.decode_attempts,
+            decode_successes = self.stats.decode_successes,
+            decode_insufficient_symbols = self.stats.decode_insufficient_symbols,
+            decode_invalid_symbols = self.stats.decode_invalid_symbols,
+            decoded_source_symbols = self.stats.decoded_source_symbols,
+            mettle_decoder_pushes = self.stats.mettle_decoder_pushes,
+            mettle_decoder_completions = self.stats.mettle_decoder_completions,
+            mettle_decoder_invalid_symbols = self.stats.mettle_decoder_invalid_symbols,
+            "Lossless FEC receiver session counters"
+        );
     }
 }
 

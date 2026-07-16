@@ -1,5 +1,6 @@
 mod common;
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use bytes::Bytes;
@@ -7,6 +8,7 @@ use tokio::sync::mpsc;
 use tokio::time::timeout;
 
 use nextmini::node::session::api::{InboundFrame, SessionOutcome};
+use nextmini::node::session::metrics::{SenderWaitState, SessionMetrics};
 use nextmini::node::session::runtime::SenderConfig;
 use nextmini::node::session::sender;
 use nextmini_messages::lossless_session::{
@@ -44,7 +46,13 @@ async fn carousel_sender_finishes_only_after_cumulative_ack_and_repeats_completi
         .send(common::ready_frame(session_id, 2))
         .await
         .expect("Ready should enqueue");
-    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+    let metrics = Arc::new(SessionMetrics::default());
+    let sender_task = tokio::spawn(sender::run_observed(
+        sender_cfg,
+        ctrl_rx,
+        harness.processors.clone(),
+        metrics.clone(),
+    ));
 
     let mut saw_symbol = false;
     while !saw_symbol {
@@ -85,6 +93,22 @@ async fn carousel_sender_finishes_only_after_cumulative_ack_and_repeats_completi
             .expect("carousel sender should finish")
             .expect("carousel sender task should not panic"),
         SessionOutcome::Completed
+    );
+    let snapshot = metrics.snapshot();
+    assert_eq!(snapshot.queued_after_final_ack_processed, 0);
+    let esi = snapshot
+        .sender_block_esis
+        .get(&0)
+        .expect("queued block should have an ESI sequence");
+    assert_eq!(esi.start, Some(0));
+    assert_eq!(esi.sequence_violations, 0);
+    assert_eq!(
+        esi.count,
+        u64::from(esi.end.expect("queued sequence has an end")) + 1
+    );
+    assert_eq!(
+        snapshot.sender_wait_states[&SenderWaitState::CompletionRepeat].count,
+        2
     );
 }
 

@@ -415,6 +415,7 @@ mod tests {
             pacer: None,
             payload_emitted: false,
             carousel: crate::node::session::runtime::CarouselRuntimeConfig::default(),
+            metrics: std::sync::Arc::new(crate::node::session::metrics::SessionMetrics::default()),
         }
     }
 }
