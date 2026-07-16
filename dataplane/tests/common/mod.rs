@@ -56,6 +56,27 @@ pub async fn packet_capture(
     num_packet_processors: usize,
     channel_capacity: usize,
 ) -> PacketCaptureHarness {
+    packet_capture_with_output_capacity(
+        local_node_id,
+        peer_node_id,
+        src_port,
+        dst_port,
+        num_packet_processors,
+        channel_capacity,
+        2048,
+    )
+    .await
+}
+
+pub async fn packet_capture_with_output_capacity(
+    local_node_id: usize,
+    peer_node_id: usize,
+    src_port: u16,
+    dst_port: u16,
+    num_packet_processors: usize,
+    channel_capacity: usize,
+    output_capacity: usize,
+) -> PacketCaptureHarness {
     let cfg = LocalConfig {
         node_id: local_node_id,
         n_nodes: local_node_id.max(peer_node_id) + 1,
@@ -83,7 +104,7 @@ pub async fn packet_capture(
         .await;
 
     let flow_id = Packet::flow_id_from_parts(src_ip, src_port, dst_ip, dst_port);
-    let (packet_tx, packet_rx) = mpsc::channel(2048);
+    let (packet_tx, packet_rx) = mpsc::channel(output_capacity);
     processors.connect_user_space_sender(flow_id, packet_tx);
     tokio::time::sleep(Duration::from_millis(50)).await;
 

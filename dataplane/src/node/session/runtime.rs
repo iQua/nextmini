@@ -392,19 +392,29 @@ impl LosslessRuntime {
 
     /// Forward one inbound frame to the matching session task.
     async fn deliver_frame(&mut self, session: SessionId, frame: InboundFrame) {
-        if let Some(header) = lossless_session::peek_header(&frame.bytes)
-            && header.version != lossless_session::LOSSLESS_SESSION_VERSION
-        {
-            warn!(
-                session_id = session,
-                wire_session_id = header.session_id,
-                observed_version = header.version,
-                expected_version = lossless_session::LOSSLESS_SESSION_VERSION,
-                kind = header.kind,
-                ctrl_kind = header.ctrl_kind,
-                "Lossless runtime: dropping frame with unsupported session version."
-            );
-            return;
+        if let Some(header) = lossless_session::peek_header(&frame.bytes) {
+            if header.session_id != session {
+                warn!(
+                    session_id = session,
+                    wire_session_id = header.session_id,
+                    kind = header.kind,
+                    ctrl_kind = header.ctrl_kind,
+                    "Lossless runtime: dropping frame from a stale session incarnation."
+                );
+                return;
+            }
+            if header.version != lossless_session::LOSSLESS_SESSION_VERSION {
+                warn!(
+                    session_id = session,
+                    wire_session_id = header.session_id,
+                    observed_version = header.version,
+                    expected_version = lossless_session::LOSSLESS_SESSION_VERSION,
+                    kind = header.kind,
+                    ctrl_kind = header.ctrl_kind,
+                    "Lossless runtime: dropping frame with unsupported session version."
+                );
+                return;
+            }
         }
 
         let control_kind = lossless_session::decode_control(&frame.bytes)

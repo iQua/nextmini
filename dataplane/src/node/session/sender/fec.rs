@@ -1963,6 +1963,84 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn carousel_conformance_preserves_freshness_across_tree_fallback_and_ack_reorder() {
+        let manifest = carousel_manifest(1);
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("carousel sender");
+        let mut shared = test_sender_shared(manifest);
+        shared.processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 12,
+            channel_capacity: 2,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+
+        let blocked_tree_route = control::FrameRoute {
+            session_id: shared.session.session_id,
+            tree_id: Some(7),
+            src_ip: shared.route.src_ip,
+            src_port: shared.route.src_port,
+            dst_ip: shared.route.dst_ip,
+            dst_port: shared.route.dst_port,
+        };
+        for _ in 0..2 {
+            assert_eq!(
+                control::try_send_frame(&shared.processors, blocked_tree_route, b"fill").outcome,
+                SendOutcome::Queued
+            );
+        }
+
+        for symbol_id in 0..2 {
+            assert_eq!(
+                sender.send_symbol(&mut shared, 0, symbol_id, b"abcd", SymbolKind::Source,),
+                SendSweepOutcome::Queued,
+                "the open tree must accept the fresh symbol after the first tree blocks"
+            );
+            assert!(shared.metrics.record_sender_esi(0, symbol_id));
+            assert!(sender.advance_carousel_symbol(
+                &mut shared,
+                CarouselSymbol {
+                    block_id: 0,
+                    symbol_id,
+                    kind: SymbolKind::Source,
+                },
+            ));
+        }
+        assert_eq!(sender.stats.source_would_block, 2);
+        assert_eq!(sender.stats.source_queued, 2);
+
+        sender.on_block_ack(
+            &mut shared,
+            22,
+            BlockAck::Blocks {
+                completed_watermark: 1,
+                extra_completed: Vec::new(),
+            },
+        );
+        sender.on_block_ack(
+            &mut shared,
+            22,
+            BlockAck::Blocks {
+                completed_watermark: 0,
+                extra_completed: Vec::new(),
+            },
+        );
+
+        assert_eq!(sender.next_carousel_symbol(&shared), Ok(None));
+        let snapshot = shared.metrics.snapshot();
+        assert_eq!(snapshot.queued_after_final_ack_processed, 0);
+        assert_eq!(snapshot.sender_block_esis[&0].start, Some(0));
+        assert_eq!(snapshot.sender_block_esis[&0].end, Some(1));
+        assert_eq!(snapshot.sender_block_esis[&0].count, 2);
+        assert_eq!(snapshot.sender_block_esis[&0].sequence_violations, 0);
+    }
+
+    #[tokio::test]
     async fn fec_sender_drops_future_round_need() {
         let manifest = test_manifest();
         let plan = BlockPlan::new(16, 16).expect("valid plan");

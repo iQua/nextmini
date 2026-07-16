@@ -58,7 +58,7 @@ pub async fn run_observed(
     processors: ProcessorHandle,
     metrics: Arc<SessionMetrics>,
 ) -> SessionOutcome {
-    run_with_carousel_and_metrics(
+    run_observed_with_timing(
         cfg,
         ctrl_rx,
         processors,
@@ -66,6 +66,18 @@ pub async fn run_observed(
         metrics,
     )
     .await
+}
+
+/// Deterministic sender test hook with caller-owned carousel timing.
+#[allow(dead_code)] // consumed by external and path-including conformance tests
+pub async fn run_observed_with_timing(
+    cfg: SenderConfig,
+    ctrl_rx: mpsc::Receiver<InboundFrame>,
+    processors: ProcessorHandle,
+    carousel: CarouselRuntimeConfig,
+    metrics: Arc<SessionMetrics>,
+) -> SessionOutcome {
+    run_with_carousel_and_metrics(cfg, ctrl_rx, processors, carousel, metrics).await
 }
 
 /// Run one sender with runtime-validated carousel timing.
