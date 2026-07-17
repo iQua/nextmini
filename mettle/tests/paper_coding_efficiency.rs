@@ -14,7 +14,10 @@ const PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT: usize = 100_000;
 const PAPER_CODING_EFFICIENCY_METTLE_SEED: u64 = 0;
 const PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE: usize = 8;
 const PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE: usize = 1500;
+const TABLE_IV_DEFAULT_TRIALS: usize = 4096;
+const TABLE_IV_CONFIDENCE: f64 = 0.95;
 const TARGET_FAILURE_RATE: f64 = 1e-3;
+const INTERIOR_OVERHEAD_DENOMINATOR: u32 = 1_000_000;
 
 #[derive(Clone, Copy)]
 enum MettleTrialOutcome {
@@ -101,10 +104,32 @@ impl FailureRateEstimate {
     }
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Rational {
     numerator: u32,
     denominator: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct MettleTransmissionGeometry {
+    params: MettleParams,
+    interior_overhead: Rational,
+    target_symbol_count: usize,
+    terminal_symbol_count: usize,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum MettleGeometryError {
+    EmptySourcePrefix,
+    TargetBelowTailFloor {
+        target_symbol_count: usize,
+        minimum_symbol_count: usize,
+    },
+    TargetNotRepresentable {
+        target_symbol_count: usize,
+        lower_symbol_count: usize,
+        upper_symbol_count: usize,
+    },
 }
 
 impl Rational {
@@ -137,7 +162,7 @@ enum Channel {
 struct CodingEfficiencyCase {
     name: &'static str,
     channel: Channel,
-    mettle_overhead_ratio: Rational,
+    mettle_target_total_overhead: Rational,
     raptorq_k: usize,
     raptorq_overhead_ratio: Rational,
 }
@@ -148,7 +173,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(1, 100),
         },
-        mettle_overhead_ratio: Rational::new(550, 10_000),
+        mettle_target_total_overhead: Rational::new(550, 10_000),
         raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(614, 10_000),
     },
@@ -157,7 +182,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(2, 100),
         },
-        mettle_overhead_ratio: Rational::new(800, 10_000),
+        mettle_target_total_overhead: Rational::new(800, 10_000),
         raptorq_k: 168,
         raptorq_overhead_ratio: Rational::new(714, 10_000),
     },
@@ -166,7 +191,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(3, 100),
         },
-        mettle_overhead_ratio: Rational::new(900, 10_000),
+        mettle_target_total_overhead: Rational::new(900, 10_000),
         raptorq_k: 236,
         raptorq_overhead_ratio: Rational::new(763, 10_000),
     },
@@ -175,7 +200,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(8, 100),
         },
-        mettle_overhead_ratio: Rational::new(2000, 10_000),
+        mettle_target_total_overhead: Rational::new(2000, 10_000),
         raptorq_k: 269,
         raptorq_overhead_ratio: Rational::new(1560, 10_000),
     },
@@ -184,7 +209,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
         channel: Channel::Bec {
             erasure_probability: Rational::new(10, 100),
         },
-        mettle_overhead_ratio: Rational::new(2500, 10_000),
+        mettle_target_total_overhead: Rational::new(2500, 10_000),
         raptorq_k: 405,
         raptorq_overhead_ratio: Rational::new(1500, 10_000),
     },
@@ -196,7 +221,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 1),
         },
-        mettle_overhead_ratio: Rational::new(900, 10_000),
+        mettle_target_total_overhead: Rational::new(900, 10_000),
         raptorq_k: 84,
         raptorq_overhead_ratio: Rational::new(2380, 10_000),
     },
@@ -208,7 +233,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(2, 100),
         },
-        mettle_overhead_ratio: Rational::new(600, 10_000),
+        mettle_target_total_overhead: Rational::new(600, 10_000),
         raptorq_k: 149,
         raptorq_overhead_ratio: Rational::new(604, 10_000),
     },
@@ -220,7 +245,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 10),
         },
-        mettle_overhead_ratio: Rational::new(800, 10_000),
+        mettle_target_total_overhead: Rational::new(800, 10_000),
         raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(702, 10_000),
     },
@@ -232,7 +257,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_good: Rational::new(5, 100),
             epsilon_bad: Rational::new(1, 2),
         },
-        mettle_overhead_ratio: Rational::new(2000, 10_000),
+        mettle_target_total_overhead: Rational::new(2000, 10_000),
         raptorq_k: 257,
         raptorq_overhead_ratio: Rational::new(1556, 10_000),
     },
@@ -244,7 +269,7 @@ const CODING_EFFICIENCY_CASES: [CodingEfficiencyCase; 10] = [
             epsilon_good: Rational::new(1, 100),
             epsilon_bad: Rational::new(1, 10),
         },
-        mettle_overhead_ratio: Rational::new(1200, 10_000),
+        mettle_target_total_overhead: Rational::new(1200, 10_000),
         raptorq_k: 101,
         raptorq_overhead_ratio: Rational::new(1584, 10_000),
     },
@@ -261,10 +286,11 @@ fn raptorq_fixture_data(source_count: usize) -> Vec<u8> {
 }
 
 fn total_packet_count(source_count: usize, overhead_ratio: Rational) -> usize {
-    div_ceil(
-        source_count * (overhead_ratio.denominator as usize + overhead_ratio.numerator as usize),
-        overhead_ratio.denominator as usize,
-    )
+    let expanded_numerator =
+        u128::from(overhead_ratio.denominator) + u128::from(overhead_ratio.numerator);
+    let packet_count = (source_count as u128 * expanded_numerator)
+        .div_ceil(u128::from(overhead_ratio.denominator));
+    usize::try_from(packet_count).expect("paper harness packet count fits usize")
 }
 
 fn raptorq_trial_succeeds(case: CodingEfficiencyCase, seed: u64) -> bool {
@@ -299,10 +325,88 @@ fn raptorq_trial_succeeds(case: CodingEfficiencyCase, seed: u64) -> bool {
 }
 
 fn mettle_params(overhead_ratio: Rational) -> MettleParams {
-    MettleParams::new(
+    let overhead = if overhead_ratio.numerator == 0 {
+        OverheadRatio::ZERO
+    } else {
         OverheadRatio::new(overhead_ratio.numerator, overhead_ratio.denominator)
-            .expect("paper coding-efficiency overhead is valid"),
+            .expect("paper coding-efficiency overhead is valid")
+    };
+    MettleParams::new(overhead)
+}
+
+fn mettle_terminal_symbol_count(params: MettleParams, source_count: usize) -> usize {
+    let terminal_source_count =
+        u64::try_from(source_count).expect("paper harness source count fits u64");
+    usize::try_from(terminal_departure_end_exclusive(
+        params,
+        terminal_source_count,
+    ))
+    .expect("paper harness terminal symbol count fits usize")
+}
+
+fn solve_mettle_transmission_geometry(
+    source_count: usize,
+    target_total_overhead: Rational,
+) -> Result<MettleTransmissionGeometry, MettleGeometryError> {
+    if source_count == 0 {
+        return Err(MettleGeometryError::EmptySourcePrefix);
+    }
+
+    let target_symbol_count = total_packet_count(source_count, target_total_overhead);
+    let minimum_symbol_count =
+        mettle_terminal_symbol_count(mettle_params(Rational::new(0, 1)), source_count);
+    if minimum_symbol_count > target_symbol_count {
+        return Err(MettleGeometryError::TargetBelowTailFloor {
+            target_symbol_count,
+            minimum_symbol_count,
+        });
+    }
+
+    let high_numerator = u32::try_from(
+        (u128::from(target_total_overhead.numerator) * u128::from(INTERIOR_OVERHEAD_DENOMINATOR))
+            .div_ceil(u128::from(target_total_overhead.denominator)),
     )
+    .expect("target METTLE overhead fits solver precision");
+    let symbol_count_for = |numerator| {
+        mettle_terminal_symbol_count(
+            mettle_params(Rational::new(numerator, INTERIOR_OVERHEAD_DENOMINATOR)),
+            source_count,
+        )
+    };
+
+    let mut low = 0u32;
+    let mut high = high_numerator;
+    while low < high {
+        let middle = low + (high - low) / 2;
+        if symbol_count_for(middle) < target_symbol_count {
+            low = middle + 1;
+        } else {
+            high = middle;
+        }
+    }
+
+    let terminal_symbol_count = symbol_count_for(low);
+    if terminal_symbol_count != target_symbol_count {
+        let lower_symbol_count = low
+            .checked_sub(1)
+            .map_or(minimum_symbol_count, symbol_count_for);
+        return Err(MettleGeometryError::TargetNotRepresentable {
+            target_symbol_count,
+            lower_symbol_count,
+            upper_symbol_count: terminal_symbol_count,
+        });
+    }
+    let interior_overhead = Rational::new(low, INTERIOR_OVERHEAD_DENOMINATOR);
+    Ok(MettleTransmissionGeometry {
+        params: mettle_params(interior_overhead),
+        interior_overhead,
+        target_symbol_count,
+        terminal_symbol_count,
+    })
+}
+
+fn actual_total_overhead(source_count: usize, terminal_symbol_count: usize) -> f64 {
+    terminal_symbol_count as f64 / source_count as f64 - 1.0
 }
 
 fn mettle_source_payload(source_id: u64) -> [u8; PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE] {
@@ -518,7 +622,7 @@ fn mettle_trial_outcome(
     seed: u64,
     source_count: usize,
 ) -> MettleTrialOutcome {
-    let params = case_params(case);
+    let params = case_params(case, source_count);
     let terminal_source_count = source_count as u64;
     let graph_seed = mettle_graph_seed(seed);
     let MettleReplay {
@@ -564,7 +668,7 @@ fn mettle_trial_succeeds(case: CodingEfficiencyCase, seed: u64, source_count: us
 }
 
 fn replay_mettle_trial(case: CodingEfficiencyCase, seed: u64, source_count: usize) -> MettleReplay {
-    let params = case_params(case);
+    let params = case_params(case, source_count);
     let source_symbol_bytes = NonZeroUsize::new(PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE)
         .expect("non-zero symbol size");
     let terminal_source_count = source_count as u64;
@@ -686,7 +790,7 @@ fn mettle_graph_estimated_failure_rate(
     print_first_failure: bool,
     local_residual_source_limit: usize,
 ) -> FailureRateEstimate {
-    let params = case_params(case);
+    let params = case_params(case, source_count);
     let packet_count = terminal_departure_end_exclusive(params, source_count as u64) as usize;
     let mut failures = 0usize;
     let mut local_residual_events = 0usize;
@@ -800,7 +904,7 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> F
             local_residual_source_limit,
         );
     }
-    let params = case_params(case);
+    let params = case_params(case, source_count);
     let mut failures = 0usize;
     let mut local_residual_events = 0usize;
     let mut isolated_error_floor_events = 0usize;
@@ -1033,8 +1137,11 @@ impl SplitMix64 {
     }
 }
 
-fn div_ceil(lhs: usize, rhs: usize) -> usize {
-    lhs / rhs + (!lhs.is_multiple_of(rhs)) as usize
+fn zero_failure_upper_bound(trials: usize, confidence: f64) -> f64 {
+    if trials == 0 {
+        return f64::NAN;
+    }
+    1.0 - (1.0 - confidence).powf(1.0 / trials as f64)
 }
 
 fn env_usize_list(name: &str, default: &[usize]) -> Vec<usize> {
@@ -1059,8 +1166,18 @@ fn codec_enabled(env_name: &str, codec: &str) -> bool {
     })
 }
 
-fn case_params(case: CodingEfficiencyCase) -> MettleParams {
-    mettle_params(case.mettle_overhead_ratio)
+fn case_geometry(case: CodingEfficiencyCase, source_count: usize) -> MettleTransmissionGeometry {
+    solve_mettle_transmission_geometry(source_count, case.mettle_target_total_overhead)
+        .unwrap_or_else(|error| {
+            panic!(
+                "{} METTLE target total overhead is not representable for K={source_count}: {error:?}",
+                case.name
+            )
+        })
+}
+
+fn case_params(case: CodingEfficiencyCase, source_count: usize) -> MettleParams {
+    case_geometry(case, source_count).params
 }
 
 fn mettle_table_iv_source_count() -> usize {
@@ -1129,7 +1246,7 @@ fn paper_coding_efficiency_mettle_harness_decodes_a_small_bec_case() {
         channel: Channel::Bec {
             erasure_probability: Rational::new(0, 1),
         },
-        mettle_overhead_ratio: Rational::new(550, 10_000),
+        mettle_target_total_overhead: Rational::new(1, 1),
         raptorq_k: 114,
         raptorq_overhead_ratio: Rational::new(614, 10_000),
     };
@@ -1138,12 +1255,82 @@ fn paper_coding_efficiency_mettle_harness_decodes_a_small_bec_case() {
 }
 
 #[test]
+fn table_iv_targets_are_solved_against_actual_finite_transmission_counts() {
+    for case in CODING_EFFICIENCY_CASES {
+        let geometry = case_geometry(case, PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT);
+
+        assert_eq!(
+            geometry.terminal_symbol_count, geometry.target_symbol_count,
+            "{} must include the compressed termination tail in its target packet budget",
+            case.name
+        );
+        assert_eq!(
+            actual_total_overhead(
+                PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT,
+                geometry.terminal_symbol_count,
+            ),
+            geometry.target_symbol_count as f64
+                / PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT as f64
+                - 1.0,
+        );
+        assert!(
+            geometry.interior_overhead.to_f64() < case.mettle_target_total_overhead.to_f64(),
+            "{} interior c must leave room for the finite compressed tail",
+            case.name
+        );
+    }
+
+    let bec_one_percent = case_geometry(
+        CODING_EFFICIENCY_CASES[0],
+        PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT,
+    );
+    assert_eq!(bec_one_percent.terminal_symbol_count, 105_500);
+}
+
+#[test]
+fn object_stream_sweep_avoids_repeated_k256_termination_tails() {
+    let target_total_overhead = Rational::new(550, 10_000);
+
+    for source_count in [8192usize, 16_384, 32_768, 65_536] {
+        let geometry = solve_mettle_transmission_geometry(source_count, target_total_overhead)
+            .expect("large object prefix can meet the target total overhead");
+        let legacy_block_count = source_count / 256;
+        let legacy_terminal_symbols =
+            legacy_block_count * mettle_terminal_symbol_count(geometry.params, 256);
+
+        assert_eq!(geometry.terminal_symbol_count, geometry.target_symbol_count);
+        assert!(
+            geometry.terminal_symbol_count < legacy_terminal_symbols,
+            "K={source_count}: one object stream must pay one compressed tail instead of {legacy_block_count} K=256 tails"
+        );
+    }
+}
+
+#[test]
+fn small_prefix_target_below_tail_floor_is_explicitly_rejected() {
+    let target_total_overhead = Rational::new(550, 10_000);
+    assert!(matches!(
+        solve_mettle_transmission_geometry(256, target_total_overhead),
+        Err(MettleGeometryError::TargetBelowTailFloor { .. })
+    ));
+}
+
+#[test]
+fn table_iv_default_trials_can_support_the_stated_failure_probability() {
+    assert!(
+        zero_failure_upper_bound(TABLE_IV_DEFAULT_TRIALS, TABLE_IV_CONFIDENCE)
+            < TARGET_FAILURE_RATE,
+        "the default zero-failure run must place the one-sided 95% upper bound below 1e-3"
+    );
+}
+
+#[test]
 #[ignore = "manual paper coding-efficiency reproduction"]
 fn report_paper_coding_efficiency_failure_rates() {
     let trials = std::env::var("METTLE_TABLE_IV_TRIALS")
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(4096);
+        .unwrap_or(TABLE_IV_DEFAULT_TRIALS);
     let name_filter = std::env::var("METTLE_TABLE_IV_FILTER").ok();
 
     for case in CODING_EFFICIENCY_CASES {
@@ -1152,18 +1339,28 @@ fn report_paper_coding_efficiency_failure_rates() {
         {
             continue;
         }
+        let mettle_source_count = mettle_table_iv_source_count();
+        let geometry = case_geometry(case, mettle_source_count);
         let mettle_estimate = mettle_estimated_failure_rate(case, trials);
         let raptorq_estimate = raptorq_estimated_failure_rate(case, trials);
-        let mettle_source_count = mettle_table_iv_source_count();
         let expected_isolated_sources =
             expected_bec_isolated_sources(case, mettle_source_count).unwrap_or(f64::NAN);
+        let zero_failure_upper_95 = if mettle_estimate.failures == 0 {
+            zero_failure_upper_bound(mettle_estimate.trials, TABLE_IV_CONFIDENCE)
+        } else {
+            f64::NAN
+        };
         eprintln!(
-            "channel={} mettle_overhead={:.4}% mettle_stall_failures={}/{} mettle_stall_failure_rate={:.6} mettle_local_residual_events={}/{} mettle_isolated_error_floor_events={}/{} mettle_avg_non_isolated_residual_sources_per_trial={:.3} mettle_max_non_isolated_residual_sources={} mettle_avg_isolated_sources_per_trial={:.3} mettle_max_isolated_sources={} mettle_expected_bec_isolated_sources={:.3} raptorq_k={} raptorq_overhead={:.4}% raptorq_failures={}/{} raptorq_failure_rate={:.6} target={:.6}",
+            "channel={} mettle_target_total_overhead={:.4}% mettle_interior_c={:.4}% mettle_terminal_symbols={} mettle_actual_total_overhead={:.4}% mettle_stall_failures={}/{} mettle_stall_failure_rate={:.6} mettle_zero_failure_upper_95={:.6} mettle_local_residual_events={}/{} mettle_isolated_error_floor_events={}/{} mettle_avg_non_isolated_residual_sources_per_trial={:.3} mettle_max_non_isolated_residual_sources={} mettle_avg_isolated_sources_per_trial={:.3} mettle_max_isolated_sources={} mettle_expected_bec_isolated_sources={:.3} raptorq_k={} raptorq_overhead={:.4}% raptorq_failures={}/{} raptorq_failure_rate={:.6} target={:.6}",
             case.name,
-            case.mettle_overhead_ratio.to_f64() * 100.0,
+            case.mettle_target_total_overhead.to_f64() * 100.0,
+            geometry.interior_overhead.to_f64() * 100.0,
+            geometry.terminal_symbol_count,
+            actual_total_overhead(mettle_source_count, geometry.terminal_symbol_count) * 100.0,
             mettle_estimate.failures,
             mettle_estimate.trials,
             mettle_estimate.rate(),
+            zero_failure_upper_95,
             mettle_estimate.local_residual_events,
             mettle_estimate.trials,
             mettle_estimate.isolated_error_floor_events,
@@ -1225,21 +1422,29 @@ fn report_mettle_bec_overhead_probe() {
         .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
 
     eprintln!(
-        "loss,nominal_overhead_pct,actual_tx_packets,actual_overhead_pct,trials,stall_failures,stall_failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
+        "loss,target_total_overhead_pct,interior_c_pct,actual_tx_packets,actual_total_overhead_pct,trials,stall_failures,stall_failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
     );
     for overhead in overheads {
+        let geometry = match solve_mettle_transmission_geometry(source_count, overhead) {
+            Ok(geometry) => geometry,
+            Err(error) => {
+                eprintln!(
+                    "# skipped target_total_overhead={:.4}% K={} reason={error:?}",
+                    overhead.to_f64() * 100.0,
+                    source_count,
+                );
+                continue;
+            }
+        };
         let case = CodingEfficiencyCase {
             name: "BEC-probe",
             channel: Channel::Bec {
                 erasure_probability: loss,
             },
-            mettle_overhead_ratio: overhead,
+            mettle_target_total_overhead: overhead,
             raptorq_k: 0,
             raptorq_overhead_ratio: Rational::new(1, 1),
         };
-        let params = mettle_params(overhead);
-        let packet_count = terminal_departure_end_exclusive(params, source_count as u64) as usize;
-        let actual_overhead = packet_count as f64 / source_count as f64 - 1.0;
         let estimate = mettle_graph_estimated_failure_rate(
             case,
             trials,
@@ -1251,11 +1456,12 @@ fn report_mettle_bec_overhead_probe() {
             expected_bec_isolated_sources(case, source_count).unwrap_or(f64::NAN);
 
         eprintln!(
-            "{:.6},{:.4},{},{:.4},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
+            "{:.6},{:.4},{:.4},{},{:.4},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
             loss.to_f64(),
             overhead.to_f64() * 100.0,
-            packet_count,
-            actual_overhead * 100.0,
+            geometry.interior_overhead.to_f64() * 100.0,
+            geometry.terminal_symbol_count,
+            actual_total_overhead(source_count, geometry.terminal_symbol_count) * 100.0,
             estimate.trials,
             estimate.failures,
             estimate.rate(),
@@ -1314,7 +1520,7 @@ fn report_paper_style_efficiency_surface() {
     let run_raptorq = codec_enabled("PAPER_STYLE_EFFICIENCY_CODECS", "raptorq");
 
     eprintln!(
-        "metric,codec,k,symbol_size,loss,nominal_overhead_pct,actual_tx_packets,actual_overhead_pct,trials,successes,failures,failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
+        "metric,codec,k,symbol_size,loss,target_total_overhead_pct,interior_c_pct,actual_tx_packets,actual_total_overhead_pct,trials,successes,failures,failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
     );
     for &k in &ks {
         for &loss in &losses {
@@ -1323,53 +1529,61 @@ fn report_paper_style_efficiency_surface() {
                     erasure_probability: loss,
                 };
                 if run_mettle {
-                    let mettle_case = CodingEfficiencyCase {
-                        name: "paper-style-surface",
-                        channel,
-                        mettle_overhead_ratio: overhead,
-                        raptorq_k: 0,
-                        raptorq_overhead_ratio: Rational::new(1, 1),
-                    };
-                    let mettle_params = mettle_params(overhead);
-                    let mettle_tx_packets =
-                        terminal_departure_end_exclusive(mettle_params, k as u64) as usize;
-                    let mettle_actual_overhead = mettle_tx_packets as f64 / k as f64 - 1.0;
-                    let mettle_estimate = mettle_graph_estimated_failure_rate(
-                        mettle_case,
-                        trials,
-                        k,
-                        false,
-                        local_residual_source_limit,
-                    );
-                    let mettle_expected_isolated =
-                        expected_bec_isolated_sources(mettle_case, k).unwrap_or(f64::NAN);
-                    eprintln!(
-                        "paper_style,mettle,{},{},{:.6},{:.4},{},{:.4},{},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
-                        k,
-                        PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE,
-                        loss.to_f64(),
-                        overhead.to_f64() * 100.0,
-                        mettle_tx_packets,
-                        mettle_actual_overhead * 100.0,
-                        mettle_estimate.trials,
-                        mettle_estimate.trials - mettle_estimate.failures,
-                        mettle_estimate.failures,
-                        mettle_estimate.rate(),
-                        mettle_estimate.local_residual_events,
-                        mettle_estimate.isolated_error_floor_events,
-                        mettle_estimate.avg_non_isolated_residual_sources_per_trial(),
-                        mettle_estimate.non_isolated_residual_sources_max,
-                        mettle_estimate.avg_isolated_sources_per_trial(),
-                        mettle_estimate.isolated_sources_max,
-                        mettle_expected_isolated,
-                    );
+                    match solve_mettle_transmission_geometry(k, overhead) {
+                        Ok(geometry) => {
+                            let mettle_case = CodingEfficiencyCase {
+                                name: "paper-style-surface",
+                                channel,
+                                mettle_target_total_overhead: overhead,
+                                raptorq_k: 0,
+                                raptorq_overhead_ratio: Rational::new(1, 1),
+                            };
+                            let mettle_estimate = mettle_graph_estimated_failure_rate(
+                                mettle_case,
+                                trials,
+                                k,
+                                false,
+                                local_residual_source_limit,
+                            );
+                            let mettle_expected_isolated =
+                                expected_bec_isolated_sources(mettle_case, k).unwrap_or(f64::NAN);
+                            eprintln!(
+                                "paper_style,mettle,{},{},{:.6},{:.4},{:.4},{},{:.4},{},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
+                                k,
+                                PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE,
+                                loss.to_f64(),
+                                overhead.to_f64() * 100.0,
+                                geometry.interior_overhead.to_f64() * 100.0,
+                                geometry.terminal_symbol_count,
+                                actual_total_overhead(k, geometry.terminal_symbol_count) * 100.0,
+                                mettle_estimate.trials,
+                                mettle_estimate.trials - mettle_estimate.failures,
+                                mettle_estimate.failures,
+                                mettle_estimate.rate(),
+                                mettle_estimate.local_residual_events,
+                                mettle_estimate.isolated_error_floor_events,
+                                mettle_estimate.avg_non_isolated_residual_sources_per_trial(),
+                                mettle_estimate.non_isolated_residual_sources_max,
+                                mettle_estimate.avg_isolated_sources_per_trial(),
+                                mettle_estimate.isolated_sources_max,
+                                mettle_expected_isolated,
+                            );
+                        }
+                        Err(error) => eprintln!(
+                            "paper_style,mettle,{},{},{:.6},{:.4},unattainable_tail_floor,unattainable_tail_floor,unattainable_tail_floor,0,0,0,unattainable_tail_floor,0,0,0.000,0,0.000,0,{error:?}",
+                            k,
+                            PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE,
+                            loss.to_f64(),
+                            overhead.to_f64() * 100.0,
+                        ),
+                    }
                 }
 
                 if run_raptorq && k <= 56_403 {
                     let raptorq_case = CodingEfficiencyCase {
                         name: "paper-style-surface",
                         channel,
-                        mettle_overhead_ratio: Rational::new(1, 1),
+                        mettle_target_total_overhead: Rational::new(1, 1),
                         raptorq_k: k,
                         raptorq_overhead_ratio: overhead,
                     };
@@ -1377,7 +1591,7 @@ fn report_paper_style_efficiency_surface() {
                     let raptorq_actual_overhead = raptorq_tx_packets as f64 / k as f64 - 1.0;
                     let raptorq_estimate = raptorq_estimated_failure_rate(raptorq_case, trials);
                     eprintln!(
-                        "paper_style,raptorq,{},{},{:.6},{:.4},{},{:.4},{},{},{},{:.6},0,0,0.000,0,0.000,0,nan",
+                        "paper_style,raptorq,{},{},{:.6},{:.4},not_applicable,{},{:.4},{},{},{},{:.6},0,0,0.000,0,0.000,0,nan",
                         k,
                         PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE,
                         loss.to_f64(),
@@ -1391,7 +1605,7 @@ fn report_paper_style_efficiency_surface() {
                     );
                 } else if run_raptorq {
                     eprintln!(
-                        "paper_style,raptorq,{},{},{:.6},{:.4},unsupported_single_block,unsupported_single_block,{trials},unsupported_single_block,unsupported_single_block,unsupported_single_block,0,0,0.000,0,0.000,0,nan",
+                        "paper_style,raptorq,{},{},{:.6},{:.4},not_applicable,unsupported_single_block,unsupported_single_block,{trials},unsupported_single_block,unsupported_single_block,unsupported_single_block,0,0,0.000,0,0.000,0,nan",
                         k,
                         PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE,
                         loss.to_f64(),
