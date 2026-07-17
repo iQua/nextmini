@@ -62,3 +62,9 @@ Verdict: **APPROVED, including the production NO-GO on isolated credit. W3 may p
    reconsideration condition 2.
 4. Control/data asymmetry experiments (ack incast, reverse-path bursts against BlockAck cadence)
    fold into W3 per the plan.
+
+## Reproduction confirmation (appended)
+
+The independent full-sweep reproduction completed: `trials.csv`, `decision-table.csv`,
+`decisive-summary.csv`, and `critical-paths.csv` (9,216 executions / 56,448 completion rows) are
+all byte-identical to the committed artifacts. Verification is complete.
