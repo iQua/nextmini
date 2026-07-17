@@ -39,9 +39,22 @@ impl W1SourceProtocol {
         ready_at_ns: u64,
         timing: CarouselTiming,
     ) -> Result<Self, W1SourceBuildError> {
+        Self::new_with_ack_units(kind, source_symbols, quotas, peers, ready_at_ns, timing, 1)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_ack_units(
+        kind: ProtocolKind,
+        source_symbols: usize,
+        quotas: Vec<usize>,
+        peers: &[u64],
+        ready_at_ns: u64,
+        timing: CarouselTiming,
+        ack_progress_units: u64,
+    ) -> Result<Self, W1SourceBuildError> {
         Ok(match kind {
             ProtocolKind::PooledCarousel => Self::Carousel(CarouselSender::new(
-                1,
+                ack_progress_units,
                 peers.iter().copied(),
                 ready_at_ns,
                 timing,

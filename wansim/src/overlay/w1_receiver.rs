@@ -40,16 +40,42 @@ impl W1ReceiverProtocol {
         timing: CarouselTiming,
         active: bool,
     ) -> Result<Self, CarouselConfigError> {
+        Self::new_with_ack_units(
+            kind,
+            peer_id,
+            source_symbols,
+            quotas,
+            ready_at_ns,
+            timing,
+            active,
+            1,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_with_ack_units(
+        kind: ProtocolKind,
+        peer_id: u64,
+        source_symbols: usize,
+        quotas: Vec<usize>,
+        ready_at_ns: u64,
+        timing: CarouselTiming,
+        active: bool,
+        ack_progress_units: u64,
+    ) -> Result<Self, CarouselConfigError> {
         if !active {
             return Ok(Self::Inactive);
         }
         Ok(match kind {
-            ProtocolKind::PooledCarousel => Self::Carousel(CarouselReceiver::new(
-                peer_id,
-                source_symbols,
-                ready_at_ns,
-                timing,
-            )?),
+            ProtocolKind::PooledCarousel => {
+                Self::Carousel(CarouselReceiver::new_with_total_blocks(
+                    peer_id,
+                    source_symbols,
+                    ready_at_ns,
+                    timing,
+                    ack_progress_units,
+                )?)
+            }
             ProtocolKind::PooledRounds => Self::Rounds(RoundsReceiver::new(source_symbols)),
             ProtocolKind::EqualSplitStriping
             | ProtocolKind::RateProportionalStriping

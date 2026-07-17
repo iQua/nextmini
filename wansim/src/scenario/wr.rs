@@ -29,6 +29,8 @@ const BACKGROUND_COUNT: usize = 8;
 const BACKBONE_COMPONENT: &str = "wr_regional_backbone";
 const BACKBONE_MAILBOX: &str = "wr_regional_backbone";
 const BACKBONE_MAILBOX_CAPACITY: usize = 1_048_576;
+const PRODUCTION_DEFAULT_BLOCK_BYTES: usize = 8_500;
+const FRAME_PAYLOAD_BYTES: usize = 508;
 const SOURCE_COMPONENTS: [&str; MAX_SESSIONS] = ["wr_s0_source", "wr_s1_source"];
 const SOURCE_MAILBOXES: [&str; MAX_SESSIONS] = ["wr_s0_source", "wr_s1_source"];
 const RELAY_COMPONENTS: [[[&str; 2]; TREE_COUNT]; MAX_SESSIONS] = [
@@ -387,17 +389,18 @@ fn socket_config() -> Result<SocketPairConfig, WrRunError> {
 }
 
 fn carousel_timing(multiplier: u8) -> CarouselTiming {
-    // Encoded as {1,2,4} = {0.5x,1x,2x}; only feedback cadence changes.
+    // Encoded as {1,2,4} = {0.5x,1x,2x}. The 1x values mirror the production
+    // defaults in dataplane/src/node/config.rs; liveness clocks do not scale.
     let scale = u64::from(multiplier);
     CarouselTiming {
-        ack_debounce_ns: 250_000 * scale,
-        ack_heartbeat_ns: 2_500_000 * scale,
-        ack_probe_interval_ns: 20_000_000,
-        peer_silence_timeout_ns: 1_000_000_000,
-        peer_stall_timeout_ns: 8_000_000_000,
-        receiver_passive_window_ns: 9_000_000_000,
+        ack_debounce_ns: 4_000_000 * scale,
+        ack_heartbeat_ns: 150_000_000 * scale,
+        ack_probe_interval_ns: 250_000_000,
+        peer_silence_timeout_ns: 3_000_000_000,
+        peer_stall_timeout_ns: 15_000_000_000,
+        receiver_passive_window_ns: 17_000_000_000,
         session_complete_repeats: 3,
-        session_complete_interval_ns: 1_000_000,
+        session_complete_interval_ns: 20_000_000,
     }
 }
 
@@ -436,13 +439,14 @@ fn build_session(
     let streams = [stream0?, stream1?];
     let peer_ids = [1_u64, 2, 3];
     let quotas = quotas(config)?;
-    let protocol = W1SourceProtocol::new(
+    let protocol = W1SourceProtocol::new_with_ack_units(
         config.protocol.endpoint_kind(),
         config.source_symbols,
         quotas.clone(),
         &peer_ids,
         0,
         timing,
+        ack_progress_units(config.source_symbols)?,
     )
     .map_err(|error| WrRunError::Construction(error.to_string()))?;
     let downlinks: Vec<_> = peer_ids.iter().map(|_| ControlStream::default()).collect();
@@ -526,7 +530,7 @@ fn build_session(
     };
     let mut receivers = Vec::with_capacity(RECEIVER_COUNT);
     for receiver in 0..RECEIVER_COUNT {
-        let protocol = W1ReceiverProtocol::new(
+        let protocol = W1ReceiverProtocol::new_with_ack_units(
             config.protocol.endpoint_kind(),
             peer_ids[receiver],
             config.source_symbols,
@@ -534,6 +538,7 @@ fn build_session(
             0,
             timing,
             true,
+            ack_progress_units(config.source_symbols)?,
         )
         .map_err(|error| WrRunError::Construction(error.to_string()))?;
         let hop = receiver_hop(receiver);
@@ -585,6 +590,12 @@ fn build_session(
             .map(|_| Mailbox::with_capacity(MAILBOX_CAPACITY))
             .collect(),
     })
+}
+
+fn ack_progress_units(source_symbols: usize) -> Result<u64, WrRunError> {
+    let symbols_per_default_block = PRODUCTION_DEFAULT_BLOCK_BYTES.div_ceil(FRAME_PAYLOAD_BYTES);
+    u64::try_from(source_symbols.div_ceil(symbols_per_default_block))
+        .map_err(|_| WrRunError::Geometry)
 }
 
 fn quotas(config: &WrRunConfig) -> Result<Vec<usize>, WrRunError> {
@@ -1463,6 +1474,25 @@ mod tests {
                 .any(|row| row.background_flow_directions > 0)
         );
         assert_eq!(geometry.config.routes.len(), 48);
+    }
+
+    #[test]
+    fn wr_progress_geometry_and_one_x_timing_mirror_production_defaults() {
+        assert_eq!(ack_progress_units(8_192).expect("units"), 482);
+        assert_eq!(ack_progress_units(65_536).expect("units"), 3_856);
+        assert_eq!(
+            carousel_timing(2),
+            CarouselTiming {
+                ack_debounce_ns: 8_000_000,
+                ack_heartbeat_ns: 300_000_000,
+                ack_probe_interval_ns: 250_000_000,
+                peer_silence_timeout_ns: 3_000_000_000,
+                peer_stall_timeout_ns: 15_000_000_000,
+                receiver_passive_window_ns: 17_000_000_000,
+                session_complete_repeats: 3,
+                session_complete_interval_ns: 20_000_000,
+            }
+        );
     }
 
     #[test]

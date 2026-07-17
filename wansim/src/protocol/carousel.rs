@@ -254,6 +254,7 @@ impl CarouselSender {
 pub struct CarouselReceiver {
     peer_id: u64,
     source_symbols: usize,
+    total_blocks: u64,
     timing: CarouselTiming,
     innovative: BTreeSet<u64>,
     state: CarouselReceiverState,
@@ -271,10 +272,24 @@ impl CarouselReceiver {
         ready_at_ns: u64,
         timing: CarouselTiming,
     ) -> Result<Self, CarouselConfigError> {
+        Self::new_with_total_blocks(peer_id, source_symbols, ready_at_ns, timing, 1)
+    }
+
+    pub fn new_with_total_blocks(
+        peer_id: u64,
+        source_symbols: usize,
+        ready_at_ns: u64,
+        timing: CarouselTiming,
+        total_blocks: u64,
+    ) -> Result<Self, CarouselConfigError> {
         let timing = timing.validate()?;
+        if total_blocks == 0 {
+            return Err(CarouselConfigError::ZeroProgressUnits);
+        }
         Ok(Self {
             peer_id,
             source_symbols,
+            total_blocks,
             timing,
             innovative: BTreeSet::new(),
             state: CarouselReceiverState::Active,
@@ -358,13 +373,19 @@ impl CarouselReceiver {
     }
 
     fn snapshot(&self) -> BlockAck {
-        if self.state == CarouselReceiverState::LocallyComplete
+        let completed_watermark = if self.state == CarouselReceiverState::LocallyComplete
             || (self.state == CarouselReceiverState::Finished && self.local_completion_ns.is_some())
         {
-            BlockAck::complete(1)
+            self.total_blocks
         } else {
-            BlockAck::empty()
-        }
+            u64::try_from(self.rank())
+                .unwrap_or(u64::MAX)
+                .saturating_mul(self.total_blocks)
+                / u64::try_from(self.source_symbols)
+                    .unwrap_or(u64::MAX)
+                    .max(1)
+        };
+        BlockAck::complete(completed_watermark)
     }
 }
 
@@ -374,6 +395,8 @@ pub enum CarouselConfigError {
     ZeroDuration(&'static str),
     #[error("session_complete_repeats must be nonzero")]
     ZeroCompletionRepeats,
+    #[error("carousel acknowledgement progress units must be nonzero")]
+    ZeroProgressUnits,
     #[error("peer stall timeout must be longer than peer silence timeout")]
     StallNotLongerThanSilence,
     #[error("receiver passive window must exceed the sender stall-abort budget")]
@@ -431,6 +454,30 @@ mod tests {
             }
             assert_eq!(completion.snapshot(), &BlockAck::complete(6));
         }
+    }
+
+    #[test]
+    fn multi_block_receiver_reports_monotone_intermediate_progress() {
+        let mut receiver =
+            CarouselReceiver::new_with_total_blocks(1, 8, 0, timing(), 4).expect("receiver");
+        assert!(receiver.observe_symbol(0, 1));
+        assert!(receiver.observe_symbol(1, 2));
+        assert_eq!(
+            receiver.poll(7),
+            Some(ControlFrame::BlockAck(BlockAck::complete(1)))
+        );
+        for symbol in 2..8 {
+            assert!(receiver.observe_symbol(symbol, 10 + symbol));
+        }
+        assert_eq!(receiver.snapshot(), BlockAck::complete(4));
+    }
+
+    #[test]
+    fn receiver_rejects_zero_ack_progress_units() {
+        assert_eq!(
+            CarouselReceiver::new_with_total_blocks(1, 8, 0, timing(), 0).unwrap_err(),
+            CarouselConfigError::ZeroProgressUnits
+        );
     }
 
     #[test]
