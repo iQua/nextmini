@@ -255,7 +255,7 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
     scenario.validate()?;
     let topology = build_topology(&scenario.ordered_receivers(), scenario.fanout_degree);
     let geometry = scenario.buffer_geometry()?;
-    let recorder = Recorder::new(scenario.scenario_id.as_str(), scenario.master_seed);
+    let recorder = Recorder::new_compact_w2(scenario.scenario_id.as_str(), scenario.master_seed);
     let mailbox_tracker = MailboxTracker::default();
     let ownership = OwnershipLedger::default();
     let socket = SocketPairConfig::new(
@@ -495,16 +495,27 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
     let mut simulation = bench
         .init(MonotonicTime::EPOCH)
         .map_err(|error| W2RunError::Simulation(error.to_string()))?;
-    simulation
-        .step_until(Duration::from_nanos(scenario.simulation_end_ns))
-        .map_err(|error| W2RunError::Simulation(error.to_string()))?;
+    let observation_quantum_ns = 10_000_000_u64;
+    let mut elapsed_ns = 0_u64;
+    while elapsed_ns < scenario.simulation_end_ns {
+        let step_ns = observation_quantum_ns.min(scenario.simulation_end_ns - elapsed_ns);
+        simulation
+            .step_until(Duration::from_nanos(step_ns))
+            .map_err(|error| W2RunError::Simulation(error.to_string()))?;
+        elapsed_ns = elapsed_ns.saturating_add(step_ns);
+        if recorder.event_count("protocol_local_complete") >= scenario.receiver_count
+            && recorder.event_count("protocol_sender_complete") == 1
+        {
+            break;
+        }
+    }
     if let Some(failure) = recorder.failure() {
         return Err(W2RunError::Model(failure));
     }
     let mailbox_high_water = mailbox_tracker.high_water_marks();
     for (&mailbox, &high_water) in &mailbox_high_water {
         recorder.record(
-            scenario.simulation_end_ns,
+            elapsed_ns,
             mailbox,
             "mailbox_high_water",
             0,
