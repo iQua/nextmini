@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Protocol version with manifest-negotiated METTLE object streams.
-pub const LOSSLESS_SESSION_VERSION: u8 = 9;
+/// Protocol version with METTLE repair-epoch departure checkpoints.
+pub const LOSSLESS_SESSION_VERSION: u8 = 10;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -27,6 +27,7 @@ pub enum LosslessSessionCtrlKind {
     BlockAck = 7,
     AckProbe = 8,
     SessionComplete = 9,
+    DepartureCheckpoint = 10,
 }
 
 #[repr(u8)]
@@ -459,7 +460,6 @@ pub enum LosslessSessionValidationError {
         decoded_source_watermark: u32,
         stream_source_count: u32,
     },
-    MettleMissingBinRangesEmpty,
     MettleMissingBinRangeInvalid {
         start_bin_id: u32,
         end_bin_id: u32,
@@ -471,6 +471,12 @@ pub enum LosslessSessionValidationError {
     },
     CarouselControlRequiresCarouselMode,
     RoundsControlRequiresRoundsMode,
+    DepartureCheckpointRequiresMettleCarousel,
+    DepartureCheckpointBinZero,
+    DepartureCheckpointStreamOutOfRange {
+        stream_id: u64,
+        stream_count: u64,
+    },
 }
 
 pub const MAX_NEED_RANGES: usize = u8::MAX as usize;
@@ -498,11 +504,27 @@ pub struct LosslessSessionBlockSymbol {
 /// `AckProbe`, and one-way `SessionComplete` controls.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
-    Manifest { manifest: LosslessSessionManifest },
+    Manifest {
+        manifest: LosslessSessionManifest,
+    },
     Ready,
-    SourceDone { round_id: u32 },
-    Need { round_id: u32, report: NeedReport },
-    BlockAck { ack: BlockAck },
-    AckProbe { target_peer_id: u64 },
+    SourceDone {
+        round_id: u32,
+    },
+    Need {
+        round_id: u32,
+        report: NeedReport,
+    },
+    BlockAck {
+        ack: BlockAck,
+    },
+    AckProbe {
+        target_peer_id: u64,
+    },
     SessionComplete,
+    DepartureCheckpoint {
+        stream_id: u64,
+        repair_epoch: u32,
+        departure_bin_exclusive: u32,
+    },
 }

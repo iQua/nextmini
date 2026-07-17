@@ -46,6 +46,8 @@ fn short_timing() -> CarouselRuntimeConfig {
         receiver_passive_window: Duration::from_millis(750),
         session_complete_repeats: 1,
         session_complete_interval: Duration::from_millis(1),
+        mettle_repair_reorder_budget: Duration::from_millis(25),
+        mettle_repair_no_progress_epochs: 3,
     }
 }
 

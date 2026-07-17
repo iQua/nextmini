@@ -85,9 +85,6 @@ impl MettleObjectStreamGeometry {
 
 impl MettleStallEvidence {
     pub fn validate(&self) -> Result<(), LosslessSessionValidationError> {
-        if self.missing_bin_ranges.is_empty() {
-            return Err(LosslessSessionValidationError::MettleMissingBinRangesEmpty);
-        }
         if self.missing_bin_ranges.len() > MAX_METTLE_MISSING_BIN_RANGES {
             return Err(
                 LosslessSessionValidationError::TooManyMettleMissingBinRanges {
@@ -622,6 +619,39 @@ impl LosslessSessionManifest {
                     Err(LosslessSessionValidationError::CarouselControlRequiresCarouselMode)
                 }
             }
+            LosslessSessionControl::DepartureCheckpoint {
+                stream_id,
+                departure_bin_exclusive,
+                ..
+            } => {
+                let LosslessSessionMode::Fec(fec) = &self.mode else {
+                    return Err(
+                        LosslessSessionValidationError::DepartureCheckpointRequiresMettleCarousel,
+                    );
+                };
+                if fec.scheme_kind() != Some(FecScheme::Mettle)
+                    || fec.feedback_mode != FecFeedbackMode::Carousel
+                {
+                    return Err(
+                        LosslessSessionValidationError::DepartureCheckpointRequiresMettleCarousel,
+                    );
+                }
+                let geometry = fec
+                    .mettle_object_stream
+                    .ok_or(LosslessSessionValidationError::MettleObjectStreamGeometryRequired)?;
+                if geometry.stream_source_count(*stream_id).is_none() {
+                    return Err(
+                        LosslessSessionValidationError::DepartureCheckpointStreamOutOfRange {
+                            stream_id: *stream_id,
+                            stream_count: geometry.stream_count,
+                        },
+                    );
+                }
+                if *departure_bin_exclusive == 0 {
+                    return Err(LosslessSessionValidationError::DepartureCheckpointBinZero);
+                }
+                Ok(())
+            }
         }
     }
 }
@@ -634,6 +664,16 @@ impl LosslessSessionControl {
             | Self::SourceDone { .. }
             | Self::AckProbe { .. }
             | Self::SessionComplete => Ok(()),
+            Self::DepartureCheckpoint {
+                departure_bin_exclusive,
+                ..
+            } => {
+                if *departure_bin_exclusive == 0 {
+                    Err(LosslessSessionValidationError::DepartureCheckpointBinZero)
+                } else {
+                    Ok(())
+                }
+            }
             Self::Need { report, .. } => report.validate(),
             Self::BlockAck { ack } => ack.validate(),
         }
@@ -862,6 +902,13 @@ mod tests {
         manifest
             .validate_control(&valid)
             .expect("final stream watermark is in range");
+        manifest
+            .validate_control(&LosslessSessionControl::DepartureCheckpoint {
+                stream_id: 2,
+                repair_epoch: 4,
+                departure_bin_exclusive: 9,
+            })
+            .expect("checkpoint stream is negotiated");
 
         let too_far = LosslessSessionControl::BlockAck {
             ack: BlockAck::MettleStream {
@@ -879,6 +926,14 @@ mod tests {
                 }
             )
         );
+        assert!(matches!(
+            manifest.validate_control(&LosslessSessionControl::DepartureCheckpoint {
+                stream_id: 3,
+                repair_epoch: 4,
+                departure_bin_exclusive: 9,
+            }),
+            Err(LosslessSessionValidationError::DepartureCheckpointStreamOutOfRange { .. })
+        ));
     }
 
     #[test]

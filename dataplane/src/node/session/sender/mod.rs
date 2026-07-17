@@ -591,7 +591,8 @@ impl SenderShared {
             LosslessSessionControl::Manifest { .. }
             | LosslessSessionControl::SourceDone { .. }
             | LosslessSessionControl::AckProbe { .. }
-            | LosslessSessionControl::SessionComplete => {}
+            | LosslessSessionControl::SessionComplete
+            | LosslessSessionControl::DepartureCheckpoint { .. } => {}
             LosslessSessionControl::BlockAck { ack } => {
                 let Some(peer_id) = frame.peer_id else {
                     warn!(
@@ -1263,6 +1264,8 @@ mod tests {
             receiver_passive_window: Duration::from_millis(70),
             session_complete_repeats: 1,
             session_complete_interval: Duration::from_millis(1),
+            mettle_repair_reorder_budget: Duration::from_millis(10),
+            mettle_repair_no_progress_epochs: 3,
         }
     }
 

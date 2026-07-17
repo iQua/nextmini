@@ -208,6 +208,13 @@ impl Decoder {
     }
 }
 
+/// Return the exclusive terminal bin id for a finite stream when it fits the
+/// lossless wire namespace.
+#[must_use]
+pub fn terminal_bin_count(params: MettleParams, terminal_source_count: u64) -> Option<u32> {
+    u32::try_from(params.terminal_departure_end_exclusive(terminal_source_count)).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use std::num::NonZeroUsize;

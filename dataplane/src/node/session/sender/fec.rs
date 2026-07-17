@@ -1,5 +1,5 @@
 use bytes::Bytes;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
@@ -106,6 +106,32 @@ struct MettleCarouselSenderState {
     current_stream_id: u64,
     stream: Option<MettleObjectSymbolStream>,
     peer_completion: BTreeMap<usize, MettlePeerStreamCompletion>,
+    bin_cache: BTreeMap<u32, Bytes>,
+    initial_departure_complete: bool,
+    repair: MettleRepairEpochState,
+}
+
+#[derive(Default)]
+struct MettleRepairEpochState {
+    repair_epoch: u32,
+    checkpoint_queued: bool,
+    last_checkpoint_queued_at: Option<tokio::time::Instant>,
+    reported_peers: BTreeSet<usize>,
+    requested_union: BTreeSet<u32>,
+    pending_bin_ids: VecDeque<u32>,
+    pending_is_full_replay: bool,
+    last_epoch_min_watermark: u32,
+    no_progress_epochs: u32,
+}
+
+impl MettleCarouselSenderState {
+    fn begin_stream(&mut self, stream_id: u64) {
+        self.current_stream_id = stream_id;
+        self.stream = None;
+        self.bin_cache.clear();
+        self.initial_departure_complete = false;
+        self.repair = MettleRepairEpochState::default();
+    }
 }
 
 #[derive(Default)]
@@ -532,6 +558,9 @@ impl FecSender {
                     current_stream_id: 0,
                     stream: None,
                     peer_completion: BTreeMap::new(),
+                    bin_cache: BTreeMap::new(),
+                    initial_departure_complete: false,
+                    repair: MettleRepairEpochState::default(),
                 })
             } else {
                 None
@@ -749,18 +778,34 @@ impl FecSender {
                     .mettle_carousel
                     .as_mut()
                     .expect("METTLE carousel state exists");
-                state.current_stream_id = match state.current_stream_id.checked_add(1) {
+                let next_stream_id = match state.current_stream_id.checked_add(1) {
                     Some(next) => next,
                     None => return SessionOutcome::Aborted,
                 };
-                state.stream = None;
+                state.begin_stream(next_stream_id);
                 pending = None;
                 continue;
             }
 
             if pending.is_none() {
+                if !self.prepare_mettle_repair_epoch(shared) {
+                    return SessionOutcome::Aborted;
+                }
                 pending = self.next_mettle_carousel_symbol(shared);
                 if pending.is_none() {
+                    if self.mettle_checkpoint_required(shared) {
+                        match self.try_send_mettle_checkpoint(shared) {
+                            SendSweepOutcome::Queued => continue,
+                            SendSweepOutcome::AllWouldBlock => {
+                                shared.metrics.record_backpressure_sweep();
+                                if !self.service_carousel_backpressure(shared, ctrl_rx).await {
+                                    return SessionOutcome::Aborted;
+                                }
+                                continue;
+                            }
+                            SendSweepOutcome::AllClosed => return SessionOutcome::Aborted,
+                        }
+                    }
                     let wait_started = tokio::time::Instant::now();
                     let waited = self.wait_for_carousel_ack(shared, ctrl_rx).await;
                     shared
@@ -846,19 +891,25 @@ impl FecSender {
                 SymbolKind::Source,
             ) {
                 SendSweepOutcome::Queued => {
-                    if !shared
-                        .metrics
-                        .record_sender_esi(symbol.block_id, symbol.symbol_id)
+                    let repair_emission = self
+                        .mettle_carousel
+                        .as_ref()
+                        .is_some_and(|state| state.initial_departure_complete);
+                    if !repair_emission
+                        && !shared
+                            .metrics
+                            .record_sender_esi(symbol.block_id, symbol.symbol_id)
                     {
                         return SessionOutcome::Aborted;
                     }
-                    let queued = self
-                        .mettle_carousel
-                        .as_mut()
-                        .and_then(|state| state.stream.as_mut())
-                        .is_some_and(|stream| stream.mark_queued(symbol.symbol_id));
+                    let queued = self.mark_mettle_symbol_queued(symbol.symbol_id);
                     if !queued {
                         return SessionOutcome::Aborted;
+                    }
+                    if repair_emission && let Some(state) = self.mettle_carousel.as_ref() {
+                        shared
+                            .metrics
+                            .record_mettle_retransmission(state.repair.pending_is_full_replay);
                     }
                     shared.mark_payload_emitted();
                     pending = None;
@@ -887,15 +938,29 @@ impl FecSender {
         if state.current_stream_id >= state.plan.stream_count() {
             return None;
         }
-        if state.stream.is_none() {
-            state.stream = Some(MettleObjectSymbolStream::new(
-                state.plan,
-                shared.session.session_id,
-                state.current_stream_id,
-                self.mettle_overhead,
-            )?);
-        }
-        let (symbol_id, payload) = state.stream.as_mut()?.next_symbol_payload(&shared.source)?;
+        let (symbol_id, payload) = if state.initial_departure_complete {
+            let symbol_id = *state.repair.pending_bin_ids.front()?;
+            (symbol_id, state.bin_cache.get(&symbol_id)?.clone())
+        } else {
+            if state.stream.is_none() {
+                state.stream = Some(MettleObjectSymbolStream::new(
+                    state.plan,
+                    shared.session.session_id,
+                    state.current_stream_id,
+                    self.mettle_overhead,
+                )?);
+            }
+            let Some((symbol_id, payload)) = state
+                .stream
+                .as_mut()
+                .and_then(|stream| stream.next_symbol_payload(&shared.source))
+            else {
+                state.initial_departure_complete = true;
+                return None;
+            };
+            state.bin_cache.insert(symbol_id, payload.clone());
+            (symbol_id, payload)
+        };
         Some(PendingCarouselSymbol {
             symbol: CarouselSymbol {
                 block_id: state.current_stream_id,
@@ -905,6 +970,200 @@ impl FecSender {
             payload,
             paced: false,
         })
+    }
+
+    fn mark_mettle_symbol_queued(&mut self, symbol_id: u32) -> bool {
+        let Some(state) = self.mettle_carousel.as_mut() else {
+            return false;
+        };
+        if !state.initial_departure_complete {
+            return state
+                .stream
+                .as_mut()
+                .is_some_and(|stream| stream.mark_queued(symbol_id));
+        }
+        if state.repair.pending_bin_ids.front().copied() != Some(symbol_id) {
+            return false;
+        }
+        state.repair.pending_bin_ids.pop_front();
+        true
+    }
+
+    fn prepare_mettle_repair_epoch(&mut self, shared: &super::SenderShared) -> bool {
+        let Some(state) = self.mettle_carousel.as_mut() else {
+            return false;
+        };
+        if !state.initial_departure_complete
+            || !state.repair.checkpoint_queued
+            || !state.repair.pending_bin_ids.is_empty()
+        {
+            return true;
+        }
+        let all_incomplete_reported = shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .filter(|peer_id| {
+                !state
+                    .peer_completion
+                    .get(peer_id)
+                    .is_some_and(|completion| {
+                        completion.stream_complete(state.plan, state.current_stream_id)
+                    })
+            })
+            .all(|peer_id| state.repair.reported_peers.contains(peer_id));
+        if !all_incomplete_reported {
+            return true;
+        }
+
+        let Some(source_count) = state.plan.stream_source_count(state.current_stream_id) else {
+            return false;
+        };
+        let min_watermark = shared
+            .active_quorum
+            .active_members()
+            .iter()
+            .map(|peer_id| {
+                state
+                    .peer_completion
+                    .get(peer_id)
+                    .filter(|completion| completion.has_ack)
+                    .map_or(0, |completion| {
+                        if completion.stream_id > state.current_stream_id {
+                            source_count
+                        } else if completion.stream_id == state.current_stream_id {
+                            completion.decoded_source_watermark.min(source_count)
+                        } else {
+                            0
+                        }
+                    })
+            })
+            .min()
+            .unwrap_or(source_count);
+        // One no-progress epoch is complete only after every still-incomplete
+        // frozen peer has reported against its checkpoint. The counter grows
+        // when the quorum-minimum committed watermark did not advance. The
+        // configured-th such epoch schedules a full cached-stream replay.
+        if min_watermark > state.repair.last_epoch_min_watermark {
+            state.repair.no_progress_epochs = 0;
+        } else {
+            state.repair.no_progress_epochs = match state.repair.no_progress_epochs.checked_add(1) {
+                Some(count) => count,
+                None => return false,
+            };
+        }
+        state.repair.last_epoch_min_watermark = min_watermark;
+
+        let full_replay =
+            state.repair.no_progress_epochs >= shared.carousel.mettle_repair_no_progress_epochs;
+        let requested = if full_replay {
+            state.bin_cache.keys().copied().collect::<VecDeque<_>>()
+        } else {
+            state
+                .repair
+                .requested_union
+                .iter()
+                .copied()
+                .collect::<VecDeque<_>>()
+        };
+        state.repair.repair_epoch = match state.repair.repair_epoch.checked_add(1) {
+            Some(epoch) => epoch,
+            None => return false,
+        };
+        state.repair.checkpoint_queued = false;
+        state.repair.last_checkpoint_queued_at = None;
+        state.repair.reported_peers.clear();
+        state.repair.requested_union.clear();
+        state.repair.pending_bin_ids = requested;
+        state.repair.pending_is_full_replay = full_replay;
+        if full_replay {
+            state.repair.no_progress_epochs = 0;
+        }
+        true
+    }
+
+    fn mettle_checkpoint_required(&self, shared: &super::SenderShared) -> bool {
+        self.mettle_carousel.as_ref().is_some_and(|state| {
+            state.initial_departure_complete
+                && state.repair.pending_bin_ids.is_empty()
+                && !state.bin_cache.is_empty()
+                && (!state.repair.checkpoint_queued
+                    || state.repair.last_checkpoint_queued_at.is_some_and(|last| {
+                        tokio::time::Instant::now().saturating_duration_since(last)
+                            >= shared.carousel.ack_probe_interval
+                    }))
+        })
+    }
+
+    fn try_send_mettle_checkpoint(&mut self, shared: &super::SenderShared) -> SendSweepOutcome {
+        let Some(state) = self.mettle_carousel.as_mut() else {
+            return SendSweepOutcome::AllClosed;
+        };
+        let Ok(departure_bin_exclusive) = u32::try_from(state.bin_cache.len()) else {
+            return SendSweepOutcome::AllClosed;
+        };
+        if departure_bin_exclusive == 0 {
+            return SendSweepOutcome::AllClosed;
+        }
+        let submission = control::try_send_control(
+            &shared.processors,
+            control::FrameRoute {
+                session_id: shared.session.session_id,
+                tree_id: None,
+                src_ip: shared.route.src_ip,
+                src_port: shared.route.src_port,
+                dst_ip: shared.route.dst_ip,
+                dst_port: shared.route.dst_port,
+            },
+            &nextmini_messages::lossless_session::LosslessSessionControl::DepartureCheckpoint {
+                stream_id: state.current_stream_id,
+                repair_epoch: state.repair.repair_epoch,
+                departure_bin_exclusive,
+            },
+        );
+        match submission.outcome {
+            SendOutcome::Queued => {
+                state.repair.checkpoint_queued = true;
+                state.repair.last_checkpoint_queued_at = Some(tokio::time::Instant::now());
+                SendSweepOutcome::Queued
+            }
+            SendOutcome::WouldBlock => SendSweepOutcome::AllWouldBlock,
+            SendOutcome::Closed => SendSweepOutcome::AllClosed,
+        }
+    }
+
+    fn record_mettle_repair_report(
+        &mut self,
+        peer_id: usize,
+        stream_id: u64,
+        evidence: &nextmini_messages::lossless_session::MettleStallEvidence,
+    ) {
+        let Some(state) = self.mettle_carousel.as_mut() else {
+            return;
+        };
+        if stream_id != state.current_stream_id
+            || !state.repair.checkpoint_queued
+            || evidence.repair_epoch != state.repair.repair_epoch
+        {
+            return;
+        }
+        let Ok(terminal_bin_count) = u32::try_from(state.bin_cache.len()) else {
+            return;
+        };
+        if evidence
+            .missing_bin_ranges
+            .iter()
+            .any(|range| range.end_bin_id > terminal_bin_count)
+        {
+            return;
+        }
+        state.repair.reported_peers.insert(peer_id);
+        for range in &evidence.missing_bin_ranges {
+            state
+                .repair
+                .requested_union
+                .extend(range.start_bin_id..range.end_bin_id);
+        }
     }
 
     /// Work-conserving RaptorQ carousel from protocol P6.
@@ -1885,7 +2144,15 @@ impl super::ModeHooks for FecSender {
         if self.feedback_mode != FecFeedbackMode::Carousel {
             return;
         }
-        let progress = match ack {
+        if let BlockAck::MettleStream {
+            stream_id,
+            stalled: Some(evidence),
+            ..
+        } = &ack
+        {
+            self.record_mettle_repair_report(peer_id, *stream_id, evidence);
+        }
+        let progress = match &ack {
             BlockAck::Blocks { .. } => self
                 .carousel_peer_completion
                 .entry(peer_id)
@@ -1903,7 +2170,7 @@ impl super::ModeHooks for FecSender {
                         .peer_completion
                         .entry(peer_id)
                         .or_default()
-                        .join(stream_id, decoded_source_watermark)
+                        .join(*stream_id, *decoded_source_watermark)
                 })
                 .unwrap_or(false),
             _ => false,
@@ -2234,7 +2501,8 @@ mod tests {
     use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
     use nextmini_messages::lossless_session::{
-        BlockAck, FecFeedbackMode, LosslessSessionControl, LosslessSessionFecMode, NeedBlock,
+        BlockAck, FecFeedbackMode, LosslessSessionControl, LosslessSessionFecMode,
+        MettleStallEvidence, MissingMettleBinRange, NeedBlock,
     };
 
     #[test]
@@ -3039,13 +3307,93 @@ mod tests {
             .mettle_carousel
             .as_mut()
             .expect("METTLE carousel state");
-        state.current_stream_id = 1;
-        state.stream = None;
+        state.begin_stream(1);
         let first_next_prefix = sender
             .next_mettle_carousel_symbol(&shared)
             .expect("next prefix has a first bin");
         assert_eq!(first_next_prefix.symbol.block_id, 1);
         assert_eq!(first_next_prefix.symbol.symbol_id, 0);
+    }
+
+    #[tokio::test]
+    async fn mettle_repair_epochs_dedupe_union_and_fallback_after_three_stalls() {
+        let object_geometry =
+            nextmini_messages::lossless_session::MettleObjectStreamGeometry::new(2, 4, 1, 4);
+        let manifest = LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(4, vec![7])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(object_geometry),
+            ),
+        };
+        let plan = BlockPlan::new(8, 8).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE carousel sender");
+        let mut shared = test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefgh"));
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+        let state = sender
+            .mettle_carousel
+            .as_mut()
+            .expect("METTLE carousel state");
+        state.initial_departure_complete = true;
+        state.bin_cache = (0..10)
+            .map(|bin_id| (bin_id, Bytes::from(vec![bin_id as u8; 2])))
+            .collect();
+        state.repair.checkpoint_queued = true;
+        state.peer_completion.insert(22, Default::default());
+
+        let targeted = MettleStallEvidence {
+            repair_epoch: 0,
+            missing_bin_ranges: vec![
+                MissingMettleBinRange {
+                    start_bin_id: 1,
+                    end_bin_id: 2,
+                },
+                MissingMettleBinRange {
+                    start_bin_id: 8,
+                    end_bin_id: 9,
+                },
+            ],
+        };
+        sender.record_mettle_repair_report(22, 0, &targeted);
+        sender.record_mettle_repair_report(22, 0, &targeted);
+        assert!(sender.prepare_mettle_repair_epoch(&shared));
+        assert_eq!(
+            sender
+                .mettle_carousel
+                .as_ref()
+                .expect("state")
+                .repair
+                .pending_bin_ids,
+            VecDeque::from([1, 8])
+        );
+
+        while let Some(symbol_id) = sender
+            .mettle_carousel
+            .as_ref()
+            .and_then(|state| state.repair.pending_bin_ids.front().copied())
+        {
+            assert!(sender.mark_mettle_symbol_queued(symbol_id));
+        }
+        for repair_epoch in 1..=2 {
+            let state = sender.mettle_carousel.as_mut().expect("state");
+            state.repair.checkpoint_queued = true;
+            sender.record_mettle_repair_report(
+                22,
+                0,
+                &MettleStallEvidence {
+                    repair_epoch,
+                    missing_bin_ranges: vec![],
+                },
+            );
+            assert!(sender.prepare_mettle_repair_epoch(&shared));
+        }
+        let repair = &sender.mettle_carousel.as_ref().expect("state").repair;
+        assert!(repair.pending_is_full_replay);
+        assert_eq!(repair.pending_bin_ids, (0..10).collect::<VecDeque<_>>());
     }
 
     fn test_manifest() -> LosslessSessionManifest {

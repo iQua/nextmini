@@ -785,6 +785,14 @@ pub struct LosslessConfig {
     #[serde(default = "default_mettle_decoder_max_concurrent")]
     pub mettle_decoder_max_concurrent: usize,
 
+    /// Time allowed for cross-tree payload reordering after a METTLE checkpoint.
+    #[serde(default = "default_mettle_repair_reorder_budget_ms")]
+    pub mettle_repair_reorder_budget_ms: u64,
+
+    /// Consecutive repair epochs without watermark growth before full replay.
+    #[serde(default = "default_mettle_repair_no_progress_epochs")]
+    pub mettle_repair_no_progress_epochs: u32,
+
     /// Number of Cloudcast stripes/partitions used to quantize tree weights.
     #[serde(default)]
     pub cloudcast_stripes: usize,
@@ -846,6 +854,8 @@ impl Default for LosslessConfig {
             mettle_default_coded_rate_den: 1,
             mettle_decoder_reservation_bytes: default_mettle_decoder_reservation_bytes(),
             mettle_decoder_max_concurrent: default_mettle_decoder_max_concurrent(),
+            mettle_repair_reorder_budget_ms: default_mettle_repair_reorder_budget_ms(),
+            mettle_repair_no_progress_epochs: default_mettle_repair_no_progress_epochs(),
             cloudcast_stripes: 0,
             cloudcast_stripe_tree_ids: Vec::new(),
             ingress_feature: Feature::Sequential,
@@ -927,6 +937,14 @@ const fn default_mettle_decoder_reservation_bytes() -> usize {
 
 const fn default_mettle_decoder_max_concurrent() -> usize {
     4
+}
+
+const fn default_mettle_repair_reorder_budget_ms() -> u64 {
+    250
+}
+
+const fn default_mettle_repair_no_progress_epochs() -> u32 {
+    3
 }
 
 #[allow(dead_code)]
@@ -1199,6 +1217,8 @@ mod tests {
         assert_eq!(lossless.mettle_default_coded_rate_den, 1);
         assert_eq!(lossless.mettle_decoder_reservation_bytes, 192 * 1024 * 1024);
         assert_eq!(lossless.mettle_decoder_max_concurrent, 4);
+        assert_eq!(lossless.mettle_repair_reorder_budget_ms, 250);
+        assert_eq!(lossless.mettle_repair_no_progress_epochs, 3);
         assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
         assert!(
             lossless.ingress_channel_backpressure,

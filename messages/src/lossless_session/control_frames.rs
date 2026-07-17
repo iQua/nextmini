@@ -82,6 +82,7 @@ fn control_body_len(control: &LosslessSessionControl) -> usize {
         },
         LosslessSessionControl::AckProbe { .. } => 8,
         LosslessSessionControl::SessionComplete => 0,
+        LosslessSessionControl::DepartureCheckpoint { .. } => 8 + 4 + 4,
     }
 }
 
@@ -291,6 +292,18 @@ fn encode_control_into<'a>(
             LosslessSessionCtrlKind::AckProbe as u8
         }
         LosslessSessionControl::SessionComplete => LosslessSessionCtrlKind::SessionComplete as u8,
+        LosslessSessionControl::DepartureCheckpoint {
+            stream_id,
+            repair_epoch,
+            departure_bin_exclusive,
+        } => {
+            let body_start = LosslessSessionHeader::LEN;
+            buf[body_start..body_start + 8].copy_from_slice(&stream_id.to_be_bytes());
+            buf[body_start + 8..body_start + 12].copy_from_slice(&repair_epoch.to_be_bytes());
+            buf[body_start + 12..body_start + 16]
+                .copy_from_slice(&departure_bin_exclusive.to_be_bytes());
+            LosslessSessionCtrlKind::DepartureCheckpoint as u8
+        }
     };
 
     LosslessSessionHeader {
@@ -524,7 +537,6 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                     if range_count > MAX_METTLE_MISSING_BIN_RANGES
                         || body.len()
                             != METTLE_ACK_FIXED_BODY_LEN + (range_count * METTLE_ACK_RANGE_LEN)
-                        || has_stall_evidence != (range_count > 0)
                     {
                         return None;
                     }
@@ -570,6 +582,16 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                 return None;
             }
             LosslessSessionControl::SessionComplete
+        }
+        x if x == LosslessSessionCtrlKind::DepartureCheckpoint as u8 => {
+            if body.len() != 16 {
+                return None;
+            }
+            LosslessSessionControl::DepartureCheckpoint {
+                stream_id: u64::from_be_bytes(body[0..8].try_into().ok()?),
+                repair_epoch: u32::from_be_bytes(body[8..12].try_into().ok()?),
+                departure_bin_exclusive: u32::from_be_bytes(body[12..16].try_into().ok()?),
+            }
         }
         _ => return None,
     };
@@ -668,8 +690,23 @@ mod tests {
                     }),
                 },
             },
+            LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 4,
+                    decoded_source_watermark: 9,
+                    stalled: Some(MettleStallEvidence {
+                        repair_epoch: 8,
+                        missing_bin_ranges: vec![],
+                    }),
+                },
+            },
             LosslessSessionControl::AckProbe { target_peer_id: 22 },
             LosslessSessionControl::SessionComplete,
+            LosslessSessionControl::DepartureCheckpoint {
+                stream_id: 3,
+                repair_epoch: 7,
+                departure_bin_exclusive: 4096,
+            },
         ];
 
         for ctrl in ctrls {
@@ -705,6 +742,21 @@ mod tests {
         assert_eq!(header.body_len, 0);
         assert_eq!(encoded.len(), LosslessSessionHeader::LEN);
         assert_eq!(decoded, LosslessSessionControl::SessionComplete);
+
+        let checkpoint = LosslessSessionControl::DepartureCheckpoint {
+            stream_id: 3,
+            repair_epoch: 7,
+            departure_bin_exclusive: 4096,
+        };
+        let encoded = encode_control(77, &checkpoint);
+        let (header, decoded) = decode_control(&encoded).expect("decode DepartureCheckpoint");
+        assert_eq!(header.body_len, 16);
+        assert_eq!(encoded.len(), LosslessSessionHeader::LEN + 16);
+        assert_eq!(decoded, checkpoint);
+
+        let mut truncated_checkpoint = encoded;
+        truncated_checkpoint.pop();
+        assert!(decode_control(&truncated_checkpoint).is_none());
 
         let mut empty_probe = encode_control(77, &LosslessSessionControl::SessionComplete);
         empty_probe[6] = LosslessSessionCtrlKind::AckProbe as u8;

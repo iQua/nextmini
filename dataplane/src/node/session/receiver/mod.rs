@@ -554,9 +554,19 @@ impl SessionReceiver {
     }
 
     fn next_carousel_ack_deadline(&self) -> Option<Instant> {
-        self.carousel_ack
+        let ack_deadline = self
+            .carousel_ack
             .as_ref()
-            .map(CarouselAckState::next_deadline)
+            .map(CarouselAckState::next_deadline);
+        let repair_deadline = match self.mode.as_ref() {
+            Some(ReceiverMode::MettleCarousel(mode)) => mode.repair_deadline(),
+            _ => None,
+        };
+        match (ack_deadline, repair_deadline) {
+            (Some(lhs), Some(rhs)) => Some(lhs.min(rhs)),
+            (Some(deadline), None) | (None, Some(deadline)) => Some(deadline),
+            (None, None) => None,
+        }
     }
 
     fn note_carousel_progress(&mut self) {
@@ -576,6 +586,9 @@ impl SessionReceiver {
             return;
         };
         self.shared.send_block_ack(&ack).await;
+        if let Some(ReceiverMode::MettleCarousel(mode)) = self.mode.as_mut() {
+            mode.note_ack_sent();
+        }
         if let Some(state) = self.carousel_ack.as_mut() {
             state.record_sent(Instant::now(), self.shared.cfg.carousel);
         }
@@ -612,6 +625,31 @@ impl SessionReceiver {
             LosslessSessionControl::SessionComplete => {
                 if self.is_carousel() && self.is_passive_complete() {
                     self.finish_session("session_complete");
+                }
+            }
+            LosslessSessionControl::DepartureCheckpoint {
+                stream_id,
+                repair_epoch,
+                departure_bin_exclusive,
+            } => {
+                let Some(manifest) = self.shared.manifest.as_ref() else {
+                    return Ok(());
+                };
+                let control = LosslessSessionControl::DepartureCheckpoint {
+                    stream_id,
+                    repair_epoch,
+                    departure_bin_exclusive,
+                };
+                if manifest.validate_control(&control).is_err() {
+                    return Ok(());
+                }
+                if let Some(ReceiverMode::MettleCarousel(mode)) = self.mode.as_mut() {
+                    mode.handle_departure_checkpoint(
+                        stream_id,
+                        repair_epoch,
+                        departure_bin_exclusive,
+                        self.shared.cfg.carousel.mettle_repair_reorder_budget,
+                    );
                 }
             }
             LosslessSessionControl::SourceDone { round_id } => {

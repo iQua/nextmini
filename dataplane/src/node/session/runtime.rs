@@ -64,6 +64,8 @@ pub struct CarouselRuntimeConfig {
     pub receiver_passive_window: Duration,
     pub session_complete_repeats: u8,
     pub session_complete_interval: Duration,
+    pub mettle_repair_reorder_budget: Duration,
+    pub mettle_repair_no_progress_epochs: u32,
 }
 
 /// Process-wide admission pool for dense METTLE prefix decoders.
@@ -163,6 +165,10 @@ impl CarouselRuntimeConfig {
             session_complete_interval: Duration::from_millis(
                 config.carousel_session_complete_interval_ms,
             ),
+            mettle_repair_reorder_budget: Duration::from_millis(
+                config.mettle_repair_reorder_budget_ms,
+            ),
+            mettle_repair_no_progress_epochs: config.mettle_repair_no_progress_epochs,
         }
     }
 
@@ -175,8 +181,12 @@ impl CarouselRuntimeConfig {
             self.peer_stall_timeout,
             self.receiver_passive_window,
             self.session_complete_interval,
+            self.mettle_repair_reorder_budget,
         ];
-        if nonzero.iter().any(Duration::is_zero) || self.session_complete_repeats == 0 {
+        if nonzero.iter().any(Duration::is_zero)
+            || self.session_complete_repeats == 0
+            || self.mettle_repair_no_progress_epochs == 0
+        {
             return Err(PreflightError::InvalidCarouselTiming {
                 reason: "all carousel intervals and repeat counts must be non-zero",
             });
@@ -1099,6 +1109,7 @@ fn control_kind_name(control: &LosslessSessionControl) -> &'static str {
         LosslessSessionControl::BlockAck { .. } => "BlockAck",
         LosslessSessionControl::AckProbe { .. } => "AckProbe",
         LosslessSessionControl::SessionComplete => "SessionComplete",
+        LosslessSessionControl::DepartureCheckpoint { .. } => "DepartureCheckpoint",
     }
 }
 

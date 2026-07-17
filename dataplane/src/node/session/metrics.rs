@@ -36,6 +36,8 @@ pub struct SessionMetricsSnapshot {
     pub sender_block_esis: BTreeMap<u64, SenderEsiMetrics>,
     pub symbols_received_after_local_block_complete: u64,
     pub receiver_duplicate_symbols: u64,
+    pub mettle_targeted_retransmissions: u64,
+    pub mettle_full_replay_symbols: u64,
     /// Histogram keyed by `unique_symbols_at_decode - K`.
     pub symbols_at_decode_minus_k: BTreeMap<u32, u64>,
 }
@@ -106,6 +108,17 @@ impl SessionMetrics {
     pub(crate) fn record_receiver_duplicate(&self) {
         let mut metrics = self.lock();
         metrics.receiver_duplicate_symbols = metrics.receiver_duplicate_symbols.saturating_add(1);
+    }
+
+    pub(crate) fn record_mettle_retransmission(&self, full_replay: bool) {
+        let mut metrics = self.lock();
+        if full_replay {
+            metrics.mettle_full_replay_symbols =
+                metrics.mettle_full_replay_symbols.saturating_add(1);
+        } else {
+            metrics.mettle_targeted_retransmissions =
+                metrics.mettle_targeted_retransmissions.saturating_add(1);
+        }
     }
 
     pub(crate) fn record_symbols_at_decode(&self, source_symbols: u32, unique_symbols: usize) {
