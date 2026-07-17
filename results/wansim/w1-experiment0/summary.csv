@@ -1,0 +1,21 @@
+schema_version,simulator_version,evidence_class,rate_profile,active_receivers,protocol,trials,receiver_observations,local_completion_sum_ns,local_completion_mean_ns,local_completion_p95_ns,barrier_completion_sum_ns,barrier_completion_mean_ns,barrier_completion_p95_ns,total_emissions_sum,total_emissions_mean,total_emissions_p95,ack_flight_tail_sum,ack_flight_tail_mean,ack_flight_tail_p95,positive_round_deficit_reports,round_deficit_sum,maximum_round_deficit,application_drops,link_drops,maximum_mailbox_high_water
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,1,equal_split_striping,32,32,597414688,18669209,18669209,597414688,18669209,18669209,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,1,rate_proportional_striping,32,32,597414688,18669209,18669209,597414688,18669209,18669209,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,1,per_stripe_fec,32,32,597414688,18669209,18669209,597414688,18669209,18669209,2560,80,80,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,1,pooled_rounds,32,32,597414688,18669209,18669209,597414688,18669209,18669209,2176,68,68,0,0,0,32,128,4,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,1,pooled_carousel,32,32,597414688,18669209,18669209,597414688,18669209,18669209,2688,84,84,640,20,20,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,3,equal_split_striping,32,96,1859776864,19372675,19724409,631181088,19724409,19724409,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,3,rate_proportional_striping,32,96,1859776864,19372675,19724409,631181088,19724409,19724409,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,3,per_stripe_fec,32,96,1859776864,19372675,19724409,631181088,19724409,19724409,2816,88,88,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,3,pooled_rounds,32,96,1859776864,19372675,19724409,631181088,19724409,19724409,2176,68,68,0,0,0,96,384,4,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,homogeneous,3,pooled_carousel,32,96,1859776864,19372675,19724409,631181088,19724409,19724409,2944,92,92,896,28,28,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,1,equal_split_striping,32,32,653158464,20411202,20411202,653158464,20411202,20411202,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,1,rate_proportional_striping,32,32,924800448,28900014,28900014,924800448,28900014,28900014,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,1,per_stripe_fec,32,32,924800448,28900014,28900014,924800448,28900014,28900014,2592,81,81,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,1,pooled_rounds,32,32,653158464,20411202,20411202,653158464,20411202,20411202,2208,69,69,0,0,0,32,160,5,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,1,pooled_carousel,32,32,600627488,18769609,18769609,600627488,18769609,18769609,2688,84,84,640,20,20,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,3,equal_split_striping,32,96,2037606592,21225068,21632002,692224064,21632002,21632002,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,3,rate_proportional_striping,32,96,2037606592,21225068,21632002,692224064,21632002,21632002,2048,64,64,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,3,per_stripe_fec,32,96,2037606592,21225068,21632002,692224064,21632002,21632002,2880,90,90,0,0,0,0,0,0,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,3,pooled_rounds,32,96,2037606592,21225068,21632002,692224064,21632002,21632002,2240,70,70,0,0,0,96,544,6,0,0,8
+1,0.1.0,model-level causal evidence; not a WAN measurement,crossed_heterogeneous,3,pooled_carousel,32,96,1870182816,19481071,19836802,634777664,19836802,19836802,2944,92,92,896,28,28,0,0,0,0,0,12

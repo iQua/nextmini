@@ -1,0 +1,2 @@
+schema_version,simulator_version,evidence_class,prediction,passed,classification,diagnosis
+1,0.1.0,model-level causal evidence; not a WAN measurement,E0-a,false,real modeled mechanism,SourceDone on an independent control TCP/path overtakes data still queued or in flight; reliable transport has no cross-connection ordering guarantee

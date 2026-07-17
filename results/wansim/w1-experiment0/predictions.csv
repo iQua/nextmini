@@ -1,0 +1,5 @@
+schema_version,simulator_version,evidence_class,prediction,scope,passed,observations,violations,observed_min_margin_ns,observed_max_margin_ns,threshold_ns,detail
+1,0.1.0,model-level causal evidence; not a WAN measurement,E0-a,all pooled-rounds strict-conservation trials,false,128,128,-256,0,0,256 positive cached deficit reports totaling 1216 missing DoF; maximum report 6; zero application/link drops
+1,0.1.0,model-level causal evidence; not a WAN measurement,E0-b,paired pooled rounds/carousel receiver-local completion,true,256,0,4304800,6100000,6100000,maximum paired local-completion delta 1795200 ns; tolerance is maximum modeled control RTT plus two timer quanta
+1,0.1.0,model-level causal evidence; not a WAN measurement,E0-c,all pooled-carousel strict-conservation trials,true,128,0,0,0,0,maximum ACK-flight tail 28 frames; no emission may follow sender completion
+1,0.1.0,model-level causal evidence; not a WAN measurement,E0-d,"crossed-heterogeneous paired barrier completion, best pooled vs best striped",true,64,0,1641593,1795200,0,positive margin means the fastest pooled protocol beat the fastest striped baseline

@@ -1,0 +1,4 @@
+schema_version,simulator_version,evidence_class,scenario,seed,receiver,source_done_dispatch_ns,rank_at_source_done,reported_deficit,initial_k_data_complete_ns,source_done_overtake_ns,application_drops,link_drops
+1,0.1.0,model-level causal evidence; not a WAN measurement,w1-e0-pooled_rounds-homogeneous-r3-s0,0,w1_receiver1,18544249,60,4,18669209,124960,0,0
+1,0.1.0,model-level causal evidence; not a WAN measurement,w1-e0-pooled_rounds-homogeneous-r3-s0,0,w1_receiver2,19544249,60,4,19724409,180160,0,0
+1,0.1.0,model-level causal evidence; not a WAN measurement,w1-e0-pooled_rounds-homogeneous-r3-s0,0,w1_receiver3,19544249,60,4,19724409,180160,0,0
