@@ -1,0 +1,7 @@
+research_scope,prediction,statistic,observations,value,secondary_value,interpretation
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-a,homogeneous_no_loss_rate_proportional_gap,4608,"0.000000",0,mean ticks and maximum absolute tick gap
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-b,cell_mean_gap_correlations,270,"0.689172597","0.886551973",Pearson gap-vs-ownership waste then gap-vs-emission gap at RTT 64
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-c,rounds_gap_vs_rtt_times_stationary_loss,810,"0.961130411",,Pearson correlation across cell means
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-c,carousel_tail_emission_fraction_at_rtt_8,270,"0.002144440","0.707585789",mean sender tail-emission fraction then coefficient of variation across cells
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-c,carousel_tail_emission_fraction_at_rtt_64,270,"0.018551576","0.661692833",mean sender tail-emission fraction then coefficient of variation across cells
+MODEL-LEVEL EVIDENCE - ideal DoF - NOT WAN measurement,P-c,carousel_tail_emission_fraction_at_rtt_512,270,"0.127335015","0.541427009",mean sender tail-emission fraction then coefficient of variation across cells
