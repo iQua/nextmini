@@ -387,16 +387,27 @@ struct SessionEntry {
 impl LosslessRuntimeHandle {
     /// Spawn a new runtime actor bound to the provided processor handle.
     pub fn new(processors: ProcessorHandle, config: LosslessConfig) -> Self {
+        Self::try_new(processors, config).unwrap_or_else(|error| {
+            panic!("invalid lossless runtime decoder-budget configuration: {error}")
+        })
+    }
+
+    /// Validate process-wide admission and spawn a runtime actor only when
+    /// local senders and receivers share a usable decoder budget.
+    pub fn try_new(
+        processors: ProcessorHandle,
+        config: LosslessConfig,
+    ) -> Result<Self, MettleDecoderBudgetError> {
         let (message_sender, message_receiver) = mpsc::channel(config.runtime_message_capacity);
         let runtime =
-            LosslessRuntime::new(processors, config, message_sender.clone(), message_receiver);
+            LosslessRuntime::new(processors, config, message_sender.clone(), message_receiver)?;
 
         tokio::spawn(async move {
             let mut runtime = runtime;
             runtime.run().await;
         });
 
-        Self { message_sender }
+        Ok(Self { message_sender })
     }
 
     /// Start a sender task after deriving and validating its manifest.
@@ -482,17 +493,11 @@ impl LosslessRuntime {
         config: LosslessConfig,
         message_sender: mpsc::Sender<LosslessRuntimeMessage>,
         message_receiver: mpsc::Receiver<LosslessRuntimeMessage>,
-    ) -> Self {
+    ) -> Result<Self, MettleDecoderBudgetError> {
         let (topology_ready_sender, _) = watch::channel(false);
-        let mettle_decoder_budget = match MettleDecoderBudget::from_lossless(&config) {
-            Ok(budget) => Some(budget),
-            Err(error) => {
-                warn!(%error, "Lossless runtime disabled METTLE decoder admission because its budget is invalid");
-                None
-            }
-        };
+        let mettle_decoder_budget = MettleDecoderBudget::from_lossless(&config)?;
 
-        Self {
+        Ok(Self {
             processors,
             config,
             sessions: AHashMap::default(),
@@ -501,8 +506,8 @@ impl LosslessRuntime {
             topology_ready: false,
             message_sender,
             message_receiver,
-            mettle_decoder_budget,
-        }
+            mettle_decoder_budget: Some(mettle_decoder_budget),
+        })
     }
 
     /// Main command loop for the runtime actor.
@@ -1183,6 +1188,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_construction_fails_loudly_for_invalid_decoder_budget() {
+        let processors = ProcessorHandle::new(LocalConfig::default());
+        let config = LosslessConfig {
+            mettle_decoder_reservation_bytes: 0,
+            ..LosslessConfig::default()
+        };
+
+        assert!(matches!(
+            LosslessRuntimeHandle::try_new(processors, config),
+            Err(MettleDecoderBudgetError::ZeroReservation)
+        ));
+    }
+
+    #[tokio::test]
     async fn non_carousel_session_start_ignores_invalid_carousel_timing() {
         let (mut runtime, _packet_rx, route) = test_runtime().await;
         runtime.config.carousel_ack_debounce_ms = 0;
@@ -1835,7 +1854,8 @@ mod tests {
                 cfg.lossless_runtime_config.clone(),
                 message_sender,
                 message_receiver,
-            ),
+            )
+            .expect("test runtime decoder budget should be valid"),
             packet_rx,
             route,
         )

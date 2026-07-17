@@ -176,6 +176,9 @@ mod tests {
         metrics.record_receiver_tail_symbol();
         metrics.record_receiver_duplicate();
         metrics.record_receiver_invalid_symbol();
+        metrics.record_mettle_retransmission(false);
+        metrics.record_mettle_retransmission(false);
+        metrics.record_mettle_retransmission(true);
         metrics.record_symbols_at_decode(4, 6);
 
         let snapshot = metrics.snapshot();
@@ -190,6 +193,8 @@ mod tests {
         assert_eq!(snapshot.symbols_received_after_local_block_complete, 1);
         assert_eq!(snapshot.receiver_duplicate_symbols, 1);
         assert_eq!(snapshot.receiver_invalid_symbols, 1);
+        assert_eq!(snapshot.mettle_targeted_retransmissions, 2);
+        assert_eq!(snapshot.mettle_full_replay_symbols, 1);
         assert_eq!(snapshot.symbols_at_decode_minus_k.get(&2), Some(&1));
     }
 

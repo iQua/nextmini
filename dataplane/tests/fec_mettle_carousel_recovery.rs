@@ -111,6 +111,65 @@ async fn dropped_first_checkpoint_recovers_on_cadence_retransmission() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn zero_byte_object_completes_without_a_progress_ack() {
+    let mut harness = common::packet_capture(1, 2, 4131, 5241, 1, 64).await;
+    let session_id = 0x4D45_5454_1E03;
+    let geometry = MettleObjectStreamGeometry::new(2, 4, 0, 0);
+    let manifest = LosslessSessionManifest {
+        block_size: 8,
+        total_bytes: 0,
+        total_blocks: 0,
+        mode: LosslessSessionMode::Fec(
+            LosslessSessionFecMode::new_mettle(4, vec![7])
+                .with_feedback_mode(FecFeedbackMode::Carousel)
+                .with_mettle_object_stream(geometry),
+        ),
+    };
+    manifest.validate().expect("valid empty-object manifest");
+    let sender_cfg = SenderConfig {
+        session: harness.session_config(session_id, 8),
+        route: harness.route(),
+        pacing: None,
+        receiver_ids: vec![2],
+        source_buffer: Bytes::new(),
+        manifest,
+        ready_grace_ms: 20,
+        peer_report_timeout_ms: 3_000,
+        topology_ready: None,
+        cloudcast: None,
+    };
+    let (ctrl_tx, ctrl_rx) = mpsc::channel(8);
+    ctrl_tx
+        .send(common::ready_frame(session_id, 2))
+        .await
+        .expect("Ready should enqueue");
+    let sender_task = tokio::spawn(sender::run(sender_cfg, ctrl_rx, harness.processors.clone()));
+
+    loop {
+        let packet = common::recv_packet(&mut harness.packet_rx).await;
+        let payload = packet.tcp_payload().expect("captured packet has payload");
+        assert!(
+            lossless_session::decode_block_symbol(payload).is_none(),
+            "an empty object must not emit payload"
+        );
+        if matches!(
+            lossless_session::decode_control(payload),
+            Some((_, LosslessSessionControl::SessionComplete))
+        ) {
+            break;
+        }
+    }
+
+    assert_eq!(
+        timeout(Duration::from_secs(2), sender_task)
+            .await
+            .expect("empty-object sender should finish without BlockAck")
+            .expect("sender task should not panic"),
+        SessionOutcome::Completed
+    );
+}
+
 fn block_ack_frame(session_id: u64, peer_id: usize, ack: BlockAck) -> InboundFrame {
     InboundFrame {
         bytes: lossless_session::encode_control(

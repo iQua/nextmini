@@ -28,7 +28,7 @@ pub(super) struct MettleCarouselReceiver {
     seen_bin_ids: BTreeSet<u32>,
     terminal_bin_count: u32,
     checkpoint: Option<DepartureCheckpointState>,
-    _permit: Option<MettleDecoderPermit>,
+    permit: Option<MettleDecoderPermit>,
     complete: bool,
     aborted: bool,
 }
@@ -84,18 +84,16 @@ impl MettleCarouselReceiver {
                 seen_bin_ids: BTreeSet::new(),
                 terminal_bin_count: 0,
                 checkpoint: None,
-                _permit: None,
+                permit: None,
                 complete: true,
                 aborted: false,
             });
         }
 
         let budget = budget.ok_or(MettleCarouselInstallError::MissingBudget)?;
-        let reserved_payload_copies = plan
-            .maximum_stream_payload_bytes()
-            .and_then(|bytes| bytes.checked_mul(2))
+        let retained_prefix_bytes = retained_prefix_bytes(plan, &fec_mode)
             .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
-        if reserved_payload_copies > budget.reservation_bytes() {
+        if retained_prefix_bytes > budget.reservation_bytes() {
             return Err(MettleCarouselInstallError::PrefixExceedsReservation);
         }
         let permit = budget
@@ -104,7 +102,7 @@ impl MettleCarouselReceiver {
         let current_source_count = plan
             .stream_source_count(0)
             .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
-        let decoder = build_decoder(session_id, plan, &fec_mode, 0).await?;
+        let (decoder, permit) = build_decoder(session_id, plan, &fec_mode, 0, permit).await?;
         let terminal_bin_count = terminal_bin_count(&fec_mode, current_source_count)
             .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
 
@@ -118,7 +116,7 @@ impl MettleCarouselReceiver {
             seen_bin_ids: BTreeSet::new(),
             terminal_bin_count,
             checkpoint: None,
-            _permit: Some(permit),
+            permit: Some(permit),
             complete: false,
             aborted: false,
         })
@@ -324,8 +322,20 @@ impl MettleCarouselReceiver {
             self.aborted = true;
             return;
         };
-        match build_decoder(session_id, self.plan, &self.fec_mode, next_stream_id).await {
-            Ok(decoder) => {
+        let Some(permit) = self.permit.take() else {
+            self.aborted = true;
+            return;
+        };
+        match build_decoder(
+            session_id,
+            self.plan,
+            &self.fec_mode,
+            next_stream_id,
+            permit,
+        )
+        .await
+        {
+            Ok((decoder, permit)) => {
                 self.current_stream_id = next_stream_id;
                 self.current_source_count = source_count;
                 self.committed_watermark = 0;
@@ -339,6 +349,7 @@ impl MettleCarouselReceiver {
                 };
                 self.checkpoint = None;
                 self.decoder = Some(decoder);
+                self.permit = Some(permit);
             }
             Err(error) => {
                 warn!(%error, next_stream_id, "METTLE successor decoder construction failed");
@@ -351,6 +362,22 @@ impl MettleCarouselReceiver {
 fn terminal_bin_count(fec_mode: &LosslessSessionFecMode, source_count: u32) -> Option<u32> {
     let overhead = session_fec::mettle_overhead_from_fec_mode(fec_mode)?;
     mettle::stream::terminal_bin_count(mettle::MettleParams::new(overhead), u64::from(source_count))
+}
+
+fn retained_prefix_bytes(
+    plan: ObjectSymbolPlan,
+    fec_mode: &LosslessSessionFecMode,
+) -> Option<usize> {
+    let source_bytes = plan.maximum_stream_payload_bytes()?;
+    let denominator = u128::from(fec_mode.coded_rate_den);
+    if denominator == 0 {
+        return None;
+    }
+    let coded_bytes = u128::try_from(source_bytes)
+        .ok()?
+        .checked_mul(u128::from(fec_mode.coded_rate_num))?
+        .div_ceil(denominator);
+    source_bytes.checked_add(usize::try_from(coded_bytes).ok()?)
 }
 
 fn missing_bin_ranges(
@@ -382,7 +409,8 @@ async fn build_decoder(
     plan: ObjectSymbolPlan,
     fec_mode: &LosslessSessionFecMode,
     stream_id: u64,
-) -> Result<mettle::stream::Decoder, MettleCarouselInstallError> {
+    permit: MettleDecoderPermit,
+) -> Result<(mettle::stream::Decoder, MettleDecoderPermit), MettleCarouselInstallError> {
     let source_count = plan
         .stream_source_count(stream_id)
         .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
@@ -390,17 +418,20 @@ async fn build_decoder(
         .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
     let overhead = session_fec::mettle_overhead_from_fec_mode(fec_mode)
         .ok_or(MettleCarouselInstallError::PrefixExceedsReservation)?;
-    tokio::task::spawn_blocking(move || {
-        mettle::stream::Decoder::try_new_terminated(
+    let (decoder, permit) = tokio::task::spawn_blocking(move || {
+        let decoder = mettle::stream::Decoder::try_new_terminated(
             mettle::MettleParams::new(overhead),
             source_symbol_bytes,
             session_fec::block_seed(session_id, stream_id),
             u64::from(source_count),
-        )
+        );
+        (decoder, permit)
     })
     .await
-    .map_err(|_| MettleCarouselInstallError::WorkerStopped)?
-    .map_err(MettleCarouselInstallError::Decoder)
+    .map_err(|_| MettleCarouselInstallError::WorkerStopped)?;
+    decoder
+        .map(|decoder| (decoder, permit))
+        .map_err(MettleCarouselInstallError::Decoder)
 }
 
 pub(super) fn is_mettle_carousel(mode: &LosslessSessionMode) -> bool {
@@ -458,6 +489,36 @@ mod tests {
             ))
         ));
         assert_eq!(receivers.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn decoder_admission_charge_tracks_negotiated_coded_rate() {
+        let plan =
+            ObjectSymbolPlan::from_negotiated(8, MettleObjectStreamGeometry::new(2, 4, 1, 4))
+                .expect("small object-stream plan");
+        let base_mode = LosslessSessionFecMode::new_mettle(4, vec![0])
+            .with_feedback_mode(FecFeedbackMode::Carousel)
+            .with_mettle_object_stream(plan.geometry());
+        let high_rate_mode = LosslessSessionFecMode::new_mettle_with_coded_rate(4, vec![0], 3, 1)
+            .with_feedback_mode(FecFeedbackMode::Carousel)
+            .with_mettle_object_stream(plan.geometry());
+        assert_eq!(retained_prefix_bytes(plan, &base_mode), Some(16));
+        assert_eq!(retained_prefix_bytes(plan, &high_rate_mode), Some(32));
+
+        let budget = MettleDecoderBudget::from_lossless(&LosslessConfig {
+            mettle_decoder_reservation_bytes: 20,
+            mettle_decoder_max_concurrent: 1,
+            ..LosslessConfig::default()
+        })
+        .expect("small test budget");
+        let admitted = MettleCarouselReceiver::install(5, plan, base_mode, Some(&budget))
+            .await
+            .expect("base coded rate fits the logical reservation");
+        drop(admitted);
+        assert!(matches!(
+            MettleCarouselReceiver::install(6, plan, high_rate_mode, Some(&budget)).await,
+            Err(MettleCarouselInstallError::PrefixExceedsReservation)
+        ));
     }
 
     #[tokio::test]

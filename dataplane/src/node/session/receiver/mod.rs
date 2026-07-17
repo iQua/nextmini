@@ -722,7 +722,12 @@ impl SessionReceiver {
             return Ok(());
         }
 
-        if manifest.validate().is_err() {
+        if let Err(error) = manifest.validate() {
+            warn!(
+                session_id = self.shared.session_id,
+                ?error,
+                "Lossless receiver rejected an invalid manifest"
+            );
             return Ok(());
         }
         if manifest.mode.is_fec() && !self.shared.cfg.fec_enabled {
@@ -780,10 +785,9 @@ impl SessionReceiver {
                     return Ok(());
                 };
                 if mettle_carousel::is_mettle_carousel(&manifest.mode) {
-                    let Some(object_geometry) = fec.mettle_object_stream else {
-                        self.finish_session("mettle_manifest_missing_geometry");
-                        return Ok(());
-                    };
+                    let object_geometry = fec
+                        .mettle_object_stream
+                        .expect("validated METTLE carousel manifest has object geometry");
                     let Ok(object_plan) =
                         ObjectSymbolPlan::from_negotiated(manifest.total_bytes, object_geometry)
                     else {

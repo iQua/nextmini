@@ -186,18 +186,35 @@ struct MettleObjectSymbolStream {
     buffered_bins: BTreeMap<u32, Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MettleObjectSymbolStreamError {
+    MissingSenderState,
+    StreamOutOfRange,
+    ZeroSymbolSize,
+    SourceUnavailable,
+    SourceIdOverflow,
+    EncoderUnavailable,
+    BinIdOutOfRange,
+    DuplicateBinId,
+    ExpectedBinMissing,
+}
+
 impl MettleObjectSymbolStream {
     fn new(
         plan: ObjectSymbolPlan,
         session_id: u64,
         stream_id: u64,
         mettle_overhead: mettle::OverheadRatio,
-    ) -> Option<Self> {
-        let source_count = plan.stream_source_count(stream_id)?;
-        Some(Self {
+    ) -> Result<Self, MettleObjectSymbolStreamError> {
+        let source_count = plan
+            .stream_source_count(stream_id)
+            .ok_or(MettleObjectSymbolStreamError::StreamOutOfRange)?;
+        let symbol_size = NonZeroUsize::new(plan.symbol_size())
+            .ok_or(MettleObjectSymbolStreamError::ZeroSymbolSize)?;
+        Ok(Self {
             encoder: Some(mettle::stream::Encoder::new_terminated(
                 mettle::MettleParams::new(mettle_overhead),
-                NonZeroUsize::new(plan.symbol_size())?,
+                symbol_size,
                 session_fec::block_seed(session_id, stream_id),
                 u64::from(source_count),
             )),
@@ -211,14 +228,20 @@ impl MettleObjectSymbolStream {
         })
     }
 
-    fn next_symbol_payload(&mut self, source: &super::BlockSource) -> Option<(u32, Bytes)> {
+    fn next_symbol_payload(
+        &mut self,
+        source: &super::BlockSource,
+    ) -> Result<Option<(u32, Bytes)>, MettleObjectSymbolStreamError> {
         while !self.buffered_bins.contains_key(&self.next_bin_id) {
             if !self.advance(source)? {
-                return None;
+                return Ok(None);
             }
         }
-        let payload = self.buffered_bins.remove(&self.next_bin_id)?;
-        Some((self.next_bin_id, Bytes::from(payload)))
+        let payload = self
+            .buffered_bins
+            .remove(&self.next_bin_id)
+            .ok_or(MettleObjectSymbolStreamError::ExpectedBinMissing)?;
+        Ok(Some((self.next_bin_id, Bytes::from(payload))))
     }
 
     fn mark_queued(&mut self, symbol_id: u32) -> bool {
@@ -232,25 +255,41 @@ impl MettleObjectSymbolStream {
         true
     }
 
-    fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
+    fn advance(
+        &mut self,
+        source: &super::BlockSource,
+    ) -> Result<bool, MettleObjectSymbolStreamError> {
         let bins = if self.next_source_id < self.source_count {
-            let payload =
-                source.object_source_payload(self.plan, self.stream_id, self.next_source_id)?;
-            self.next_source_id = self.next_source_id.checked_add(1)?;
-            self.encoder.as_mut()?.push_source(&payload)
+            let payload = source
+                .object_source_payload(self.plan, self.stream_id, self.next_source_id)
+                .ok_or(MettleObjectSymbolStreamError::SourceUnavailable)?;
+            self.next_source_id = self
+                .next_source_id
+                .checked_add(1)
+                .ok_or(MettleObjectSymbolStreamError::SourceIdOverflow)?;
+            self.encoder
+                .as_mut()
+                .ok_or(MettleObjectSymbolStreamError::EncoderUnavailable)?
+                .push_source(&payload)
         } else {
             if self.finished {
-                return Some(false);
+                return Ok(false);
             }
             self.finished = true;
-            self.encoder.take()?.finish()
+            self.encoder
+                .take()
+                .ok_or(MettleObjectSymbolStreamError::EncoderUnavailable)?
+                .finish()
         };
         for bin in bins {
             let (bin_id, payload) = bin.into_parts();
-            self.buffered_bins
-                .insert(u32::try_from(bin_id).ok()?, payload);
+            let bin_id = u32::try_from(bin_id)
+                .map_err(|_| MettleObjectSymbolStreamError::BinIdOutOfRange)?;
+            if self.buffered_bins.insert(bin_id, payload).is_some() {
+                return Err(MettleObjectSymbolStreamError::DuplicateBinId);
+            }
         }
-        Some(true)
+        Ok(true)
     }
 }
 
@@ -791,7 +830,17 @@ impl FecSender {
                 if !self.prepare_mettle_repair_epoch(shared) {
                     return SessionOutcome::Aborted;
                 }
-                pending = self.next_mettle_carousel_symbol(shared);
+                pending = match self.next_mettle_carousel_symbol(shared) {
+                    Ok(pending) => pending,
+                    Err(error) => {
+                        warn!(
+                            session_id = shared.session.session_id,
+                            ?error,
+                            "METTLE object stream failed before clean exhaustion"
+                        );
+                        return SessionOutcome::Aborted;
+                    }
+                };
                 if pending.is_none() {
                     if self.mettle_checkpoint_required(shared) {
                         match self.try_send_mettle_checkpoint(shared) {
@@ -933,14 +982,24 @@ impl FecSender {
     fn next_mettle_carousel_symbol(
         &mut self,
         shared: &super::SenderShared,
-    ) -> Option<PendingCarouselSymbol> {
-        let state = self.mettle_carousel.as_mut()?;
+    ) -> Result<Option<PendingCarouselSymbol>, MettleObjectSymbolStreamError> {
+        let state = self
+            .mettle_carousel
+            .as_mut()
+            .ok_or(MettleObjectSymbolStreamError::MissingSenderState)?;
         if state.current_stream_id >= state.plan.stream_count() {
-            return None;
+            return Ok(None);
         }
         let (symbol_id, payload) = if state.initial_departure_complete {
-            let symbol_id = *state.repair.pending_bin_ids.front()?;
-            (symbol_id, state.bin_cache.get(&symbol_id)?.clone())
+            let Some(symbol_id) = state.repair.pending_bin_ids.front().copied() else {
+                return Ok(None);
+            };
+            let payload = state
+                .bin_cache
+                .get(&symbol_id)
+                .ok_or(MettleObjectSymbolStreamError::ExpectedBinMissing)?
+                .clone();
+            (symbol_id, payload)
         } else {
             if state.stream.is_none() {
                 state.stream = Some(MettleObjectSymbolStream::new(
@@ -953,15 +1012,16 @@ impl FecSender {
             let Some((symbol_id, payload)) = state
                 .stream
                 .as_mut()
-                .and_then(|stream| stream.next_symbol_payload(&shared.source))
+                .ok_or(MettleObjectSymbolStreamError::MissingSenderState)?
+                .next_symbol_payload(&shared.source)?
             else {
                 state.initial_departure_complete = true;
-                return None;
+                return Ok(None);
             };
             state.bin_cache.insert(symbol_id, payload.clone());
             (symbol_id, payload)
         };
-        Some(PendingCarouselSymbol {
+        Ok(Some(PendingCarouselSymbol {
             symbol: CarouselSymbol {
                 block_id: state.current_stream_id,
                 symbol_id,
@@ -969,7 +1029,7 @@ impl FecSender {
             },
             payload,
             paced: false,
-        })
+        }))
     }
 
     fn mark_mettle_symbol_queued(&mut self, symbol_id: u32) -> bool {
@@ -3278,7 +3338,10 @@ mod tests {
             "Carousel must not allocate block streams"
         );
         let mut bin_ids = Vec::new();
-        while let Some(pending) = sender.next_mettle_carousel_symbol(&shared) {
+        while let Some(pending) = sender
+            .next_mettle_carousel_symbol(&shared)
+            .expect("valid object stream")
+        {
             bin_ids.push(pending.symbol.symbol_id);
             assert!(
                 sender
@@ -3310,6 +3373,7 @@ mod tests {
         state.begin_stream(1);
         let first_next_prefix = sender
             .next_mettle_carousel_symbol(&shared)
+            .expect("valid object stream")
             .expect("next prefix has a first bin");
         assert_eq!(first_next_prefix.symbol.block_id, 1);
         assert_eq!(first_next_prefix.symbol.symbol_id, 0);
@@ -3444,6 +3508,7 @@ mod tests {
         );
         let pending = sender
             .next_mettle_carousel_symbol(&shared)
+            .expect("valid object stream")
             .expect("epoch has one pending payload");
         assert_eq!(
             sender.send_symbol(
@@ -3518,6 +3583,39 @@ mod tests {
                 .repair
                 .checkpoint_queued
         );
+    }
+
+    #[tokio::test]
+    async fn mettle_object_stream_distinguishes_internal_failure_from_exhaustion() {
+        let object_geometry =
+            nextmini_messages::lossless_session::MettleObjectStreamGeometry::new(2, 4, 1, 4);
+        let manifest = LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(4, vec![7])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(object_geometry),
+            ),
+        };
+        let plan = BlockPlan::new(8, 8).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE carousel sender");
+        let shared = test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefgh"));
+        let state = sender
+            .mettle_carousel
+            .as_mut()
+            .expect("METTLE carousel state");
+        state.initial_departure_complete = true;
+        state.repair.pending_bin_ids.push_back(7);
+
+        assert!(matches!(
+            sender.next_mettle_carousel_symbol(&shared),
+            Err(MettleObjectSymbolStreamError::ExpectedBinMissing)
+        ));
+        let state = sender.mettle_carousel.as_ref().expect("state");
+        assert!(state.initial_departure_complete);
+        assert_eq!(state.repair.pending_bin_ids.front(), Some(&7));
     }
 
     fn test_manifest() -> LosslessSessionManifest {
