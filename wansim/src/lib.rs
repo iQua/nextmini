@@ -1,13 +1,14 @@
 //! Deterministic WAN pipeline simulation for nextmini.
 //!
 //! W0a models a single persistent source -> relay -> receiver chain. W0b adds the fixed fan-out
-//! tree, per-child transport state, hybrid receiver admission, and ideal DoF accounting. Protocol
-//! feedback belongs to later stages.
+//! tree, per-child transport state, hybrid receiver admission, and ideal DoF accounting. W1 adds
+//! independent section-P protocol endpoints and runs them over the same transport substrate.
 
 pub mod days_bridge;
 pub mod determinism;
 pub mod metrics;
 pub mod overlay;
+pub mod protocol;
 pub mod scenario;
 pub mod transport;
 

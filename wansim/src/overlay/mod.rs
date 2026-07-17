@@ -1,3 +1,5 @@
+mod control_socket;
+mod control_stream;
 mod dof;
 mod frame;
 mod receiver;
@@ -6,7 +8,11 @@ mod source;
 mod tree_receiver;
 mod tree_relay;
 mod tree_source;
+mod w1_receiver;
+mod w1_source;
 
+pub(crate) use control_socket::{ControlRx, ControlTx};
+pub(crate) use control_stream::{ControlStream, ControlStreamCursor};
 pub(crate) use dof::DofBucket;
 pub(crate) use frame::{FrameAssembler, FramedStream};
 pub(crate) use receiver::ReceiverEndpoint;
@@ -15,3 +21,5 @@ pub(crate) use source::SourceEndpoint;
 pub(crate) use tree_receiver::TreeReceiverEndpoint;
 pub(crate) use tree_relay::{FanoutRelayEndpoint, RelayChildSpec};
 pub(crate) use tree_source::TreeSourceEndpoint;
+pub(crate) use w1_receiver::{ReceiverControlGeometry, W1ReceiverEndpoint, W1ReceiverProtocol};
+pub(crate) use w1_source::{W1SourceEndpoint, W1SourceProtocol};
