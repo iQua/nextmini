@@ -67,8 +67,9 @@ Scope: approved Stage 2.0 constraints plus Stage 2.1 through 2.6. Stage 3 was no
   in which the quorum-minimum committed watermark does not advance; the validated default of three
   schedules a complete cached-prefix replay and resets the counter.
 - Added separate metrics for targeted retransmissions, full replays, and receiver duplicates. Tests
-  cover near/far loss recovery using only targeted ranges, duplicate measurement, checkpoint loss,
-  report deduplication/union, and the three-epoch fallback.
+  cover near/far loss recovery using only targeted ranges, duplicate measurement, packet-capture
+  loss of the first checkpoint followed by probe-cadence retransmission, report
+  deduplication/union, and the three-epoch fallback.
 
 ### 2.5 Dormant repair estimator removal
 
@@ -114,13 +115,13 @@ The explicit Gate 2 limits are a 25 ms dense-construction threshold at the maxim
 MiB peak decoder-state reservation, one live decoder per receiver session, and four concurrent
 process-wide decoder permits.
 
-Current-HEAD release-harness measurements at `N=65,536`, `T=1,400`, and `c=1/20` were:
+Post-review-fix release-harness measurements at `N=65,536`, `T=1,400`, and `c=1/20` were:
 
 | Scenario | Construction | Peak RSS | Peak logical payload upper bound | Max synchronous push |
 | --- | ---: | ---: | ---: | ---: |
-| Construct only | 9.150 ms | 13.906 MiB | 0 MiB | 0 ms |
-| Terminal-source bin first | 9.711 ms | 14.016 MiB | 0.342 MiB | 0.0086 ms |
-| Permanent leading stall | 10.576 ms | 117.016 MiB | 87.839 MiB | 0.2089 ms |
+| Construct only | 8.281 ms | 13.859 MiB | 0 MiB | 0 ms |
+| Terminal-source bin first | 7.925 ms | 13.828 MiB | 0.342 MiB | 0.0094 ms |
+| Permanent leading stall | 7.728 ms | 116.734 MiB | 87.839 MiB | 0.1707 ms |
 
 All rows are below the 25 ms construction and 192 MiB reservation thresholds. Unit and real-decoder
 tests admit four concurrent receivers and reject the fifth cleanly; `4 * 192 MiB = 768 MiB` is
@@ -165,7 +166,7 @@ Every Cargo command used `CARGO_INCREMENTAL=0` and
 - Stage 2.6 METTLE run: 81 passed, 0 failed, 14 skipped.
 - Gate 2 `cargo fmt --check`: passed.
 - Gate 2 `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- Gate 2 `cargo nextest run`: 790 passed, 0 failed, 17 skipped across 32 binaries.
+- Post-review Gate 2 `cargo nextest run`: 808 passed, 0 failed, 17 skipped across 33 binaries.
 - Focused `fec_round_regressions` plus `fec_mettle_session`: 3 passed, 0 failed, 0 skipped.
 
 The 17 full-gate skips are intentional ignored tests: 14 manual METTLE benchmark/reproduction
@@ -175,4 +176,82 @@ entry was added.
 
 ## Open questions
 
-None for Stage 2. No Stage 3 work was started.
+The sender-cache admission limit and automated performance-threshold policy are recorded in
+`plans/perfect-fec-runtime-questions.md`. No Stage 3 work was started.
+
+## Review follow-up fixes
+
+Date: 2026-07-16
+
+Scope: all four required findings, recommendations 5 through 10, and the item-11 nits from
+`plans/stage2-review-claude.md`. Recommendations 7 and 9 are explicitly documented policies or
+deferrals rather than silent omissions. Stage 3 was not started.
+
+### Per-item resolutions
+
+1. Peer bin ids are now checked against the current stream's `terminal_bin_count` before insertion
+   into `seen_bin_ids`. Out-of-range traffic increments `receiver_invalid_symbols` and never affects
+   retained state or decode histograms. The test mirrors the legacy out-of-range-ESI drop test.
+   Commit: `6f92289`.
+2. MettleStream BlockAck decoding now rejects the non-canonical `has_stall_evidence = false,
+   range_count != 0` body instead of silently discarding ranges. Commit: `6f92289`.
+3. MettleStream `for_wire` now validates the complete canonical range set, retains the lowest 255
+   ranges, and is the receiver's sole wire clamp. The overflow test demonstrates convergence
+   without collapsing gaps into one over-broad range. Commit: `cc98c22`.
+4. BlockAck variant 2 and DepartureCheckpoint now have body-length totality, malformed-body,
+   truncation, and count/flag sweeps; all seven previously unreferenced validation errors have exact
+   negative tests, including mode mismatches. A sender backpressure test proves checkpoints cannot
+   overtake epoch payload across `AllWouldBlock`, and a packet-capture integration test drops the
+   first checkpoint and recovers through its cadence retransmission. The earlier report overclaim
+   was replaced above with this precise evidence. Commits: `8ca0758`, `aafcada`.
+5. The existing sender-side zero-stream completion path is now pinned by a Carousel+METTLE network
+   test: a zero-byte object completes after quorum freeze without payload or BlockAck. Commit:
+   `54f455b`.
+6. Decoder admission now charges a checked `N * T + ceil(coded_rate * N * T)` logical payload
+   estimate; tests distinguish the baseline and a higher coded rate under the same budget. Commit:
+   `54f455b`.
+7. A process-wide sender-cache permit is deferred because it needs a new ownership/configuration
+   surface shared by concurrent sender tasks. Until that lands, operators must budget each active
+   Carousel+METTLE sender for `terminal_bin_count(N, coded_rate) * T` encoded payload plus container
+   overhead and cap concurrent senders accordingly. The design decision is tracked in
+   `plans/perfect-fec-runtime-questions.md`.
+8. Invalid decoder-budget configuration now fails construction through `try_new`; the infallible
+   runtime constructor fails loudly instead of installing a reject-all runtime. Commit: `54f455b`.
+9. Release RSS and construction checks remain host-sensitive manual gate evidence. The exact
+   commands were rerun for this gate and the measurements above remain below 192 MiB and 25 ms.
+   Automatic thresholding is deferred with rationale in `plans/perfect-fec-runtime-questions.md`;
+   the same release measurements are mandatory at Gate 3.
+10. Aged checkpoint gap computation is memoized and invalidated only when a newly seen bin changes
+    the result, avoiding duplicate full-prefix walks from repeated BlockAck generation. Commit:
+    `cc98c22`.
+11. The cheap nits were resolved: zero-byte geometry validation no longer divides by zero;
+    impossible post-validation geometry absence is a loud invariant; symbol-stream exhaustion is
+    distinct from internal failure; decoder permits remain owned by orphaned blocking construction;
+    and sender repair metrics are asserted. Commits: `8ca0758`, `54f455b`.
+
+### Follow-up commits
+
+| Concern | Commit | Message |
+| --- | --- | --- |
+| Peer input and canonical bodies | `6f92289` | `Harden METTLE peer input validation.` |
+| Shared range truncation and gap memoization | `cc98c22` | `Apply canonical METTLE range truncation.` |
+| Negative wire and validation coverage | `8ca0758` | `Strengthen METTLE wire validation coverage.` |
+| Payload/checkpoint ordering and loss recovery | `aafcada` | `Prove METTLE checkpoint recovery ordering.` |
+| Admission, empty objects, runtime failure, and lifecycle nits | `54f455b` | `Harden METTLE admission and lifecycle handling.` |
+
+### Final Gate 2 evidence
+
+Every command used `CARGO_INCREMENTAL=0` and
+`PYO3_PYTHON=/opt/homebrew/bin/python3.13`.
+
+- `cargo fmt --all -- --check`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo nextest run`: 808 passed, 0 failed, 17 skipped across 33 binaries.
+- Focused frozen `fec_round_regressions` and `fec_mettle_session`: 3 passed, 0 failed, 0 skipped.
+- `git diff 34a2674..HEAD` for both frozen fixtures: empty.
+- Release dense construction at the maximum prefix: 7.728-8.281 ms across the three scenarios,
+  below 25 ms.
+- Worst measured RSS: 116.734 MiB, below the 192 MiB per-decoder reservation.
+
+The 17 skips remain the intentional ignored benchmark/reproduction and integration cases; no
+selected controller test was skipped for unavailable PostgreSQL.
