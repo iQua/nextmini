@@ -21,6 +21,9 @@ impl MettleObjectStreamGeometry {
                 },
             );
         }
+        if self.source_symbol_bytes == 0 {
+            return Err(LosslessSessionValidationError::MettleStreamGeometryOverflow);
+        }
         if self.source_symbols_per_stream == 0
             || self.source_symbols_per_stream > METTLE_STREAM_SOURCE_CAP
         {
@@ -856,6 +859,22 @@ mod tests {
 
     #[test]
     fn mettle_stream_geometry_enforces_source_and_payload_caps() {
+        let wrong_symbol_size = MettleObjectStreamGeometry::new(127, 8, 1, 8);
+        assert_eq!(
+            wrong_symbol_size.validate(1_024, 128),
+            Err(
+                LosslessSessionValidationError::MettleObjectSymbolSizeMismatch {
+                    expected: 128,
+                    actual: 127,
+                }
+            )
+        );
+        assert_eq!(
+            MettleObjectStreamGeometry::new(0, 1, 0, 0).validate(0, 0),
+            Err(LosslessSessionValidationError::MettleStreamGeometryOverflow),
+            "public geometry validation must stay total for a zero symbol size"
+        );
+
         let source_cap = MettleObjectStreamGeometry::new(
             1,
             METTLE_STREAM_SOURCE_CAP + 1,
@@ -936,6 +955,19 @@ mod tests {
                 }
             )
         );
+        assert_eq!(
+            manifest.validate_control(&LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 3,
+                    decoded_source_watermark: 0,
+                    stalled: None,
+                },
+            }),
+            Err(LosslessSessionValidationError::MettleAckStreamOutOfRange {
+                stream_id: 3,
+                stream_count: 3,
+            })
+        );
         assert!(matches!(
             manifest.validate_control(&LosslessSessionControl::DepartureCheckpoint {
                 stream_id: 3,
@@ -944,6 +976,91 @@ mod tests {
             }),
             Err(LosslessSessionValidationError::DepartureCheckpointStreamOutOfRange { .. })
         ));
+    }
+
+    #[test]
+    fn mettle_block_ack_validation_covers_variant_and_range_errors() {
+        let mettle_manifest = LosslessSessionManifest {
+            block_size: 1_024,
+            total_bytes: 2_176,
+            total_blocks: 3,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(8, vec![1])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(MettleObjectStreamGeometry::new(128, 8, 3, 1)),
+            ),
+        };
+        assert_eq!(
+            mettle_manifest.validate_control(&LosslessSessionControl::BlockAck {
+                ack: BlockAck::Blocks {
+                    completed_watermark: 0,
+                    extra_completed: vec![],
+                },
+            }),
+            Err(LosslessSessionValidationError::BlockAckVariantRequiresRaptorQ)
+        );
+        assert_eq!(
+            carousel_manifest().validate_control(&LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 0,
+                    decoded_source_watermark: 0,
+                    stalled: None,
+                },
+            }),
+            Err(LosslessSessionValidationError::MettleBlockAckRequiresMettle)
+        );
+
+        assert_eq!(
+            MettleStallEvidence {
+                repair_epoch: 1,
+                missing_bin_ranges: vec![super::super::MissingMettleBinRange {
+                    start_bin_id: 4,
+                    end_bin_id: 4,
+                }],
+            }
+            .validate(),
+            Err(
+                LosslessSessionValidationError::MettleMissingBinRangeInvalid {
+                    start_bin_id: 4,
+                    end_bin_id: 4,
+                }
+            )
+        );
+        assert_eq!(
+            MettleStallEvidence {
+                repair_epoch: 1,
+                missing_bin_ranges: vec![
+                    super::super::MissingMettleBinRange {
+                        start_bin_id: 1,
+                        end_bin_id: 3,
+                    },
+                    super::super::MissingMettleBinRange {
+                        start_bin_id: 3,
+                        end_bin_id: 5,
+                    },
+                ],
+            }
+            .validate(),
+            Err(LosslessSessionValidationError::MettleMissingBinRangesMustBeSortedMerged)
+        );
+        let too_many = MettleStallEvidence {
+            repair_epoch: 1,
+            missing_bin_ranges: (0..=MAX_METTLE_MISSING_BIN_RANGES)
+                .map(|index| super::super::MissingMettleBinRange {
+                    start_bin_id: u32::try_from(index * 2).expect("test bin id"),
+                    end_bin_id: u32::try_from(index * 2 + 1).expect("test bin id"),
+                })
+                .collect(),
+        };
+        assert_eq!(
+            too_many.validate(),
+            Err(
+                LosslessSessionValidationError::TooManyMettleMissingBinRanges {
+                    configured: MAX_METTLE_MISSING_BIN_RANGES + 1,
+                    max: MAX_METTLE_MISSING_BIN_RANGES,
+                }
+            )
+        );
     }
 
     #[test]

@@ -1023,6 +1023,56 @@ mod tests {
     }
 
     #[test]
+    fn mettle_block_ack_and_checkpoint_reject_malformed_bodies() {
+        let mut no_evidence_with_epoch = encode_control(
+            92,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 3,
+                    decoded_source_watermark: 4,
+                    stalled: None,
+                },
+            },
+        );
+        no_evidence_with_epoch[LosslessSessionHeader::LEN + 16..LosslessSessionHeader::LEN + 20]
+            .copy_from_slice(&1u32.to_be_bytes());
+        assert!(decode_control(&no_evidence_with_epoch).is_none());
+
+        let mut invalid_range = encode_control(
+            92,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 3,
+                    decoded_source_watermark: 4,
+                    stalled: Some(MettleStallEvidence {
+                        repair_epoch: 1,
+                        missing_bin_ranges: vec![MissingMettleBinRange {
+                            start_bin_id: 5,
+                            end_bin_id: 6,
+                        }],
+                    }),
+                },
+            },
+        );
+        invalid_range[LosslessSessionHeader::LEN + METTLE_ACK_FIXED_BODY_LEN + 4
+            ..LosslessSessionHeader::LEN + METTLE_ACK_FIXED_BODY_LEN + 8]
+            .copy_from_slice(&5u32.to_be_bytes());
+        assert!(decode_control(&invalid_range).is_none());
+
+        let mut zero_checkpoint = encode_control(
+            92,
+            &LosslessSessionControl::DepartureCheckpoint {
+                stream_id: 3,
+                repair_epoch: 1,
+                departure_bin_exclusive: 9,
+            },
+        );
+        zero_checkpoint[LosslessSessionHeader::LEN + 12..LosslessSessionHeader::LEN + 16]
+            .copy_from_slice(&0u32.to_be_bytes());
+        assert!(decode_control(&zero_checkpoint).is_none());
+    }
+
+    #[test]
     fn mettle_manifest_roundtrips_as_known_fec_scheme() {
         let ctrl =
             LosslessSessionControl::Manifest {
@@ -1554,6 +1604,67 @@ mod tests {
                 range_count == 1,
                 "one encoded completion range is valid only when the peer count is one"
             );
+        }
+
+        let mettle_ack_frame = encode_control(
+            25,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 1,
+                    decoded_source_watermark: 2,
+                    stalled: Some(MettleStallEvidence {
+                        repair_epoch: 3,
+                        missing_bin_ranges: vec![MissingMettleBinRange {
+                            start_bin_id: 4,
+                            end_bin_id: 5,
+                        }],
+                    }),
+                },
+            },
+        );
+        for body_len in (0..=96).chain([u32::MAX]) {
+            let mut candidate = mettle_ack_frame.clone();
+            candidate[16..20].copy_from_slice(&body_len.to_be_bytes());
+            let _ = decode_control(&candidate);
+            for truncated_len in 0..candidate.len() {
+                let _ = decode_control(&candidate[..truncated_len]);
+            }
+        }
+        for range_count in 0..=u16::MAX {
+            let mut candidate = mettle_ack_frame.clone();
+            candidate[LosslessSessionHeader::LEN + 2..LosslessSessionHeader::LEN + 4]
+                .copy_from_slice(&range_count.to_be_bytes());
+            assert_eq!(
+                decode_control(&candidate).is_some(),
+                range_count == 1,
+                "one encoded METTLE range is valid only when the peer count is one"
+            );
+        }
+        for flags in 0..=u8::MAX {
+            let mut candidate = mettle_ack_frame.clone();
+            candidate[LosslessSessionHeader::LEN + 1] = flags;
+            assert_eq!(
+                decode_control(&candidate).is_some(),
+                flags == 1,
+                "METTLE stall evidence has exactly one canonical flag value"
+            );
+        }
+
+        let checkpoint_frame = encode_control(
+            26,
+            &LosslessSessionControl::DepartureCheckpoint {
+                stream_id: 1,
+                repair_epoch: 3,
+                departure_bin_exclusive: 5,
+            },
+        );
+        for body_len in (0..=96).chain([u32::MAX]) {
+            let mut candidate = checkpoint_frame.clone();
+            candidate[16..20].copy_from_slice(&body_len.to_be_bytes());
+            let _ = decode_control(&candidate);
+            for truncated_len in 0..candidate.len() {
+                let _ = decode_control(&candidate[..truncated_len]);
+            }
         }
     }
 }
