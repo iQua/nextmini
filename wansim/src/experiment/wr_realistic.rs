@@ -408,25 +408,24 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
             });
         }
     }
-    // K=65,536 is intentionally a small scaling spot: two coupled seeds per profile and protocol.
+    // K=65,536 is intentionally a small scaling spot: one carousel cell per profile, retaining
+    // the same stochastic seed budget as every other reported cell.
     for profile in CloudProfileKind::ALL {
-        for protocol in MAIN_PROTOCOLS {
-            for seed in 0..2 {
-                tasks.push(Task {
-                    slice: Slice::Scaling,
-                    profile,
-                    placement: 0,
-                    utilization: 50,
-                    jitter: true,
-                    protocol,
-                    k: 65_536,
-                    seed,
-                    cadence: 2,
-                    admission: ReceiverAdmissionPolicy::HybridDrop,
-                    slow_receiver: None,
-                    sessions: 1,
-                });
-            }
+        for seed in 0..seeds {
+            tasks.push(Task {
+                slice: Slice::Scaling,
+                profile,
+                placement: 0,
+                utilization: 50,
+                jitter: true,
+                protocol: WrProtocol::Carousel,
+                k: 65_536,
+                seed,
+                cadence: 2,
+                admission: ReceiverAdmissionPolicy::HybridDrop,
+                slow_receiver: None,
+                sessions: 1,
+            });
         }
     }
     tasks
@@ -1132,13 +1131,21 @@ mod tests {
     #[test]
     fn main_matrix_has_every_required_cloud_axis_and_minimum_seed_budget() {
         let tasks = build_tasks(16);
+        assert_eq!(tasks.len(), 3_040);
         let main = tasks
             .iter()
             .filter(|task| task.slice == Slice::Main)
             .collect::<Vec<_>>();
         assert_eq!(main.len(), 3 * 2 * 3 * 2 * 5 * 16);
         assert!(main.iter().all(|task| task.k == 8_192));
-        assert!(tasks.iter().any(|task| task.k == 65_536));
+        let scaling = tasks
+            .iter()
+            .filter(|task| task.slice == Slice::Scaling)
+            .collect::<Vec<_>>();
+        assert_eq!(scaling.len(), 3 * 16);
+        assert!(scaling.iter().all(|task| {
+            task.k == 65_536 && task.protocol == WrProtocol::Carousel && task.seed < 16
+        }));
         assert!(tasks.iter().any(|task| task.sessions == 2));
     }
 
