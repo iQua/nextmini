@@ -1,0 +1,7 @@
+schema_version,simulator_version,evidence_class,sample_class,condition,cadence_factor,seeds,barrier_mean_ns,barrier_p95_ns,sender_completion_mean_ns,feedback_completion_lag_mean_ns,total_emissions_mean,post_completion_tail_mean,ack_probes_sum,reverse_path_wire_bytes_mean,reverse_background_delivered_bytes_mean,application_drops_sum,link_drops_sum,liveness_pressure_max_permille,liveness_margin_min_permille
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,ack_incast,0.5x,32,98656202,98656202,115184402,16528200,858,124,1280,120460,0,59904,0,49,951
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,ack_incast,1x,32,98656202,98656202,115434402,16778200,864,130,1184,66892,0,60416,0,49,951
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,ack_incast,2x,32,98656202,98656202,115634402,16978200,870,136,1280,40000,0,60672,0,49,951
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,ack_incast_plus_reverse_bursts,0.5x,128,98656202,98656202,116295820,17639618,868,134,5169,139550,17334,242216,40,49,951
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,ack_incast_plus_reverse_bursts,1x,128,98656202,98656202,115535277,16879075,865,131,4736,85102,16817,241816,0,49,951
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,ack_incast_plus_reverse_bursts,2x,128,98656202,98656202,115717970,17061768,870,136,5136,58240,16822,242688,2,49,951

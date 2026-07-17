@@ -1,0 +1,15 @@
+schema_version,simulator_version,evidence_class,sample_class,overlap_percent,protocol,seeds,barrier_mean_ns,barrier_p95_ns,sender_completion_mean_ns,feedback_completion_lag_mean_ns,total_emissions_mean,useful_emissions_mean,positive_round_deficits_sum,round_deficit_sum,maximum_round_deficit,application_drops_sum,link_drops_sum,background_delivered_bytes_mean,tree0_utilization_mean_permille,tree1_utilization_mean_permille,delivered_rate_correlation_mean_ppm,delivered_rate_correlation_abs_mean_ppm,maximum_mailbox_high_water
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,0,best_single_tree,128,155157339,157438203,158162780,3005441,1061,534,0,0,0,0,0,1674720,187,188,230061,299934,102
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,0,carousel,128,80744513,82050202,84108425,3363911,556,556,0,0,0,0,0,942684,190,189,496478,553111,106
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,0,per_stripe_fec,128,81645999,83123004,84651440,3005441,556,556,0,0,0,0,0,937084,187,187,429566,463389,108
+1,0.1.0,model-level causal evidence; not a WAN measurement,reduced_rounds_slice,0,pooled_rounds,32,80673804,81955001,89295755,8621951,516,516,96,447,11,0,0,960144,176,176,434479,475504,97
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,25,best_single_tree,32,153349403,155255404,156354844,3005441,1062,534,0,0,0,0,0,1686912,190,190,109058,225081,102
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,25,carousel,32,79981353,81050202,83359207,3377853,556,556,0,0,0,0,0,957424,190,192,303955,446363,103
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,25,per_stripe_fec,32,80445828,81393401,83451269,3005441,555,555,0,0,0,0,0,946128,190,190,577191,583499,103
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,50,best_single_tree,32,151865916,154517401,154871357,3005441,1063,534,0,0,0,0,0,1723968,192,192,310573,327611,107
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,50,carousel,32,78970703,80032601,82302957,3332253,558,558,0,0,0,0,0,963312,194,194,239238,345400,98
+1,0.1.0,model-level causal evidence; not a WAN measurement,screening,50,per_stripe_fec,32,79711828,81127004,82717269,3005441,556,556,0,0,0,0,0,968768,192,192,398681,496034,100
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,100,best_single_tree,128,145546869,146537404,148552310,3005441,1068,534,0,0,0,0,0,1658524,202,202,378037,387336,105
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,100,carousel,128,75738519,76584603,79170925,3432406,562,562,0,0,0,0,0,896900,204,202,436880,456988,101
+1,0.1.0,model-level causal evidence; not a WAN measurement,decisive,100,per_stripe_fec,128,75976638,76900203,78982079,3005441,556,556,0,0,0,0,0,880204,201,201,418765,434044,100
+1,0.1.0,model-level causal evidence; not a WAN measurement,reduced_rounds_slice,100,pooled_rounds,32,75624292,76369804,84466081,8841788,515,515,96,363,4,0,0,996272,189,186,471260,481135,95

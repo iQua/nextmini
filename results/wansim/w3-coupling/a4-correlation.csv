@@ -1,0 +1,5 @@
+schema_version,simulator_version,evidence_class,overlap_percent,seeds,cross_seed_delivered_rate_correlation_ppm,within_trace_delta_correlation_mean_ppm,within_trace_delta_correlation_abs_mean_ppm,interpretation
+1,0.1.0,model-level causal evidence; not a WAN measurement,0,128,-176208,496478,553111,edge-disjoint reference
+1,0.1.0,model-level causal evidence; not a WAN measurement,25,32,82289,303955,446363,endogenous delivered-rate coupling; A4 violated
+1,0.1.0,model-level causal evidence; not a WAN measurement,50,32,393881,239238,345400,endogenous delivered-rate coupling; A4 violated
+1,0.1.0,model-level causal evidence; not a WAN measurement,100,128,968379,436880,456988,endogenous delivered-rate coupling; A4 violated

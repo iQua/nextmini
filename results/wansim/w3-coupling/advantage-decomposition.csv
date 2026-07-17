@@ -1,0 +1,5 @@
+schema_version,simulator_version,evidence_class,overlap_percent,seeds,carousel_barrier_mean_ns,per_stripe_barrier_mean_ns,best_single_barrier_mean_ns,pooling_advantage_ns,pooling_advantage_ppm,path_diversity_advantage_ns,path_diversity_advantage_ppm,total_two_mechanism_advantage_ns,additive_identity_holds
+1,0.1.0,model-level causal evidence; not a WAN measurement,0,128,80744513,81645999,155157339,901486,11041,73511340,473785,74412826,true
+1,0.1.0,model-level causal evidence; not a WAN measurement,25,32,79981353,80445828,153349403,464475,5773,72903575,475408,73368050,true
+1,0.1.0,model-level causal evidence; not a WAN measurement,50,32,78970703,79711828,151865916,741125,9297,72154088,475117,72895213,true
+1,0.1.0,model-level causal evidence; not a WAN measurement,100,128,75738519,75976638,145546869,238119,3134,69570231,477991,69808350,true
