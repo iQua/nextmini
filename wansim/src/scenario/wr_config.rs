@@ -80,6 +80,7 @@ pub struct CloudScenario {
     pub vm_nic_queue_bytes: usize,
     pub intra_region_rtt_ns: u64,
     pub jitter_max_ppm: u32,
+    pub jitter_epoch_ns: u64,
     pub background_reference_rate_bps: u64,
     pub regions: Vec<CloudRegion>,
     pub trunks: Vec<CloudTrunk>,
@@ -174,6 +175,7 @@ impl CloudScenario {
         for (name, value) in [
             ("vm_nic_cap_bps", self.vm_nic_cap_bps),
             ("intra_region_rtt_ns", self.intra_region_rtt_ns),
+            ("jitter_epoch_ns", self.jitter_epoch_ns),
             (
                 "background_reference_rate_bps",
                 self.background_reference_rate_bps,
@@ -410,7 +412,7 @@ impl CloudScenario {
 # inputs synthesized from plans/wansim-plan.md, not provider guarantees or reverse engineering.\n\
 # vm_nic_cap_bps: representative VM ceiling; vm_nic_queue_bytes: modeled finite NIC queue.\n\
 # intra_region_rtt_ns/access_one_way_ns/trunk propagation_ns: representative latency inputs.\n\
-# jitter_max_ppm: seeded bounded propagation perturbation; 50_000 means +/-5 percent.\n\
+# jitter_max_ppm/jitter_epoch_ns: +/-5 percent piecewise-constant delay, updated every 100 ms.\n\
 # background_reference_rate_bps: denominator for the 30/50/70 percent offered-load sweep.\n\
 # trunk capacity_bps/queue_bytes: modeled shared transit service, not physical inventory.\n\
 # relay_regions and rtt_matrix_ns are deterministic generator outputs.\n\
@@ -593,6 +595,7 @@ fn base_profile(profile: CloudProfileKind) -> CloudScenario {
         vm_nic_queue_bytes,
         intra_region_rtt_ns: 1_500_000,
         jitter_max_ppm: 50_000,
+        jitter_epoch_ns: 100_000_000,
         background_reference_rate_bps: core_rate,
         regions,
         trunks: trunk_specs(core_rate, core_queue, delays),

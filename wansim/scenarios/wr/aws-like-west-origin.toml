@@ -4,7 +4,7 @@
 # inputs synthesized from plans/wansim-plan.md, not provider guarantees or reverse engineering.
 # vm_nic_cap_bps: representative VM ceiling; vm_nic_queue_bytes: modeled finite NIC queue.
 # intra_region_rtt_ns/access_one_way_ns/trunk propagation_ns: representative latency inputs.
-# jitter_max_ppm: seeded bounded propagation perturbation; 50_000 means +/-5 percent.
+# jitter_max_ppm/jitter_epoch_ns: +/-5 percent piecewise-constant delay, updated every 100 ms.
 # background_reference_rate_bps: denominator for the 30/50/70 percent offered-load sweep.
 # trunk capacity_bps/queue_bytes: modeled shared transit service, not physical inventory.
 # relay_regions and rtt_matrix_ns are deterministic generator outputs.
@@ -19,6 +19,7 @@ vm_nic_cap_bps = 2000000000
 vm_nic_queue_bytes = 4194304
 intra_region_rtt_ns = 1500000
 jitter_max_ppm = 50000
+jitter_epoch_ns = 100000000
 background_reference_rate_bps = 1200000000
 rtt_matrix_ns = [
     [

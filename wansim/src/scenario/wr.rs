@@ -925,6 +925,7 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
             tree_probe_flow_ids,
             jitter_enabled: config.jitter_enabled,
             jitter_max_ppm: cloud.jitter_max_ppm,
+            jitter_epoch_ns: cloud.jitter_epoch_ns,
             sample_interval_ns: 10_000_000,
             simulation_end_ns: simulation_end_ns(config),
             prf: CounterPrf::new(config.seed, "wr-regional-backbone"),

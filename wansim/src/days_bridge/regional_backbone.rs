@@ -43,6 +43,7 @@ pub(crate) struct RegionalBackboneConfig {
     pub(crate) tree_probe_flow_ids: BTreeSet<usize>,
     pub(crate) jitter_enabled: bool,
     pub(crate) jitter_max_ppm: u32,
+    pub(crate) jitter_epoch_ns: u64,
     pub(crate) sample_interval_ns: u64,
     pub(crate) simulation_end_ns: u64,
     pub(crate) prf: CounterPrf,
@@ -87,6 +88,7 @@ struct ResourceState {
     generation: u64,
     sampled_wire_bytes: usize,
     sampled_background_bytes: usize,
+    propagation_frontier_ns: u64,
 }
 
 pub(crate) struct RegionalBackbone {
@@ -118,6 +120,7 @@ impl RegionalBackbone {
             || config.routes.is_empty()
             || config.sample_interval_ns == 0
             || config.simulation_end_ns == 0
+            || config.jitter_epoch_ns == 0
             || config.jitter_max_ppm > 1_000_000
         {
             return Err(RegionalBackboneError::Empty);
@@ -367,13 +370,14 @@ impl RegionalBackbone {
         let hop = &self.config.routes[&routed.route_key].hops[routed.position];
         debug_assert_eq!(hop.resource, key.resource);
         let propagation_ns =
-            self.jittered_propagation_ns(hop.propagation_ns, key.resource, &routed.packet);
+            self.jittered_propagation_ns(hop.propagation_ns, key.resource, timestamp);
         routed.position = routed.position.saturating_add(1);
-        let arrival_ns = timestamp.saturating_add(propagation_ns);
+        let arrival_ns = self.propagation_arrival_ns(key.resource, timestamp, propagation_ns);
+        let actual_propagation_ns = arrival_ns.saturating_sub(timestamp);
         routed.packet.departure_update(seconds_from_ns(arrival_ns));
         self.mailbox_tracker.enqueue(self.config.mailbox);
         if let Err(error) = context.schedule_event(
-            Duration::from_nanos(propagation_ns.saturating_sub(DECISION_DELTA_NS)),
+            Duration::from_nanos(actual_propagation_ns.saturating_sub(DECISION_DELTA_NS)),
             &Self::PROPAGATION_SID,
             PropagationCompletion { routed },
         ) {
@@ -382,19 +386,33 @@ impl RegionalBackbone {
         }
     }
 
-    fn jittered_propagation_ns(&self, base: u64, resource: usize, _packet: &Packet) -> u64 {
+    fn jittered_propagation_ns(&self, base: u64, resource: usize, departure_ns: u64) -> u64 {
         if !self.config.jitter_enabled {
             return base;
         }
         let width = u64::from(self.config.jitter_max_ppm);
+        let epoch = departure_ns / self.config.jitter_epoch_ns;
         let draw = self
             .config
             .prf
-            .draw_u64("wr-propagation-jitter", resource as u64, 0, 0);
+            .draw_u64("wr-propagation-jitter", resource as u64, epoch, 0);
         let signed_ppm =
             i128::from(draw % (width.saturating_mul(2).saturating_add(1))) - i128::from(width);
         let adjustment = i128::from(base).saturating_mul(signed_ppm) / 1_000_000;
         u64::try_from((i128::from(base) + adjustment).max(1)).unwrap_or(u64::MAX)
+    }
+
+    fn propagation_arrival_ns(
+        &mut self,
+        resource: usize,
+        departure_ns: u64,
+        propagation_ns: u64,
+    ) -> u64 {
+        let nominal = departure_ns.saturating_add(propagation_ns);
+        let state = &mut self.resources[resource];
+        let arrival = nominal.max(state.propagation_frontier_ns.saturating_add(1));
+        state.propagation_frontier_ns = arrival;
+        arrival
     }
 
     async fn emit(&mut self, routed: RoutedPacket, timestamp: u64) {
@@ -517,6 +535,7 @@ mod tests {
             tree_probe_flow_ids: BTreeSet::from([1]),
             jitter_enabled: true,
             jitter_max_ppm: 50_000,
+            jitter_epoch_ns: 100_000_000,
             sample_interval_ns: 5_000_000,
             simulation_end_ns: 1_000_000_000,
             prf: CounterPrf::new(7, "test"),
@@ -535,28 +554,34 @@ mod tests {
     }
 
     #[test]
-    fn jitter_is_seeded_bounded_and_optional() {
-        let packet = Packet::new(512, 0, 1, 0.0);
+    fn jitter_is_seeded_epoch_varying_bounded_and_optional() {
         let recorder = Recorder::new("test", 0);
         let tracker = MailboxTracker::default();
         let backbone = RegionalBackbone::new(valid_config(), recorder.clone(), tracker.clone())
             .expect("valid backbone");
-        let first = backbone.jittered_propagation_ns(1_000_000, 0, &packet);
-        let second = backbone.jittered_propagation_ns(1_000_000, 0, &packet);
+        let first = backbone.jittered_propagation_ns(1_000_000, 0, 0);
+        let second = backbone.jittered_propagation_ns(1_000_000, 0, 99_999_999);
         assert_eq!(first, second);
-        let later_packet = Packet::new(512, 10_000, 99, 0.5);
-        assert_eq!(
-            first,
-            backbone.jittered_propagation_ns(1_000_000, 0, &later_packet),
-            "one physical resource must not reorder a flow via per-packet jitter"
-        );
+        let later = backbone.jittered_propagation_ns(1_000_000, 0, 100_000_000);
+        assert_ne!(first, later, "the pinned seed must vary across epochs");
         assert!((950_000..=1_050_000).contains(&first));
+        assert!((950_000..=1_050_000).contains(&later));
         let mut disabled = valid_config();
         disabled.jitter_enabled = false;
         let backbone = RegionalBackbone::new(disabled, recorder, tracker).expect("valid backbone");
-        assert_eq!(
-            backbone.jittered_propagation_ns(1_000_000, 0, &packet),
-            1_000_000
-        );
+        assert_eq!(backbone.jittered_propagation_ns(1_000_000, 0, 0), 1_000_000);
+    }
+
+    #[test]
+    fn propagation_frontier_prevents_jitter_epoch_reordering() {
+        let mut backbone = RegionalBackbone::new(
+            valid_config(),
+            Recorder::new("test", 0),
+            MailboxTracker::default(),
+        )
+        .expect("valid backbone");
+        backbone.resources[0].propagation_frontier_ns = 200_000_000;
+        let arrival = backbone.propagation_arrival_ns(0, 100_000_000, 1_000_000);
+        assert_eq!(arrival, 200_000_001);
     }
 }
