@@ -193,6 +193,19 @@ pub fn source_window_with_terminal_source_count(
     }
 }
 
+/// Return the conservative source-id interval that can touch a finite bin.
+///
+/// This accessor exists for the Stage 3 storage experiment, an extension **BEYOND the METTLE
+/// paper**. Callers must still regenerate each candidate source's actual edge ids; membership in
+/// this interval alone does not mean that the source contributes to the equation.
+pub fn possible_source_id_range_for_bin(
+    params: MettleParams,
+    bin_id: u128,
+    terminal_source_count: u64,
+) -> Option<(u64, u64)> {
+    params.possible_source_id_range_for_bin(bin_id, Some(terminal_source_count))
+}
+
 pub fn tle_bin_id(params: MettleParams, source_id: u64) -> u128 {
     params.tle_bin_id(source_id)
 }

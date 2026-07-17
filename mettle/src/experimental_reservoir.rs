@@ -15,6 +15,8 @@ use std::collections::{BTreeSet, BinaryHeap};
 
 use crate::{MettleParams, OverheadRatio};
 
+pub mod simulation;
+
 /// Version of the Stage 3 reserve-position pseudorandom function.
 pub const RESERVE_PRF_VERSION: u16 = 1;
 
@@ -358,10 +360,32 @@ impl FreshReserveEmitter {
     }
 }
 
+/// Check the independent sender-side payload reservation for this beyond-paper prototype.
+pub fn checked_reserve_payload_bytes(
+    reserve_cardinality: usize,
+    symbol_bytes: usize,
+    budget_bytes: usize,
+) -> Result<usize, ReservoirError> {
+    if symbol_bytes == 0 {
+        return Err(ReservoirError::ZeroSymbolBytes);
+    }
+    let required_bytes = reserve_cardinality
+        .checked_mul(symbol_bytes)
+        .ok_or(ReservoirError::ArithmeticOverflow)?;
+    if required_bytes > budget_bytes {
+        return Err(ReservoirError::ReservePayloadBudgetExceeded {
+            required_bytes,
+            budget_bytes,
+        });
+    }
+    Ok(required_bytes)
+}
+
 /// Errors from the simulation-only finite geometry and reserve selector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReservoirError {
     ZeroDenominator,
+    ZeroSymbolBytes,
     EmptySourcePrefix,
     ArithmeticOverflow,
     TargetBelowTailFloor {
@@ -376,6 +400,10 @@ pub enum ReservoirError {
     ReserveExceedsEligiblePositions {
         reserve_cardinality: u128,
         eligible_bin_count: u128,
+    },
+    ReservePayloadBudgetExceeded {
+        required_bytes: usize,
+        budget_bytes: usize,
     },
     AllocationFailed,
     GeometryInvariantViolated,
@@ -431,7 +459,7 @@ mod tests {
 
     use super::{
         FiniteReservoirGeometry, FreshReserveEmitter, RESERVE_PRF_VERSION, ReserveSet,
-        ReservoirError, ReservoirRate,
+        ReservoirError, ReservoirRate, checked_reserve_payload_bytes,
     };
 
     fn rate(numerator: u32, denominator: u32) -> ReservoirRate {
@@ -538,5 +566,21 @@ mod tests {
             FiniteReservoirGeometry::solve(256, rate(1, 100), rate(1, 100)),
             Err(ReservoirError::TargetBelowTailFloor { .. })
         ));
+    }
+
+    #[test]
+    fn reserve_payload_budget_is_independent_and_loud_at_the_boundary() {
+        assert_eq!(checked_reserve_payload_bytes(8, 1400, 11_200), Ok(11_200));
+        assert_eq!(
+            checked_reserve_payload_bytes(8, 1400, 11_199),
+            Err(ReservoirError::ReservePayloadBudgetExceeded {
+                required_bytes: 11_200,
+                budget_bytes: 11_199,
+            })
+        );
+        assert_eq!(
+            checked_reserve_payload_bytes(8, 0, usize::MAX),
+            Err(ReservoirError::ZeroSymbolBytes)
+        );
     }
 }
