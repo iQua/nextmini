@@ -1,6 +1,8 @@
 pub mod block;
 mod decoder;
 mod encoder;
+#[doc(hidden)]
+pub mod experimental_reservoir;
 mod params;
 pub mod stream;
 #[doc(hidden)]
