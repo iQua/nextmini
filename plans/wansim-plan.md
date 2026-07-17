@@ -109,3 +109,56 @@ excluded keeps it separable if nextmini is ever released permissively.
 
 Each stage: commits grouped by concern, wansim gate green, results under `results/wansim/`,
 stage report in `plans/`, review by Claude before the next stage (same discipline as Stages 0–5).
+
+## Design discussion resolutions (2026-07-17, Claude ruling on the Codex critique)
+
+The critique's source-level findings are accepted in full. Amendments:
+
+1. **Constraint 2 rewritten**: the transport is "pinned days-derived TCP extended with checked
+   socket flow control." The pinned days checkout (d6a473b) has segment CC/retransmission but NO
+   advertised receive window, NO finite socket send buffer or application-write admission, an
+   unbounded sink reassembly vector, immediate ACKs decoupled from application reads, and no
+   zero-window behavior — the buffered backpressure chain is a work product, not a facility.
+   Additionally the fork MUST fix (with a regression test) the found TCP bug: produce_ack can
+   cumulatively ACK across a reassembly gap.
+2. **Fork hosting decision**: vendor the fork in-tree at `wansim/vendor/days/` (including its
+   bundled nexosim, both pinned to exact upstream revs recorded in `wansim/vendor/DIVERGENCE.md`
+   along with every local patch). No external hosting, no pushes, fully reproducible. Only
+   general-purpose byte-stream/socket-flow-control/TCP-correctness changes go into the vendored
+   fork; ALL nextmini semantics (relay, frames, admission, DoF, §P) stay in wansim proper. The
+   wansim workspace manifest must patch nexosim explicitly (patch sections are not inherited).
+3. **Constraint 7 replaced**: no global six-phase barrier (nexosim guarantees same-origin causal
+   order only; cross-origin same-timestamp order is unspecified; days uses immediate sends).
+   Instead: handlers must be deterministic and order-independent; where order genuinely matters,
+   use local timestamped tie resolution — record logical deadline t, defer the decision by one
+   delta, accept events stamped ≤ t, invalidate stale timers by generation. The delta is reported
+   separately and excluded from modeled latency. Metamorphic tests vary model-registration order
+   and must reproduce identical outcomes. "ACK exactly at the pacing deadline wins" is preserved
+   observably.
+4. **W0 split**: W0a (single chain source → relay → receiver, no fan-out) retires the foundation
+   risks: pinned dependency identity; dynamically produced application bytes over a persistent hop
+   connection; forward-only-after-full-frame assembly (4-byte length prefix counted); independent
+   per-hop TCP state; finite send/receive buffers + advertised window + application read credit
+   producing an exact, explainable backpressure plateau; read-pause stalls the upstream writer only
+   after the modeled chain fills, resume drains; deterministic segment loss recovered without
+   application-visible gaps; the ACK-at-deadline tie rule pinned; two runs byte-identical.
+   W0b adds the planned fan-out tree and proves: configured child order preserved (fan-out order is
+   controller-provided — never sort it); a blocked first child affects later children only after
+   the real downstream chain fills; the concurrent-admission variant removes that externality; the
+   hybrid receiver drop happens at the application/runtime boundary AFTER transport delivery (this
+   distinction is central to whether carousel repair is useful); conservation in the provisioned
+   no-drop scenario; nexosim mailboxes never act as accidental modeled queues (plumbing capacities
+   provably nonbinding, high-water marks asserted). No protocol feedback in W0.
+5. **Constraint refinements accepted**: model the production queue chain by identity (processor
+   ingress lanes — control on lane 0, tree traffic hashed to tree_id+1; scheduler reader channel;
+   scheduler queue with batch-32 drain holding permits until the socket copy completes; socket
+   buffers; the shared lossless-runtime command mailbox BEFORE the control/data inbox split);
+   packet-counted vs byte-counted capacities stay distinct (no single BDP scalar — BDP is the
+   sweep axis, not the representation); wire/framing overhead counted separately from innovative
+   payload; TCP_NODELAY semantics in W0; per-child long-lived connections with independent CC
+   (never multicast TCP segments); attribution records causal block/unblock edges first and derives
+   the critical path (never sums overlapping waits); one simulation per process with a wansim-owned
+   recorder and PRF (days global ID/RNG state stays out of artifacts).
+6. **Size acknowledgment**: W0 as split is estimated at 4,500–7,000 net lines (W0a ≈ 2,500–3,500),
+   25–40 tests. This is a real foundation build, not a scaffold; W0a's backpressure-plateau and
+   loss-recovery gates are the go/no-go for the whole days-based approach.
