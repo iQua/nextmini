@@ -718,25 +718,6 @@ impl Decoder {
     }
 }
 
-/// Compute how many future repair symbols are needed for the selected scheme.
-#[must_use]
-#[allow(dead_code)]
-pub fn repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
-    match params.scheme {
-        FecScheme::RaptorQ => {
-            let present = symbol_ids.into_iter().count();
-            if present >= params.source_symbols {
-                1
-            } else {
-                u16::try_from(params.source_symbols - present)
-                    .unwrap_or(u16::MAX)
-                    .max(1)
-            }
-        }
-        FecScheme::Mettle => mettle_repair_deficit(params, symbol_ids),
-    }
-}
-
 /// Return the number of symbols to emit before opening the first FEC feedback
 /// round for the selected scheme.
 #[must_use]
@@ -758,41 +739,9 @@ pub fn initial_symbol_count(
     }
 }
 
-#[allow(dead_code)]
-fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
-    let Ok(metadata) = mettle::block::BlockParams::with_overhead(
-        params.source_symbols,
-        params.symbol_size,
-        params.seed,
-        mettle::OverheadRatio::ZERO,
-    )
-    .metadata() else {
-        return 1;
-    };
-
-    let initial_symbol_count = metadata.initial_symbol_count();
-    let mut initial_bins = Vec::new();
-    let mut repairs = Vec::new();
-    for symbol_id in symbol_ids {
-        if (symbol_id as usize) < initial_symbol_count {
-            initial_bins.push(symbol_id as usize);
-        } else {
-            repairs.push(symbol_id.saturating_sub(initial_symbol_count as u32) as usize);
-        }
-    }
-
-    let additional = match metadata.estimate_repair_deficit(initial_bins, repairs) {
-        Ok(Some(additional)) => additional,
-        _ => return 1,
-    };
-    u16::try_from(additional).unwrap_or(u16::MAX).max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const PAPER_SCALE_METTLE_K: usize = 2400;
 
     #[test]
     fn block_seed_is_stable_for_known_input() {
@@ -1063,19 +1012,5 @@ mod tests {
         {
             assert_eq!(decoded, expected, "symbol {i} mismatch");
         }
-    }
-
-    #[test]
-    fn mettle_deficit_accounts_for_non_contiguous_repairs() {
-        let k = PAPER_SCALE_METTLE_K;
-        let params = BlockParams::with_scheme(k, 1, 0xA55A, FecScheme::Mettle);
-        let received_sources = (0..(k - 3)).map(|source_index| source_index as u32);
-        let received_repairs = [10u32, 12, 17].map(|repair_index| k as u32 + repair_index);
-        let deficit = repair_deficit(params, received_sources.chain(received_repairs));
-
-        assert!(
-            deficit > 1,
-            "non-contiguous METTLE repairs should not be treated as an immediately decodable K-count set"
-        );
     }
 }
