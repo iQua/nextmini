@@ -1,0 +1,3 @@
+schema_version,simulator_version,evidence_class,source_symbols,total_emissions,ack_flight_tail_emissions,tail_fraction_ppm
+1,0.1.0,model-level causal evidence; not a WAN measurement,64,282,100,354609
+1,0.1.0,model-level causal evidence; not a WAN measurement,512,736,104,141304

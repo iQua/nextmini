@@ -1,0 +1,4 @@
+schema_version,simulator_version,evidence_class,admission_policy,completion_times_ns,total_emissions,application_drops,blocking_wait_events,isolated_credit_deferrals,identical_to_hybrid
+1,0.1.0,model-level causal evidence; not a WAN measurement,hybrid_drop,26281203;26281203;25182003,736,0,0,0,true
+1,0.1.0,model-level causal evidence; not a WAN measurement,naive_blocking,26281203;26281203;25182003,736,0,0,0,true
+1,0.1.0,model-level causal evidence; not a WAN measurement,isolated_credit,26281203;26281203;25182003,736,0,0,0,true
