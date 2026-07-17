@@ -1,0 +1,24 @@
+[package]
+name = "wansim"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+publish = false
+
+[workspace]
+members = ["."]
+exclude = ["vendor/days"]
+resolver = "3"
+
+[dependencies]
+csv = "1.4"
+days = { path = "vendor/days", version = "0.4.3" }
+nexosim = { version = "1.0.0", features = ["tracing"] }
+parking_lot = "0.12"
+serde = { version = "1", features = ["derive"] }
+thiserror = "2"
+toml = "1"
+
+[patch.crates-io]
+nexosim = { path = "vendor/days/crates/nexosim" }
+
