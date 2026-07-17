@@ -111,6 +111,7 @@ fn ack_packet(flow_id: usize) -> Packet {
     packet.ack = Some(TCPAck {
         sequence_num: 1,
         acknowledged_size: 64,
+        advertised_window: usize::MAX,
         ece: false,
     });
     packet

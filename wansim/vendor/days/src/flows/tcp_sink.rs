@@ -129,6 +129,7 @@ impl TCPPacketSink {
             ack: Some(TCPAck {
                 sequence_num: self.next_seq_expected,
                 acknowledged_size: packet.size,
+                advertised_window: usize::MAX,
                 ece: self.ecn_echo,
             }),
             control: None,
@@ -160,7 +161,15 @@ impl TCPPacketSink {
 
         self.recv_buffer = merged_stats;
 
-        self.next_seq_expected = self.recv_buffer[0].1;
+        // Advance the cumulative ACK only over ranges contiguous with RCV.NXT.
+        // The previous implementation used the end of the first sorted range,
+        // which incorrectly acknowledged data across a leading gap.
+        for &(start, end) in &self.recv_buffer {
+            if start > self.next_seq_expected {
+                break;
+            }
+            self.next_seq_expected = self.next_seq_expected.max(end);
+        }
 
         let acknowledgment = self.build_acknowledgment(&packet, now);
 
@@ -263,5 +272,16 @@ mod tests {
             ack.ack.expect("missing ack").sequence_num,
             packet.packet_id + packet.size
         );
+    }
+
+    #[test]
+    fn cumulative_ack_does_not_advance_across_a_gap() {
+        let mut sink = TCPPacketSink::new(9);
+
+        futures::executor::block_on(sink.produce_ack(Packet::new(100, 100, 9, 0.0), 0.1));
+        assert_eq!(sink.next_seq_expected, 0);
+
+        futures::executor::block_on(sink.produce_ack(Packet::new(100, 0, 9, 0.0), 0.2));
+        assert_eq!(sink.next_seq_expected, 200);
     }
 }

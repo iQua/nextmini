@@ -4,7 +4,14 @@
 pub struct TCPAck {
     pub sequence_num: usize,
     pub acknowledged_size: usize,
+    /// Receiver-advertised byte window. Legacy unbounded sinks advertise `usize::MAX`.
+    #[serde(default = "unbounded_receive_window")]
+    pub advertised_window: usize,
     pub ece: bool,
+}
+
+const fn unbounded_receive_window() -> usize {
+    usize::MAX
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

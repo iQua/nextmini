@@ -124,6 +124,8 @@ pub struct TCPPacketSource {
     pub send_buffer: usize,
     /// the sequence number of the segment that is last acknowledged
     pub last_ack: usize,
+    /// receive window most recently advertised by the peer
+    peer_receive_window: usize,
     /// the count of duplicate acknolwedgments
     dupack: usize,
     /// deviation of the RTT
@@ -246,6 +248,7 @@ impl TCPPacketSource {
             next_seq: 0,
             send_buffer: 0,
             last_ack: 0,
+            peer_receive_window: usize::MAX,
             dupack: 0,
             rtt_var: 0.0,
             smoothed_rtt: 0.0,
@@ -294,8 +297,7 @@ impl TCPPacketSource {
         self.app_limited = false;
 
         // compute available sending window (cwnd - unacked data)
-        let cwnd = self.congestion_control.get_cwnd();
-        let window_end = self.last_ack.saturating_add(cwnd);
+        let window_end = self.get_cwnd_limit();
 
         let buffered_end = self.send_buffer.max(self.next_seq);
         if buffered_end >= window_end {
@@ -365,6 +367,7 @@ impl TCPPacketSource {
         }
 
         let ack = ack_packet.ack.unwrap();
+        self.peer_receive_window = ack.advertised_window;
         if self.ecn_enabled && ack.ece {
             self.pending_ecn_marked = true;
             if !self.ecn_reduction_in_flight {
@@ -442,7 +445,7 @@ impl TCPPacketSource {
                 self.congestion_control.more_dupacks_received();
 
                 // transmits a new packet, if allowed by the new value of cwnd
-                let cwnd_limit = self.last_ack + self.congestion_control.get_cwnd();
+                let cwnd_limit = self.get_cwnd_limit();
                 let send_size = self.sendable_bytes(cwnd_limit);
                 if send_size > 0 {
                     debug!(
@@ -606,7 +609,11 @@ impl TCPPacketSource {
     }
 
     pub fn get_cwnd_limit(&self) -> usize {
-        self.last_ack + self.congestion_control.get_cwnd()
+        self.last_ack.saturating_add(
+            self.congestion_control
+                .get_cwnd()
+                .min(self.peer_receive_window),
+        )
     }
 
     fn bytes_in_flight(&self) -> usize {
@@ -805,7 +812,7 @@ impl TCPPacketSource {
         // Attempt to pull fresh packets from the application layer before sending, to ensure there is data ready within the current congestion window.
         self.pull_from_appsource(now).await;
 
-        let cwnd_limit = self.last_ack + self.congestion_control.get_cwnd();
+        let cwnd_limit = self.get_cwnd_limit();
         let send_size = self.sendable_bytes(cwnd_limit);
         if send_size == 0 {
             return None;
@@ -956,6 +963,7 @@ mod tests {
             ack: Some(TCPAck {
                 sequence_num: seq,
                 acknowledged_size: acked,
+                advertised_window: usize::MAX,
                 ece,
             }),
             control: None,

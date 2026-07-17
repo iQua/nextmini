@@ -18,6 +18,7 @@ pub mod route;
 pub mod sink;
 pub mod source;
 pub mod tcp_sink;
+pub mod tcp_socket;
 pub mod tcp_source;
 pub mod wire;
 
