@@ -234,6 +234,10 @@ impl MettleCarouselReceiver {
         if symbol.block_id != self.current_stream_id {
             return Ok(());
         }
+        if symbol.symbol_id >= self.terminal_bin_count {
+            shared.metrics.record_receiver_invalid_symbol();
+            return Ok(());
+        }
         if !self.seen_bin_ids.insert(symbol.symbol_id) {
             shared.metrics.record_receiver_duplicate();
             return Ok(());
@@ -528,6 +532,81 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn out_of_range_peer_bin_is_rejected_before_seen_set_or_decoder() {
+        let session_id = 0xBAD;
+        let geometry = MettleObjectStreamGeometry::new(2, 4, 1, 4);
+        let plan = ObjectSymbolPlan::from_negotiated(8, geometry).expect("single-prefix plan");
+        let fec_mode = LosslessSessionFecMode::new_mettle(4, vec![0])
+            .with_feedback_mode(FecFeedbackMode::Carousel)
+            .with_mettle_object_stream(geometry);
+        let manifest = nextmini_messages::lossless_session::LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(fec_mode.clone()),
+        };
+        manifest.validate().expect("valid manifest");
+        let budget = MettleDecoderBudget::from_lossless(&LosslessConfig::default())
+            .expect("default decoder budget");
+        let mut receiver =
+            MettleCarouselReceiver::install(session_id, plan, fec_mode, Some(&budget))
+                .await
+                .expect("decoder admission");
+        let invalid_bin_id = receiver.terminal_bin_count;
+        let route = TransportRoute {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 1),
+            src_port: 4752,
+            dst_port: 5752,
+        };
+        let metrics = Arc::new(SessionMetrics::default());
+        let mut shared = super::super::ReceiverShared {
+            session_id,
+            route,
+            local_node_id: 2,
+            cfg: ReceiverConfig {
+                session_id,
+                route,
+                local_node_id: 2,
+                sink_buffer: Some(Arc::new(tokio::sync::Mutex::new(vec![0; 8]))),
+                sink_file: None,
+                progress: None,
+                peer_report_timeout_ms: 200,
+                fec_enabled: true,
+                cloudcast: None,
+                carousel: Default::default(),
+                mettle_decoder_budget: Some(budget),
+            },
+            processors: ProcessorHandle::new(Default::default()),
+            manifest: Some(manifest),
+            plan: BlockPlan::new(8, 8).ok(),
+            complete_blocks: BTreeSet::new(),
+            metrics: metrics.clone(),
+        };
+
+        receiver
+            .handle_block_symbol_frame(
+                &mut shared,
+                InboundFrame {
+                    bytes: lossless_session::encode_block_symbol(
+                        session_id,
+                        0,
+                        invalid_bin_id,
+                        0,
+                        &[1, 2],
+                    ),
+                    peer_id: Some(1),
+                },
+            )
+            .await
+            .expect("invalid peer input is dropped, not surfaced as a sink error");
+
+        assert!(receiver.seen_bin_ids.is_empty());
+        assert_eq!(metrics.snapshot().receiver_invalid_symbols, 1);
+        assert_eq!(receiver.committed_watermark, 0);
     }
 
     #[tokio::test]

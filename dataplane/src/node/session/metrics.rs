@@ -36,6 +36,7 @@ pub struct SessionMetricsSnapshot {
     pub sender_block_esis: BTreeMap<u64, SenderEsiMetrics>,
     pub symbols_received_after_local_block_complete: u64,
     pub receiver_duplicate_symbols: u64,
+    pub receiver_invalid_symbols: u64,
     pub mettle_targeted_retransmissions: u64,
     pub mettle_full_replay_symbols: u64,
     /// Histogram keyed by `unique_symbols_at_decode - K`.
@@ -110,6 +111,11 @@ impl SessionMetrics {
         metrics.receiver_duplicate_symbols = metrics.receiver_duplicate_symbols.saturating_add(1);
     }
 
+    pub(crate) fn record_receiver_invalid_symbol(&self) {
+        let mut metrics = self.lock();
+        metrics.receiver_invalid_symbols = metrics.receiver_invalid_symbols.saturating_add(1);
+    }
+
     pub(crate) fn record_mettle_retransmission(&self, full_replay: bool) {
         let mut metrics = self.lock();
         if full_replay {
@@ -169,6 +175,7 @@ mod tests {
         metrics.record_wait(SenderWaitState::Feedback, Duration::from_nanos(12));
         metrics.record_receiver_tail_symbol();
         metrics.record_receiver_duplicate();
+        metrics.record_receiver_invalid_symbol();
         metrics.record_symbols_at_decode(4, 6);
 
         let snapshot = metrics.snapshot();
@@ -182,6 +189,7 @@ mod tests {
         );
         assert_eq!(snapshot.symbols_received_after_local_block_complete, 1);
         assert_eq!(snapshot.receiver_duplicate_symbols, 1);
+        assert_eq!(snapshot.receiver_invalid_symbols, 1);
         assert_eq!(snapshot.symbols_at_decode_minus_k.get(&2), Some(&1));
     }
 

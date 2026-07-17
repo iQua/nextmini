@@ -535,6 +535,7 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                     let has_stall_evidence = body[1] == 1;
                     let range_count = usize::from(u16::from_be_bytes(body[2..4].try_into().ok()?));
                     if range_count > MAX_METTLE_MISSING_BIN_RANGES
+                        || (!has_stall_evidence && range_count != 0)
                         || body.len()
                             != METTLE_ACK_FIXED_BODY_LEN + (range_count * METTLE_ACK_RANGE_LEN)
                     {
@@ -871,6 +872,34 @@ mod tests {
         assert_eq!(
             decode_control(&encoded).map(|(_, value)| value),
             Some(control)
+        );
+    }
+
+    #[test]
+    fn mettle_progress_ack_rejects_ranges_without_stall_evidence() {
+        let mut encoded = encode_control(
+            77,
+            &LosslessSessionControl::BlockAck {
+                ack: BlockAck::MettleStream {
+                    stream_id: 3,
+                    decoded_source_watermark: 7,
+                    stalled: Some(MettleStallEvidence {
+                        repair_epoch: 9,
+                        missing_bin_ranges: vec![MissingMettleBinRange {
+                            start_bin_id: 11,
+                            end_bin_id: 12,
+                        }],
+                    }),
+                },
+            },
+        );
+        let body = LosslessSessionHeader::LEN;
+        encoded[body + 1] = 0;
+        encoded[body + 16..body + 20].copy_from_slice(&0u32.to_be_bytes());
+
+        assert!(
+            decode_control(&encoded).is_none(),
+            "ranges without the stall-evidence flag are non-canonical"
         );
     }
 
