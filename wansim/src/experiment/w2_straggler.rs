@@ -7,8 +7,8 @@ use serde::Serialize;
 use thiserror::Error;
 
 use crate::scenario::{
-    BufferBudget, ChildOrder, ReceiverAdmissionPolicy, ReceiverServiceRate, W2Outcome, W2RunError,
-    W2Scenario, run_w2,
+    BufferBudget, ChildOrder, CriticalPathAttribution, ReceiverAdmissionPolicy,
+    ReceiverServiceRate, W2Outcome, W2RunError, W2Scenario, run_w2,
 };
 use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
@@ -76,10 +76,15 @@ struct RawTrial {
     tree1_emissions: usize,
     emissions_through_completion: usize,
     post_completion_tail_emissions: usize,
-    application_drops: usize,
+    slow_transport_deliveries_through_completion: usize,
+    slow_application_drop_deficits: usize,
+    application_drop_deficits: usize,
+    application_drops_total: usize,
     blocking_wait_events: usize,
     isolated_credit_deferrals: usize,
     isolated_credit_replays: usize,
+    isolated_credit_debt_high_water_frames: usize,
+    isolated_credit_debt_outstanding_frames: usize,
     link_drops: usize,
     ack_probes: usize,
     liveness_pressure_permille: u64,
@@ -90,6 +95,7 @@ struct RawTrial {
     critical_runtime_wait_ns: u64,
     critical_decoder_queue_ns: u64,
     critical_decoder_service_ns: u64,
+    critical_paths: Vec<CriticalPathAttribution>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -119,10 +125,15 @@ struct TrialRow {
     emissions_through_completion: usize,
     sender_extra_emissions: usize,
     post_completion_tail_emissions: usize,
+    slow_transport_deliveries_through_completion: usize,
+    slow_application_drop_deficits: usize,
     application_drop_deficits: usize,
+    application_drops_total: usize,
     blocking_wait_events: usize,
     isolated_credit_deferrals: usize,
     isolated_credit_replays: usize,
+    isolated_credit_debt_high_water_frames: usize,
+    isolated_credit_debt_outstanding_frames: usize,
     link_drops: usize,
     ack_probes: usize,
     liveness_pressure_permille: u64,
@@ -157,9 +168,20 @@ struct SummaryRow {
     total_emissions_mean: usize,
     sender_extra_emissions_mean: usize,
     post_completion_tail_mean: usize,
+    slow_transport_deliveries_through_completion_mean: usize,
+    slow_application_drop_deficits_mean: usize,
+    application_drop_deficits_mean: usize,
     application_drop_deficits_sum: usize,
+    application_drops_total_mean: usize,
+    application_drops_total_sum: usize,
+    blocking_wait_events_mean: usize,
     blocking_wait_events_sum: usize,
+    isolated_credit_deferrals_mean: usize,
     isolated_credit_deferrals_sum: usize,
+    isolated_credit_replays_mean: usize,
+    isolated_credit_replays_sum: usize,
+    isolated_credit_debt_high_water_frames_max: usize,
+    isolated_credit_debt_outstanding_frames_mean: usize,
     link_drops_sum: usize,
     liveness_pressure_max_permille: u64,
     mailbox_high_water_max: usize,
@@ -177,7 +199,14 @@ struct DecisionRow {
     healthy_externality_mean_ns: i128,
     healthy_externality_p95_ns: i128,
     total_emissions_mean: usize,
-    application_drop_deficits_sum: usize,
+    slow_transport_deliveries_through_completion_mean: usize,
+    slow_application_drop_deficits_mean: usize,
+    application_drop_deficits_mean: usize,
+    blocking_wait_events_mean: usize,
+    isolated_credit_deferrals_mean: usize,
+    isolated_credit_replays_mean: usize,
+    isolated_credit_debt_high_water_frames_max: usize,
+    isolated_credit_debt_outstanding_frames_mean: usize,
     liveness_pressure_max_permille: u64,
 }
 
@@ -186,12 +215,18 @@ struct CriticalPathRow {
     schema_version: u32,
     simulator_version: &'static str,
     evidence_class: &'static str,
+    sample_class: &'static str,
     admission_policy: &'static str,
+    slow_service_rate: &'static str,
+    buffer_budget: &'static str,
     receiver_count: usize,
     fanout_degree: usize,
     child_order: &'static str,
     seed: u64,
-    critical_receiver: usize,
+    receiver: usize,
+    is_barrier_receiver: bool,
+    final_tree: usize,
+    final_frame_id: usize,
     source_generation_ns: u64,
     source_to_runtime_ns: u64,
     runtime_wait_ns: u64,
@@ -297,34 +332,49 @@ pub fn run_w2_experiment(
             healthy_externality_mean_ns: row.healthy_externality_mean_ns,
             healthy_externality_p95_ns: row.healthy_externality_p95_ns,
             total_emissions_mean: row.total_emissions_mean,
-            application_drop_deficits_sum: row.application_drop_deficits_sum,
+            slow_transport_deliveries_through_completion_mean: row
+                .slow_transport_deliveries_through_completion_mean,
+            slow_application_drop_deficits_mean: row.slow_application_drop_deficits_mean,
+            application_drop_deficits_mean: row.application_drop_deficits_mean,
+            blocking_wait_events_mean: row.blocking_wait_events_mean,
+            isolated_credit_deferrals_mean: row.isolated_credit_deferrals_mean,
+            isolated_credit_replays_mean: row.isolated_credit_replays_mean,
+            isolated_credit_debt_high_water_frames_max: row
+                .isolated_credit_debt_high_water_frames_max,
+            isolated_credit_debt_outstanding_frames_mean: row
+                .isolated_credit_debt_outstanding_frames_mean,
             liveness_pressure_max_permille: row.liveness_pressure_max_permille,
         })
         .collect::<Vec<_>>();
-    let critical_paths = trials
+    let critical_paths = raw
         .iter()
-        .filter(|row| is_decisive_row(row))
-        .map(|row| CriticalPathRow {
-            schema_version: row.schema_version,
-            simulator_version: row.simulator_version,
-            evidence_class: row.evidence_class,
-            admission_policy: row.admission_policy,
-            receiver_count: row.receiver_count,
-            fanout_degree: row.fanout_degree,
-            child_order: row.child_order,
-            seed: row.seed,
-            critical_receiver: row.critical_receiver,
-            source_generation_ns: row.critical_source_generation_ns,
-            source_to_runtime_ns: row.critical_source_to_runtime_ns,
-            runtime_wait_ns: row.critical_runtime_wait_ns,
-            decoder_queue_ns: row.critical_decoder_queue_ns,
-            decoder_service_ns: row.critical_decoder_service_ns,
-            total_ns: row
-                .critical_source_generation_ns
-                .saturating_add(row.critical_source_to_runtime_ns)
-                .saturating_add(row.critical_runtime_wait_ns)
-                .saturating_add(row.critical_decoder_queue_ns)
-                .saturating_add(row.critical_decoder_service_ns),
+        .flat_map(|trial| {
+            trial.critical_paths.iter().map(|path| {
+                let total_ns = attribution_total(path);
+                CriticalPathRow {
+                    schema_version: SCENARIO_SCHEMA_VERSION,
+                    simulator_version: SIMULATOR_VERSION,
+                    evidence_class: EVIDENCE_CLASS,
+                    sample_class: task_sample_class(trial.task),
+                    admission_policy: trial.task.policy.name(),
+                    slow_service_rate: trial.task.service.name(),
+                    buffer_budget: trial.task.budget.name(),
+                    receiver_count: trial.task.receivers,
+                    fanout_degree: trial.task.fanout_degree,
+                    child_order: trial.task.order.name(),
+                    seed: trial.task.seed,
+                    receiver: path.receiver,
+                    is_barrier_receiver: total_ns == trial.barrier_completion_ns,
+                    final_tree: path.final_tree,
+                    final_frame_id: path.final_frame_id,
+                    source_generation_ns: path.source_generation_ns,
+                    source_to_runtime_ns: path.source_to_runtime_ns,
+                    runtime_wait_ns: path.runtime_wait_ns,
+                    decoder_queue_ns: path.decoder_queue_ns,
+                    decoder_service_ns: path.decoder_service_ns,
+                    total_ns,
+                }
+            })
         })
         .collect::<Vec<_>>();
     let tail = tail_fraction_rows()?;
@@ -470,10 +520,17 @@ fn raw_trial(task: Task, scenario: &W2Scenario, outcome: &W2Outcome) -> RawTrial
             })
             .count(),
         post_completion_tail_emissions: outcome.post_completion_tail_emissions,
-        application_drops: outcome.application_drops,
+        slow_transport_deliveries_through_completion: outcome
+            .receiver_transport_deliveries_through_completion[0],
+        slow_application_drop_deficits: outcome
+            .receiver_application_drop_deficits_through_completion[0],
+        application_drop_deficits: outcome.application_drop_deficits_through_completion,
+        application_drops_total: outcome.application_drops,
         blocking_wait_events: outcome.blocking_wait_events,
         isolated_credit_deferrals: outcome.isolated_credit_deferrals,
         isolated_credit_replays: outcome.isolated_credit_replays,
+        isolated_credit_debt_high_water_frames: outcome.isolated_credit_debt_high_water_frames,
+        isolated_credit_debt_outstanding_frames: outcome.isolated_credit_debt_outstanding_frames,
         link_drops: outcome.link_drops,
         ack_probes: outcome
             .records
@@ -493,6 +550,7 @@ fn raw_trial(task: Task, scenario: &W2Scenario, outcome: &W2Outcome) -> RawTrial
         critical_runtime_wait_ns: critical.runtime_wait_ns,
         critical_decoder_queue_ns: critical.decoder_queue_ns,
         critical_decoder_service_ns: critical.decoder_service_ns,
+        critical_paths: outcome.critical_paths.clone(),
     }
 }
 
@@ -549,13 +607,7 @@ fn attach_externalities(raw: &[RawTrial]) -> Result<Vec<TrialRow>, W2ExperimentE
                 schema_version: SCENARIO_SCHEMA_VERSION,
                 simulator_version: SIMULATOR_VERSION,
                 evidence_class: EVIDENCE_CLASS,
-                sample_class: if trial.task.decisive {
-                    "decisive"
-                } else if trial.task.supporting_baseline {
-                    "decisive_baseline"
-                } else {
-                    "screening"
-                },
+                sample_class: task_sample_class(trial.task),
                 seed: trial.task.seed,
                 admission_policy: trial.task.policy.name(),
                 slow_service_rate: trial.task.service.name(),
@@ -578,10 +630,18 @@ fn attach_externalities(raw: &[RawTrial]) -> Result<Vec<TrialRow>, W2ExperimentE
                 emissions_through_completion: trial.emissions_through_completion,
                 sender_extra_emissions: trial.total_emissions.saturating_sub(512),
                 post_completion_tail_emissions: trial.post_completion_tail_emissions,
-                application_drop_deficits: trial.application_drops,
+                slow_transport_deliveries_through_completion: trial
+                    .slow_transport_deliveries_through_completion,
+                slow_application_drop_deficits: trial.slow_application_drop_deficits,
+                application_drop_deficits: trial.application_drop_deficits,
+                application_drops_total: trial.application_drops_total,
                 blocking_wait_events: trial.blocking_wait_events,
                 isolated_credit_deferrals: trial.isolated_credit_deferrals,
                 isolated_credit_replays: trial.isolated_credit_replays,
+                isolated_credit_debt_high_water_frames: trial
+                    .isolated_credit_debt_high_water_frames,
+                isolated_credit_debt_outstanding_frames: trial
+                    .isolated_credit_debt_outstanding_frames,
                 link_drops: trial.link_drops,
                 ack_probes: trial.ack_probes,
                 liveness_pressure_permille: trial.liveness_pressure_permille,
@@ -659,15 +719,76 @@ fn summarize(rows: &[TrialRow], sample_class: &'static str) -> Vec<SummaryRow> {
                         .map(|row| row.post_completion_tail_emissions)
                         .collect::<Vec<_>>(),
                 ),
+                slow_transport_deliveries_through_completion_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.slow_transport_deliveries_through_completion)
+                        .collect::<Vec<_>>(),
+                ),
+                slow_application_drop_deficits_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.slow_application_drop_deficits)
+                        .collect::<Vec<_>>(),
+                ),
+                application_drop_deficits_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.application_drop_deficits)
+                        .collect::<Vec<_>>(),
+                ),
                 application_drop_deficits_sum: group
                     .iter()
                     .map(|row| row.application_drop_deficits)
                     .sum(),
+                application_drops_total_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.application_drops_total)
+                        .collect::<Vec<_>>(),
+                ),
+                application_drops_total_sum: group
+                    .iter()
+                    .map(|row| row.application_drops_total)
+                    .sum(),
+                blocking_wait_events_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.blocking_wait_events)
+                        .collect::<Vec<_>>(),
+                ),
                 blocking_wait_events_sum: group.iter().map(|row| row.blocking_wait_events).sum(),
+                isolated_credit_deferrals_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.isolated_credit_deferrals)
+                        .collect::<Vec<_>>(),
+                ),
                 isolated_credit_deferrals_sum: group
                     .iter()
                     .map(|row| row.isolated_credit_deferrals)
                     .sum(),
+                isolated_credit_replays_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.isolated_credit_replays)
+                        .collect::<Vec<_>>(),
+                ),
+                isolated_credit_replays_sum: group
+                    .iter()
+                    .map(|row| row.isolated_credit_replays)
+                    .sum(),
+                isolated_credit_debt_high_water_frames_max: group
+                    .iter()
+                    .map(|row| row.isolated_credit_debt_high_water_frames)
+                    .max()
+                    .unwrap_or(0),
+                isolated_credit_debt_outstanding_frames_mean: mean_usize(
+                    &group
+                        .iter()
+                        .map(|row| row.isolated_credit_debt_outstanding_frames)
+                        .collect::<Vec<_>>(),
+                ),
                 link_drops_sum: group.iter().map(|row| row.link_drops).sum(),
                 liveness_pressure_max_permille: group
                     .iter()
@@ -773,6 +894,24 @@ fn is_decisive_row(row: &TrialRow) -> bool {
     row.slow_service_rate == ReceiverServiceRate::Tenth.name()
         && row.buffer_budget == BufferBudget::QuarterBdp.name()
         && row.receiver_count == 8
+}
+
+fn task_sample_class(task: Task) -> &'static str {
+    if task.decisive {
+        "decisive"
+    } else if task.supporting_baseline {
+        "decisive_baseline"
+    } else {
+        "screening"
+    }
+}
+
+fn attribution_total(path: &CriticalPathAttribution) -> u64 {
+    path.source_generation_ns
+        .saturating_add(path.source_to_runtime_ns)
+        .saturating_add(path.runtime_wait_ns)
+        .saturating_add(path.decoder_queue_ns)
+        .saturating_add(path.decoder_service_ns)
 }
 
 fn policy_from_name(name: &str) -> ReceiverAdmissionPolicy {

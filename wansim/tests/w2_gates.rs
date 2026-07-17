@@ -19,6 +19,7 @@ fn scenario(policy: ReceiverAdmissionPolicy) -> W2Scenario {
 fn hybrid_drop_remains_after_transport_delivery_and_creates_deficits() {
     let outcome = run_w2(&scenario(ReceiverAdmissionPolicy::HybridDrop)).expect("hybrid run");
     assert!(outcome.application_drops > 0);
+    assert!(outcome.application_drop_deficits_through_completion > 0);
     assert_eq!(outcome.blocking_wait_events, 0);
     let drop = outcome
         .records
@@ -44,6 +45,7 @@ fn hybrid_drop_remains_after_transport_delivery_and_creates_deficits() {
 fn naive_blocking_fills_and_blocks_the_reliable_chain_without_application_loss() {
     let outcome = run_w2(&scenario(ReceiverAdmissionPolicy::NaiveBlocking)).expect("blocking run");
     assert_eq!(outcome.application_drops, 0);
+    assert_eq!(outcome.application_drop_deficits_through_completion, 0);
     assert!(outcome.blocking_wait_events > 0);
     assert_eq!(outcome.isolated_credit_deferrals, 0);
     assert!(
@@ -55,7 +57,7 @@ fn naive_blocking_fills_and_blocks_the_reliable_chain_without_application_loss()
 }
 
 #[test]
-fn isolated_credit_replays_every_deferred_frame_without_blocking_healthy_receivers() {
+fn isolated_credit_keeps_bounded_frame_debt_without_blocking_healthy_receivers() {
     let slow = scenario(ReceiverAdmissionPolicy::IsolatedCredit);
     let mut healthy = slow.clone();
     healthy.scenario_id = "w2-isolated-all-healthy".to_owned();
@@ -64,9 +66,17 @@ fn isolated_credit_replays_every_deferred_frame_without_blocking_healthy_receive
     let healthy = run_w2(&healthy).expect("isolated baseline run");
 
     assert_eq!(slow.application_drops, 0);
+    assert_eq!(slow.application_drop_deficits_through_completion, 0);
     assert_eq!(slow.blocking_wait_events, 0);
     assert!(slow.isolated_credit_deferrals > 0);
     assert!(slow.isolated_credit_replays > 0);
+    assert!(slow.isolated_credit_debt_high_water_frames > 0);
+    assert!(
+        slow.isolated_credit_debt_high_water_frames
+            <= scenario(ReceiverAdmissionPolicy::IsolatedCredit)
+                .maximum_frames_per_tree()
+                .expect("bounded stream geometry")
+    );
     assert_eq!(
         &slow.completion_times_ns[1..],
         &healthy.completion_times_ns[1..]

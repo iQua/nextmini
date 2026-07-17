@@ -192,12 +192,17 @@ pub struct W2Outcome {
     pub per_tree_emissions: [usize; TREE_COUNT],
     pub post_completion_tail_emissions: usize,
     pub application_drops: usize,
+    pub application_drop_deficits_through_completion: usize,
     pub blocking_wait_events: usize,
     pub isolated_credit_deferrals: usize,
     pub isolated_credit_replays: usize,
+    pub isolated_credit_debt_high_water_frames: usize,
+    pub isolated_credit_debt_outstanding_frames: usize,
     pub link_drops: usize,
     pub liveness_pressure_permille: u64,
     pub receiver_hops: Vec<usize>,
+    pub receiver_transport_deliveries_through_completion: Vec<usize>,
+    pub receiver_application_drop_deficits_through_completion: Vec<usize>,
     pub critical_paths: Vec<CriticalPathAttribution>,
     pub mailbox_high_water: BTreeMap<&'static str, usize>,
 }
@@ -947,6 +952,45 @@ fn summarize_outcome(
             .filter(|record| record.event == event)
             .count()
     };
+    let application_drops = count("data_inbox_drop_after_tcp_ack");
+    let isolated_credit_deferrals = count("isolated_credit_deferred");
+    let isolated_credit_replays = count("isolated_credit_replay");
+    let receiver_transport_deliveries_through_completion = RECEIVER_COMPONENTS
+        .iter()
+        .copied()
+        .enumerate()
+        .take(scenario.receiver_count)
+        .map(|(receiver, component)| {
+            records
+                .iter()
+                .filter(|record| {
+                    record.component == component
+                        && record.event == "runtime_command_enqueue_data"
+                        && record.time_ns <= completion_times_ns[receiver]
+                })
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let receiver_application_drop_deficits_through_completion = RECEIVER_COMPONENTS
+        .iter()
+        .copied()
+        .enumerate()
+        .take(scenario.receiver_count)
+        .map(|(receiver, component)| {
+            records
+                .iter()
+                .filter(|record| {
+                    record.component == component
+                        && record.event == "data_inbox_drop_after_tcp_ack"
+                        && record.time_ns <= completion_times_ns[receiver]
+                })
+                .count()
+        })
+        .collect::<Vec<_>>();
+    let application_drop_deficits_through_completion =
+        receiver_application_drop_deficits_through_completion
+            .iter()
+            .sum();
     Ok(W2Outcome {
         csv,
         records: records.clone(),
@@ -956,10 +1000,19 @@ fn summarize_outcome(
         total_emissions,
         per_tree_emissions,
         post_completion_tail_emissions,
-        application_drops: count("data_inbox_drop_after_tcp_ack"),
+        application_drops,
+        application_drop_deficits_through_completion,
         blocking_wait_events: count("data_inbox_blocking_wait"),
-        isolated_credit_deferrals: count("isolated_credit_deferred"),
-        isolated_credit_replays: count("isolated_credit_replay"),
+        isolated_credit_deferrals,
+        isolated_credit_replays,
+        isolated_credit_debt_high_water_frames: records
+            .iter()
+            .filter(|record| record.event == "isolated_credit_deferred")
+            .map(|record| record.value)
+            .max()
+            .unwrap_or(0),
+        isolated_credit_debt_outstanding_frames: isolated_credit_deferrals
+            .saturating_sub(isolated_credit_replays),
         link_drops: records
             .iter()
             .filter(|record| matches!(record.event, "queue_drop" | "segment_drop"))
@@ -967,6 +1020,8 @@ fn summarize_outcome(
         liveness_pressure_permille: barrier_completion_ns.saturating_mul(1_000)
             / scenario.carousel.peer_stall_timeout_ns,
         receiver_hops: topology.receiver_hops.clone(),
+        receiver_transport_deliveries_through_completion,
+        receiver_application_drop_deficits_through_completion,
         critical_paths,
         mailbox_high_water,
     })

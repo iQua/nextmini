@@ -36,11 +36,72 @@ struct ChildQueueFrame {
     remaining_bytes: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default)]
+struct DeferredFrames {
+    next_frame_id: usize,
+    end_frame_id: usize,
+    wire_bytes: usize,
+}
+
+impl DeferredFrames {
+    fn is_empty(self) -> bool {
+        self.next_frame_id == self.end_frame_id
+    }
+
+    fn len(self) -> usize {
+        self.end_frame_id.saturating_sub(self.next_frame_id)
+    }
+
+    fn push(
+        &mut self,
+        frame: ChildQueueFrame,
+        capacity_frames: usize,
+    ) -> Result<usize, &'static str> {
+        if self.len() >= capacity_frames {
+            return Err("isolated-credit frame debt exceeded its hard session bound");
+        }
+        if self.is_empty() {
+            self.next_frame_id = frame.frame_id;
+            self.end_frame_id = frame
+                .frame_id
+                .checked_add(1)
+                .ok_or("isolated-credit frame-id overflow")?;
+            self.wire_bytes = frame.remaining_bytes;
+            return Ok(1);
+        }
+        if frame.frame_id != self.end_frame_id {
+            return Err("isolated-credit frame debt is not contiguous");
+        }
+        if frame.remaining_bytes != self.wire_bytes {
+            return Err("isolated-credit frame debt changed wire geometry");
+        }
+        self.end_frame_id = self
+            .end_frame_id
+            .checked_add(1)
+            .ok_or("isolated-credit frame-id overflow")?;
+        Ok(self.len())
+    }
+
+    fn front(self) -> Option<ChildQueueFrame> {
+        (!self.is_empty()).then_some(ChildQueueFrame {
+            frame_id: self.next_frame_id,
+            remaining_bytes: self.wire_bytes,
+        })
+    }
+
+    fn pop_front(&mut self) -> Option<ChildQueueFrame> {
+        let frame = self.front()?;
+        self.next_frame_id = self.next_frame_id.saturating_add(1);
+        Some(frame)
+    }
+}
+
 struct RelayChild {
     spec: RelayChildSpec,
     sender: TcpSocketSender,
     queue: VecDeque<ChildQueueFrame>,
-    deferred: VecDeque<ChildQueueFrame>,
+    deferred: DeferredFrames,
+    deferred_capacity_frames: usize,
     queue_capacity: usize,
     queue_occupied: usize,
     stream_cursor: usize,
@@ -121,6 +182,7 @@ impl FanoutRelayEndpoint {
                 index,
             );
         }
+        let deferred_capacity_frames = stream.frame_count();
         let children = child_specs
             .into_iter()
             .map(|spec| {
@@ -128,7 +190,8 @@ impl FanoutRelayEndpoint {
                     spec,
                     sender: TcpSocketSender::new_reno(spec.flow_id, 0, child_socket.socket)?,
                     queue: VecDeque::new(),
-                    deferred: VecDeque::new(),
+                    deferred: DeferredFrames::default(),
+                    deferred_capacity_frames,
                     queue_capacity: child_queue_capacity,
                     queue_occupied: 0,
                     stream_cursor: 0,
@@ -471,10 +534,20 @@ impl FanoutRelayEndpoint {
                     admitted = admitted.saturating_add(1);
                 } else {
                     let child = &mut self.children[child_index];
-                    child.deferred.push_back(ChildQueueFrame {
+                    let deferred = ChildQueueFrame {
                         frame_id: frame.frame_id,
                         remaining_bytes: frame.wire_bytes,
-                    });
+                    };
+                    let depth = match child
+                        .deferred
+                        .push(deferred, child.deferred_capacity_frames)
+                    {
+                        Ok(depth) => depth,
+                        Err(error) => {
+                            self.recorder.fail(error);
+                            0
+                        }
+                    };
                     self.pending_frames[frame_index].admitted[child_index] = true;
                     self.recorder.record(
                         now,
@@ -483,7 +556,7 @@ impl FanoutRelayEndpoint {
                         child.spec.flow_id,
                         frame.frame_id,
                         frame.wire_bytes,
-                        child.deferred.len(),
+                        depth,
                     );
                     admitted = admitted.saturating_add(1);
                 }
@@ -509,7 +582,7 @@ impl FanoutRelayEndpoint {
 
     fn replay_deferred(&mut self, child_index: usize, now: u64) -> bool {
         let child = &mut self.children[child_index];
-        let Some(frame) = child.deferred.front().copied() else {
+        let Some(frame) = child.deferred.front() else {
             return false;
         };
         let can_admit = child
@@ -519,7 +592,9 @@ impl FanoutRelayEndpoint {
         if !can_admit {
             return false;
         }
-        child.deferred.pop_front();
+        let Some(frame) = child.deferred.pop_front() else {
+            return false;
+        };
         child.queue.push_back(frame);
         child.queue_occupied += frame.remaining_bytes;
         self.ownership
@@ -744,5 +819,93 @@ impl Model for FanoutRelayEndpoint {
             self.recorder.fail(error);
         }
         self.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ChildQueueFrame, DeferredFrames};
+
+    #[test]
+    fn isolated_credit_debt_is_a_bounded_contiguous_run() {
+        let mut debt = DeferredFrames::default();
+        assert_eq!(
+            debt.push(
+                ChildQueueFrame {
+                    frame_id: 7,
+                    remaining_bytes: 512,
+                },
+                2,
+            ),
+            Ok(1)
+        );
+        assert_eq!(
+            debt.push(
+                ChildQueueFrame {
+                    frame_id: 8,
+                    remaining_bytes: 512,
+                },
+                2,
+            ),
+            Ok(2)
+        );
+        assert!(
+            debt.push(
+                ChildQueueFrame {
+                    frame_id: 9,
+                    remaining_bytes: 512,
+                },
+                2,
+            )
+            .is_err()
+        );
+        assert_eq!(debt.pop_front().map(|frame| frame.frame_id), Some(7));
+        assert_eq!(debt.pop_front().map(|frame| frame.frame_id), Some(8));
+        assert!(debt.is_empty());
+    }
+
+    #[test]
+    fn isolated_credit_debt_rejects_gaps_and_geometry_changes() {
+        let mut gap = DeferredFrames::default();
+        gap.push(
+            ChildQueueFrame {
+                frame_id: 3,
+                remaining_bytes: 512,
+            },
+            4,
+        )
+        .expect("first debt");
+        assert!(
+            gap.push(
+                ChildQueueFrame {
+                    frame_id: 5,
+                    remaining_bytes: 512,
+                },
+                4,
+            )
+            .is_err()
+        );
+
+        let mut geometry = DeferredFrames::default();
+        geometry
+            .push(
+                ChildQueueFrame {
+                    frame_id: 3,
+                    remaining_bytes: 512,
+                },
+                4,
+            )
+            .expect("first debt");
+        assert!(
+            geometry
+                .push(
+                    ChildQueueFrame {
+                        frame_id: 4,
+                        remaining_bytes: 256,
+                    },
+                    4,
+                )
+                .is_err()
+        );
     }
 }
