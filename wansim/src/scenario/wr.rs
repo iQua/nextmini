@@ -408,7 +408,10 @@ fn simulation_end_ns(config: &WrRunConfig) -> u64 {
     if config.slow_receiver.is_some() {
         30_000_000_000
     } else if config.source_symbols >= 65_536 {
-        60_000_000_000
+        // This is an observation horizon, not a protocol timeout. The slowest
+        // representative single-tree path can legitimately need more than 60 s
+        // at K=65,536; run_wr still stops as soon as all endpoints complete.
+        180_000_000_000
     } else {
         20_000_000_000
     }
@@ -1493,6 +1496,9 @@ mod tests {
                 session_complete_interval_ns: 20_000_000,
             }
         );
+        let mut scaling = config();
+        scaling.source_symbols = 65_536;
+        assert_eq!(simulation_end_ns(&scaling), 180_000_000_000);
     }
 
     #[test]
