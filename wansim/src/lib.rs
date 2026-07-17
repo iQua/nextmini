@@ -6,6 +6,7 @@
 
 pub mod days_bridge;
 pub mod determinism;
+pub mod experiment;
 pub mod metrics;
 pub mod overlay;
 pub mod protocol;

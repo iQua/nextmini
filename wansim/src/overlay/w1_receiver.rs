@@ -401,16 +401,28 @@ impl W1ReceiverEndpoint {
                 self.grant_data_credit(tree, wire_bytes, now, context).await;
             }
             RuntimeCommand::Control { frame, wire_bytes } => {
-                self.recorder.record(
-                    now,
-                    self.component,
-                    "control_lane_dispatch",
-                    0,
-                    0,
-                    wire_bytes,
-                    frame.payload_bytes(),
-                );
+                let (event, value) = match &frame {
+                    ControlFrame::SourceDone { round_id } => {
+                        ("source_done_runtime_dispatch", *round_id as usize)
+                    }
+                    ControlFrame::AckProbe { .. } => ("ack_probe_runtime_dispatch", 0),
+                    ControlFrame::SessionComplete => ("session_complete_runtime_dispatch", 0),
+                    _ => ("control_lane_dispatch", frame.payload_bytes()),
+                };
+                self.recorder
+                    .record(now, self.component, event, 0, 0, wire_bytes, value);
                 if let Some(response) = self.protocol.on_control(&frame, now) {
+                    if let ControlFrame::Need { deficit, .. } = &response {
+                        self.recorder.record(
+                            now,
+                            self.component,
+                            "round_need_generated",
+                            0,
+                            0,
+                            response.payload_bytes() + 4,
+                            *deficit,
+                        );
+                    }
                     self.queue_control(response);
                 }
                 self.drive_control(now).await;

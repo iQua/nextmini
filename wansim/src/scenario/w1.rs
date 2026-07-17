@@ -95,6 +95,8 @@ pub struct W1Outcome {
     pub post_barrier_tail_emissions: usize,
     pub ack_flight_tail_emissions: usize,
     pub positive_round_deficits: usize,
+    pub round_deficit_sum: usize,
+    pub maximum_round_deficit: usize,
     pub application_drops: usize,
     pub link_drops: usize,
     pub mailbox_high_water: BTreeMap<&'static str, usize>,
@@ -814,6 +816,17 @@ fn summarize_outcome(
         .iter()
         .filter(|record| record.event == "round_deficit_received" && record.value > 0)
         .count();
+    let round_deficit_sum = records
+        .iter()
+        .filter(|record| record.event == "round_deficit_received" && record.value > 0)
+        .map(|record| record.value)
+        .sum();
+    let maximum_round_deficit = records
+        .iter()
+        .filter(|record| record.event == "round_deficit_received")
+        .map(|record| record.value)
+        .max()
+        .unwrap_or(0);
     let application_drops = records
         .iter()
         .filter(|record| record.event == "data_inbox_drop_after_tcp_ack")
@@ -833,6 +846,8 @@ fn summarize_outcome(
         post_barrier_tail_emissions,
         ack_flight_tail_emissions,
         positive_round_deficits,
+        round_deficit_sum,
+        maximum_round_deficit,
         application_drops,
         link_drops,
         mailbox_high_water,

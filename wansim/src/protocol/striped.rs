@@ -63,7 +63,12 @@ impl StripeSender {
         let peers: BTreeSet<_> = peers.into_iter().collect();
         let completed = peers
             .iter()
-            .flat_map(|peer| (0..quotas.len()).map(move |tree| ((*peer, tree), false)))
+            .flat_map(|peer| {
+                quotas
+                    .iter()
+                    .enumerate()
+                    .map(move |(tree, quota)| ((*peer, tree), *quota == 0))
+            })
             .collect();
         Self {
             mode,
@@ -179,5 +184,13 @@ mod tests {
         assert_eq!(sender.next_emission(&both), Some((0, 0)));
         assert!(sender.on_ack(7, 0));
         assert_eq!(sender.next_emission(&both), Some((1, 0)));
+    }
+
+    #[test]
+    fn empty_stripe_needs_no_acknowledgment() {
+        let mut sender = StripeSender::new(StripeSenderMode::Finite, vec![0, 1], [7]);
+        assert_eq!(sender.next_emission(&BTreeSet::from([0, 1])), Some((1, 0)));
+        assert!(sender.on_ack(7, 1));
+        assert!(sender.all_complete());
     }
 }

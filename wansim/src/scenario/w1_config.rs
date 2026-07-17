@@ -31,6 +31,13 @@ pub struct W1Scenario {
     pub master_seed: u64,
     pub protocol: ProtocolKind,
     pub rate_profile: W1RateProfile,
+    /// Test-only/experiment override for the two trees' five directed data-hop rates.
+    ///
+    /// Production experiment grids leave this as `None`; validation cases use it to isolate
+    /// physical-resource independence without adding another named rate profile.
+    pub data_rate_override_bps: Option<[[u64; 5]; 2]>,
+    /// Test-only/experiment override for exact stripe ownership.
+    pub quota_override: Option<[usize; 2]>,
     pub active_receivers: usize,
     pub source_symbols: usize,
     pub frame_payload_bytes: usize,
@@ -76,6 +83,8 @@ impl W1Scenario {
             master_seed: seed,
             protocol,
             rate_profile,
+            data_rate_override_bps: None,
+            quota_override: None,
             active_receivers,
             source_symbols,
             frame_payload_bytes: 508,
@@ -166,6 +175,12 @@ impl W1Scenario {
         if self.control_propagation_ns.contains(&0) {
             return Err(W1ScenarioError::ZeroU64Value("control_propagation_ns"));
         }
+        if self
+            .data_rate_override_bps
+            .is_some_and(|rates| rates.into_iter().flatten().any(|rate| rate == 0))
+        {
+            return Err(W1ScenarioError::ZeroU64Value("data_rate_override_bps"));
+        }
         let frame_wire_bytes = self.frame_wire_bytes()?;
         if self.tcp_mss_bytes < frame_wire_bytes {
             return Err(W1ScenarioError::MssBelowFrame);
@@ -198,6 +213,9 @@ impl W1Scenario {
     }
 
     pub fn data_rates_bps(&self) -> [[u64; 5]; 2] {
+        if let Some(rates) = self.data_rate_override_bps {
+            return rates;
+        }
         match self.rate_profile {
             W1RateProfile::Homogeneous => [[HOMOGENEOUS_RATE_BPS; 5]; 2],
             W1RateProfile::CrossedHeterogeneous => [
@@ -220,6 +238,9 @@ impl W1Scenario {
     }
 
     pub fn quotas(&self) -> Result<Vec<usize>, W1ScenarioError> {
+        if let Some(quotas) = self.quota_override {
+            return Ok(quotas.into());
+        }
         match self.protocol {
             ProtocolKind::EqualSplitStriping
             | ProtocolKind::PooledRounds
