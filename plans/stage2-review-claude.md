@@ -126,3 +126,20 @@ must be fixed before Stage 3 builds on this layer.
   treated as confirmed without a separate verify pass.
 - "3/3 frozen rounds" = the two untouched `fec_round_regressions` tests plus `fec_mettle_session`
   whose only Stage 2 edit is the new config field set to `None`; verified via targeted git diff.
+
+## Follow-up verification (Claude, 2026-07-16)
+
+Fix pass `6f92289..f545fb4` reviewed and verified. All four required fixes hand-checked in code:
+peer bin ids bounded by `terminal_bin_count` and counted invalid before storage
+(`mettle_carousel.rs:242`); non-canonical MettleStream bodies rejected (`control_frames.rs:538`);
+the receiver clamp now routes through the shared `for_wire` lowest-id truncation
+(`mettle_carousel.rs:149`); checkpoint ordering pinned by
+`mettle_checkpoint_cannot_overtake_backpressured_epoch_payload` and checkpoint loss by the new
+end-to-end `fec_mettle_carousel_recovery.rs`. Recommendations 5/6/8/10 and the nits landed;
+items 7 and 9 are deferred with sound rationale and explicit operational guidance in
+`plans/perfect-fec-runtime-questions.md` (sender-cache pool is a real admission surface for later;
+performance thresholds stay manual with a mandatory re-measure at Gate 3). Independent Gate 2
+re-run on `f545fb4`: fmt clean, workspace clippy clean, 808/808 passed with 17 pre-existing skips;
+frozen rounds suite untouched.
+**All review items closed or properly deferred. Stage 2 is fully approved; Stage 3 may begin
+(3.0 + 3.1 simulation-first; 3.2 integration only after the 3.1 gate is reviewed).**
