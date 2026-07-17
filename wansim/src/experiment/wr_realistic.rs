@@ -446,10 +446,12 @@ fn run_tasks(tasks: Vec<Task>, workers: usize) -> Result<Vec<RawTrial>, WrExperi
                     let Some(task) = tasks.get(index).cloned() else {
                         return;
                     };
+                    let task_context = format!("task {index}: {task:?}");
                     match run_task(task) {
                         Ok(trial) => results.lock().expect("WR results lock")[index] = Some(trial),
                         Err(problem) => {
-                            *error.lock().expect("WR error lock") = Some(problem.to_string());
+                            *error.lock().expect("WR error lock") =
+                                Some(format!("{task_context}: {problem}"));
                             return;
                         }
                     }
