@@ -43,6 +43,9 @@ impl CarouselTiming {
         if self.peer_stall_timeout_ns <= self.peer_silence_timeout_ns {
             return Err(CarouselConfigError::StallNotLongerThanSilence);
         }
+        if self.receiver_passive_window_ns <= self.peer_stall_timeout_ns {
+            return Err(CarouselConfigError::PassiveWindowTooShort);
+        }
         Ok(self)
     }
 }
@@ -104,7 +107,7 @@ impl CarouselSender {
         timing: CarouselTiming,
     ) -> Result<Self, CarouselConfigError> {
         let timing = timing.validate()?;
-        let peers = peer_ids
+        let peers: BTreeMap<_, _> = peer_ids
             .into_iter()
             .map(|peer_id| {
                 (
@@ -118,15 +121,20 @@ impl CarouselSender {
                 )
             })
             .collect();
+        let empty_quorum = peers.is_empty();
         Ok(Self {
             total_blocks,
             timing,
             peers,
-            state: CarouselSenderState::Sending,
+            state: if empty_quorum {
+                CarouselSenderState::Finished
+            } else {
+                CarouselSenderState::Sending
+            },
             next_symbol_id: 0,
             completion_repeats_sent: 0,
             next_completion_repeat_ns: 0,
-            completion_time_ns: None,
+            completion_time_ns: empty_quorum.then_some(ready_freeze_ns),
         })
     }
 
@@ -139,7 +147,11 @@ impl CarouselSender {
     }
 
     pub fn next_data_emission(&mut self) -> Option<u64> {
-        if self.state == CarouselSenderState::Finished || self.all_peers_complete() {
+        if matches!(
+            self.state,
+            CarouselSenderState::Finished | CarouselSenderState::Aborted
+        ) || self.all_peers_complete()
+        {
             return None;
         }
         self.state = CarouselSenderState::Sending;
@@ -364,6 +376,8 @@ pub enum CarouselConfigError {
     ZeroCompletionRepeats,
     #[error("peer stall timeout must be longer than peer silence timeout")]
     StallNotLongerThanSilence,
+    #[error("receiver passive window must exceed the sender stall-abort budget")]
+    PassiveWindowTooShort,
 }
 
 #[derive(Debug, Error)]
@@ -430,6 +444,26 @@ mod tests {
             .on_block_ack(2, &BlockAck::complete(1), 6)
             .expect("peer two");
         assert_eq!(sender.state(), CarouselSenderState::Finished);
+    }
+
+    #[test]
+    fn empty_frozen_quorum_is_immediate_success() {
+        let mut sender = CarouselSender::new(1, [], 7, timing()).expect("valid sender");
+        assert_eq!(sender.state(), CarouselSenderState::Finished);
+        assert_eq!(sender.completion_time_ns(), Some(7));
+        assert_eq!(sender.next_data_emission(), None);
+        assert!(sender.poll(7).expect("completion poll").is_empty());
+    }
+
+    #[test]
+    fn aborted_sender_cannot_emit_more_payload() {
+        let mut sender = CarouselSender::new(1, [1], 0, timing()).expect("valid sender");
+        assert_eq!(
+            sender.poll(40),
+            Err(LivenessViolation::Silent { peer_id: 1 })
+        );
+        assert_eq!(sender.state(), CarouselSenderState::Aborted);
+        assert_eq!(sender.next_data_emission(), None);
     }
 
     #[test]

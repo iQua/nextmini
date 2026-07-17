@@ -22,14 +22,20 @@ pub struct RoundsSender {
 
 impl RoundsSender {
     pub fn new(source_symbols: usize, peers: impl IntoIterator<Item = u64>) -> Self {
+        let peers: BTreeSet<_> = peers.into_iter().collect();
+        let empty_quorum = peers.is_empty();
         Self {
-            peers: peers.into_iter().collect(),
+            peers,
             reports: BTreeMap::new(),
-            state: RoundsSenderState::Sending,
+            state: if empty_quorum {
+                RoundsSenderState::Finished
+            } else {
+                RoundsSenderState::Sending
+            },
             round_id: 0,
-            emissions_remaining: source_symbols,
+            emissions_remaining: if empty_quorum { 0 } else { source_symbols },
             next_symbol_id: 0,
-            barrier_announced: false,
+            barrier_announced: empty_quorum,
         }
     }
 
@@ -171,5 +177,13 @@ mod tests {
         let first = receiver.on_source_done(0);
         receiver.observe_symbol(1, 2);
         assert_eq!(receiver.on_source_done(0), first);
+    }
+
+    #[test]
+    fn empty_frozen_quorum_is_immediate_success() {
+        let mut sender = RoundsSender::new(4, []);
+        assert_eq!(sender.state(), RoundsSenderState::Finished);
+        assert_eq!(sender.next_data_emission(), None);
+        assert!(sender.poll_controls().is_empty());
     }
 }

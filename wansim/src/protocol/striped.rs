@@ -81,7 +81,7 @@ impl StripeSender {
     }
 
     pub fn next_emission(&mut self, writable_trees: &BTreeSet<usize>) -> Option<(usize, usize)> {
-        if self.quotas.is_empty() {
+        if self.quotas.is_empty() || self.all_complete() {
             return None;
         }
         for offset in 0..self.quotas.len() {
@@ -192,5 +192,12 @@ mod tests {
         assert_eq!(sender.next_emission(&BTreeSet::from([0, 1])), Some((1, 0)));
         assert!(sender.on_ack(7, 1));
         assert!(sender.all_complete());
+    }
+
+    #[test]
+    fn empty_frozen_quorum_emits_nothing() {
+        let mut sender = StripeSender::new(StripeSenderMode::Finite, vec![2, 2], []);
+        assert!(sender.all_complete());
+        assert_eq!(sender.next_emission(&BTreeSet::from([0, 1])), None);
     }
 }
