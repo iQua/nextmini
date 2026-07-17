@@ -1,0 +1,116 @@
+[package]
+name = "nexosim"
+# When incrementing version and releasing to crates.io:
+# - Update crate version in this Cargo.toml
+# - Update crate version in README.md
+# - Update crate version in lib.rs documentation of feature flags (multiple instances)
+# - Update dependency in sibling crates
+# - Update CHANGELOG.md
+# - Update if necessary copyright notice in LICENSE-MIT
+# - Create a "vX.Y.Z" git tag
+authors = ["Asynchronics and the NeXosim Contributors"]
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.93.1"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/asynchronics/nexosim"
+readme = "README.md"
+description = """
+A high performance asynchronous compute framework for system simulation.
+"""
+categories = ["simulation", "aerospace", "science"]
+keywords = [
+    "simulation",
+    "discrete-event",
+    "systems",
+    "cyberphysical",
+    "real-time",
+]
+
+[features]
+server = [
+    "dep:bytes",
+    "dep:ciborium",
+    "dep:prost",
+    "dep:prost-types",
+    "dep:tokio",
+    "dep:tokio-stream",
+    "dep:tonic",
+    "dep:tonic-prost",
+]
+tracing = ["dep:tracing", "dep:tracing-subscriber"]
+perf_stats = []
+
+# DEVELOPMENT ONLY: API-unstable public exports meant for external test/benchmarking.
+dev-hooks = []
+
+[dependencies]
+# Internal dependencies
+nexosim-macros = { version = "1.0.0-beta.1" }
+# Mandatory dependencies.
+async-event = "0.2.1"
+bincode = { version = "2.0", features = ["serde"] }
+crossbeam-utils = "0.8"
+diatomic-waker = "0.2.3"
+dyn-clone = "1.0"
+futures-channel = "0.3.32"
+futures-core = "0.3.32"
+futures-task = "0.3.32"
+futures-util = "0.3.32"
+multishot = "0.3.2"
+num_cpus = "1.13"
+parking = "2"
+pin-project = "1"
+pollster = "0.4"
+recycle-box = "0.2"
+schemars = "1.2"
+serde = "1"
+slab = "0.4"
+smol_str = { version = "0.3", features = ["serde"] }
+spin_sleep = "1"
+st3 = "0.4"
+tai-time = { version = "1", features = ["serde", "schemars"] }
+
+# Optional dependencies.
+bytes = { version = "1", default-features = false, optional = true }
+ciborium = { version = "0.2.2", optional = true }
+prost = { version = "0.14", optional = true }
+prost-types = { version = "0.14", optional = true }
+tokio = { version = "1.0", features = ["net", "time"], optional = true }
+tonic = { version = "0.14", default-features = false, features = [
+    "codegen",
+    "router",
+    "server",
+], optional = true }
+tonic-prost = { version = "0.14", optional = true }
+tracing = { version = "0.1.40", default-features = false, features = [
+    "std",
+], optional = true }
+tracing-subscriber = { version = "0.3.18", optional = true }
+
+[target.'cfg(unix)'.dependencies]
+tokio-stream = { version = "0.1.10", features = ["net"], optional = true }
+
+[dev-dependencies]
+futures-util = "0.3"
+futures-executor = "0.3"
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+
+[target.'cfg(nexosim_loom)'.dev-dependencies]
+loom = "0.7"
+waker-fn = "1.1"
+
+[target.'cfg(nexosim_server_codegen)'.build-dependencies]
+tonic-prost-build = { version = "0.14" }
+
+[lints.rust]
+# `nexosim_loom` flag: run loom-based tests.
+# `nexosim_server_codegen` flag: regenerate gRPC code from .proto definitions.
+unexpected_cfgs = { level = "warn", check-cfg = [
+    'cfg(nexosim_loom)',
+    'cfg(nexosim_server_codegen)',
+] }
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]

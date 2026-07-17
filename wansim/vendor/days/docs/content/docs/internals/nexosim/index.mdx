@@ -1,0 +1,29 @@
+---
+title: Nexosim
+description: The discrete-event simulation engine that powers Days.
+---
+
+Days is built on top of **Nexosim**, a Rust discrete-event simulation engine (vendored under `crates/nexosim`).
+
+At a high level, Nexosim provides:
+
+- an **actor-like model API** (`trait Model`)
+- **mailboxes** for delivering events/requests to models
+- typed **output ports** (`Output<T>`) for message passing
+- a **scheduler + executor** that advances simulation time in discrete steps
+
+If you only want a conceptual picture, start with [/docs/architecture/simulation-engine](/docs/architecture/simulation-engine).
+
+## Where to read in the code
+
+- Core crate root: `crates/nexosim/src/lib.rs`
+- Simulation lifecycle + stepping: `crates/nexosim/src/simulation.rs`
+- Ports and message delivery: `crates/nexosim/src/ports.rs`
+- Executors (ST/MT): `crates/nexosim/src/executor.rs`
+- Time types: `crates/nexosim/src/time.rs`
+
+## Documentation
+
+Upstream API docs for the 1.0 line are available at `https://docs.rs/nexosim/1.0.0/nexosim/`.
+
+The vendored version in this repo tracks that API surface and includes a few Days compatibility shims in `SimInit` (for example `set_hot_worker_count`, `set_max_groups_per_step_task`, `set_time_quantum_ns`).
