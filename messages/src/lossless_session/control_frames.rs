@@ -940,6 +940,62 @@ mod tests {
     }
 
     #[test]
+    fn mettle_block_ack_truncates_to_lowest_wire_ranges() {
+        let ranges: Vec<_> = (0..MAX_METTLE_MISSING_BIN_RANGES + 40)
+            .map(|index| MissingMettleBinRange {
+                start_bin_id: u32::try_from(index * 2).expect("test bin id"),
+                end_bin_id: u32::try_from(index * 2 + 1).expect("test bin id"),
+            })
+            .collect();
+        let oversized = BlockAck::MettleStream {
+            stream_id: 3,
+            decoded_source_watermark: 17,
+            stalled: Some(MettleStallEvidence {
+                repair_epoch: 9,
+                missing_bin_ranges: ranges.clone(),
+            }),
+        };
+        assert!(matches!(
+            oversized.validate(),
+            Err(super::super::LosslessSessionValidationError::TooManyMettleMissingBinRanges { .. })
+        ));
+
+        let wire = oversized.for_wire(0).expect("truncate valid METTLE ranges");
+        let BlockAck::MettleStream {
+            stalled: Some(evidence),
+            ..
+        } = &wire
+        else {
+            panic!("expected stalled METTLE acknowledgement")
+        };
+        assert_eq!(
+            evidence.missing_bin_ranges.as_slice(),
+            &ranges[..MAX_METTLE_MISSING_BIN_RANGES]
+        );
+        let encoded = encode_control(91, &LosslessSessionControl::BlockAck { ack: wire });
+        assert!(decode_control(&encoded).is_some());
+
+        let mut malformed = ranges;
+        malformed.push(MissingMettleBinRange {
+            start_bin_id: 1,
+            end_bin_id: 2,
+        });
+        assert!(
+            BlockAck::MettleStream {
+                stream_id: 3,
+                decoded_source_watermark: 17,
+                stalled: Some(MettleStallEvidence {
+                    repair_epoch: 9,
+                    missing_bin_ranges: malformed,
+                }),
+            }
+            .for_wire(0)
+            .is_err(),
+            "truncation must not hide a malformed high-range suffix"
+        );
+    }
+
+    #[test]
     fn block_ack_rejects_malformed_variant_shapes() {
         assert_eq!(BLOCK_ACK_METTLE_STREAM_VARIANT, 2);
         let good = encode_control(

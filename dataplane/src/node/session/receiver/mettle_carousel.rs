@@ -1,5 +1,6 @@
 use std::collections::BTreeSet;
 use std::num::NonZeroUsize;
+use std::sync::OnceLock;
 
 use nextmini_messages::lossless_session::{
     self, BlockAck, LosslessSessionFecMode, LosslessSessionMode, MettleStallEvidence,
@@ -37,6 +38,7 @@ struct DepartureCheckpointState {
     departure_bin_exclusive: u32,
     aging_deadline: Option<Instant>,
     aged: bool,
+    missing_bin_ranges: OnceLock<Vec<MissingMettleBinRange>>,
 }
 
 #[derive(Debug)]
@@ -133,17 +135,21 @@ impl MettleCarouselReceiver {
                     .is_some_and(|deadline| deadline <= Instant::now());
             aged.then(|| MettleStallEvidence {
                 repair_epoch: checkpoint.repair_epoch,
-                missing_bin_ranges: missing_bin_ranges(
-                    &self.seen_bin_ids,
-                    checkpoint.departure_bin_exclusive,
-                ),
+                missing_bin_ranges: checkpoint
+                    .missing_bin_ranges
+                    .get_or_init(|| {
+                        missing_bin_ranges(&self.seen_bin_ids, checkpoint.departure_bin_exclusive)
+                    })
+                    .clone(),
             })
         });
-        Some(BlockAck::MettleStream {
+        BlockAck::MettleStream {
             stream_id: self.current_stream_id,
             decoded_source_watermark: self.committed_watermark,
             stalled,
-        })
+        }
+        .for_wire(self.plan.stream_count())
+        .ok()
     }
 
     pub(super) fn repair_deadline(&self) -> Option<Instant> {
@@ -197,6 +203,7 @@ impl MettleCarouselReceiver {
                     .unwrap_or_else(Instant::now),
             ),
             aged: false,
+            missing_bin_ranges: OnceLock::new(),
         });
     }
 
@@ -238,7 +245,7 @@ impl MettleCarouselReceiver {
             shared.metrics.record_receiver_invalid_symbol();
             return Ok(());
         }
-        if !self.seen_bin_ids.insert(symbol.symbol_id) {
+        if !self.insert_seen_bin_id(symbol.symbol_id) {
             shared.metrics.record_receiver_duplicate();
             return Ok(());
         }
@@ -285,6 +292,16 @@ impl MettleCarouselReceiver {
             self.finish_prefix(shared.session_id).await;
         }
         Ok(())
+    }
+
+    fn insert_seen_bin_id(&mut self, bin_id: u32) -> bool {
+        if !self.seen_bin_ids.insert(bin_id) {
+            return false;
+        }
+        if let Some(checkpoint) = self.checkpoint.as_mut() {
+            checkpoint.missing_bin_ranges = OnceLock::new();
+        }
+        true
     }
 
     async fn finish_prefix(&mut self, session_id: u64) {
@@ -357,16 +374,6 @@ fn missing_bin_ranges(
         });
     }
 
-    if ranges.len() > nextmini_messages::lossless_session::MAX_METTLE_MISSING_BIN_RANGES {
-        let start_bin_id = ranges.first().map_or(0, |range| range.start_bin_id);
-        let end_bin_id = ranges
-            .last()
-            .map_or(departure_bin_exclusive, |range| range.end_bin_id);
-        return vec![MissingMettleBinRange {
-            start_bin_id,
-            end_bin_id,
-        }];
-    }
     ranges
 }
 
@@ -532,6 +539,55 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn range_overflow_converges_in_lowest_bin_id_windows() {
+        let geometry = MettleObjectStreamGeometry::new(1, 1_024, 1, 1_024);
+        let plan = ObjectSymbolPlan::from_negotiated(1_024, geometry).expect("single-prefix plan");
+        let fec_mode = LosslessSessionFecMode::new_mettle(1_024, vec![0])
+            .with_feedback_mode(FecFeedbackMode::Carousel)
+            .with_mettle_object_stream(geometry);
+        let budget = MettleDecoderBudget::from_lossless(&LosslessConfig::default())
+            .expect("default decoder budget");
+        let mut receiver = MettleCarouselReceiver::install(11, plan, fec_mode, Some(&budget))
+            .await
+            .expect("decoder admission");
+        let terminal = receiver.terminal_bin_count;
+        for bin_id in (1..terminal).step_by(2) {
+            assert!(receiver.insert_seen_bin_id(bin_id));
+        }
+        let expected = missing_bin_ranges(&receiver.seen_bin_ids, terminal);
+        assert!(
+            expected.len() > nextmini_messages::lossless_session::MAX_METTLE_MISSING_BIN_RANGES
+        );
+        receiver.handle_departure_checkpoint(0, 12, terminal, Duration::ZERO);
+
+        let mut reported = Vec::new();
+        loop {
+            let Some(BlockAck::MettleStream {
+                stalled: Some(evidence),
+                ..
+            }) = receiver.block_ack()
+            else {
+                panic!("aged checkpoint must retain stall evidence")
+            };
+            if evidence.missing_bin_ranges.is_empty() {
+                break;
+            }
+            assert!(
+                evidence.missing_bin_ranges.len()
+                    <= nextmini_messages::lossless_session::MAX_METTLE_MISSING_BIN_RANGES
+            );
+            for range in &evidence.missing_bin_ranges {
+                for bin_id in range.start_bin_id..range.end_bin_id {
+                    assert!(receiver.insert_seen_bin_id(bin_id));
+                }
+            }
+            reported.extend(evidence.missing_bin_ranges);
+        }
+
+        assert_eq!(reported, expected);
     }
 
     #[tokio::test]

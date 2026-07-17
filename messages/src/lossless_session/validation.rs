@@ -93,6 +93,10 @@ impl MettleStallEvidence {
                 },
             );
         }
+        self.validate_ranges()
+    }
+
+    fn validate_ranges(&self) -> Result<(), LosslessSessionValidationError> {
         let mut previous_end = None;
         for range in &self.missing_bin_ranges {
             if range.start_bin_id >= range.end_bin_id {
@@ -270,20 +274,26 @@ impl BlockAck {
     }
 
     /// Produce the deterministic wire snapshot: canonical form followed by
-    /// lowest-block-id truncation to the protocol range capacity.
-    pub fn for_wire(self, total_blocks: u64) -> Result<Self, LosslessSessionValidationError> {
-        let mut canonical = self.canonicalized(total_blocks)?;
-        match &mut canonical {
-            Self::Blocks {
-                extra_completed, ..
-            } => extra_completed.truncate(MAX_BLOCK_ACK_RANGES),
-            Self::MettleStream { stalled, .. } => {
-                if let Some(stalled) = stalled {
-                    stalled
-                        .missing_bin_ranges
-                        .truncate(MAX_METTLE_MISSING_BIN_RANGES);
-                }
+    /// lowest-id truncation to the applicable protocol range capacity.
+    pub fn for_wire(mut self, total_blocks: u64) -> Result<Self, LosslessSessionValidationError> {
+        if let Self::MettleStream { stalled, .. } = &mut self {
+            if let Some(stalled) = stalled {
+                // Validate every peer-visible range before truncating so an
+                // invalid high-id suffix cannot hide beyond the wire window.
+                stalled.validate_ranges()?;
+                stalled
+                    .missing_bin_ranges
+                    .truncate(MAX_METTLE_MISSING_BIN_RANGES);
             }
+            return Ok(self);
+        }
+
+        let mut canonical = self.canonicalized(total_blocks)?;
+        if let Self::Blocks {
+            extra_completed, ..
+        } = &mut canonical
+        {
+            extra_completed.truncate(MAX_BLOCK_ACK_RANGES);
         }
         Ok(canonical)
     }
