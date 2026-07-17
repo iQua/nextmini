@@ -8,6 +8,7 @@
 
 mod cloudcast;
 mod fec;
+mod mettle_carousel;
 mod plain;
 
 use std::collections::{BTreeSet, VecDeque};
@@ -32,12 +33,13 @@ use crate::node::session::api::{
 };
 use crate::node::session::control;
 use crate::node::session::metrics::SessionMetrics;
-use crate::node::session::plan::{BlockPlan, SymbolGeometry};
+use crate::node::session::plan::{BlockPlan, ObjectSymbolPlan, SymbolGeometry};
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
 
 use self::cloudcast::CloudcastReceiver;
 use self::fec::FecReceiver;
+use self::mettle_carousel::MettleCarouselReceiver;
 use self::plain::PlainReceiver;
 
 /// Run one receiver session until the transfer is complete or the channel closes.
@@ -216,6 +218,7 @@ enum ReceiverMode {
     Plain(PlainReceiver),
     Cloudcast(CloudcastReceiver),
     Fec(FecReceiver),
+    MettleCarousel(Box<MettleCarouselReceiver>),
 }
 
 impl SessionReceiver {
@@ -269,7 +272,7 @@ impl SessionReceiver {
 
             match input {
                 ReceiverInput::Frame(frame) => {
-                    let completed_before = self.shared.complete_blocks.len();
+                    let ack_before = self.block_ack();
                     if let Err(error) = self.handle_frame(frame).await {
                         warn!(
                             session_id = self.shared.session_id,
@@ -279,7 +282,7 @@ impl SessionReceiver {
                         self.finish_session("sink_error");
                         return SessionOutcome::SinkError;
                     }
-                    if self.shared.complete_blocks.len() > completed_before {
+                    if self.block_ack() != ack_before {
                         self.note_carousel_progress();
                     }
                 }
@@ -287,6 +290,14 @@ impl SessionReceiver {
             }
 
             if self.lifecycle == ReceiverLifecycle::SessionFinished {
+                break;
+            }
+
+            if matches!(
+                self.mode.as_ref(),
+                Some(ReceiverMode::MettleCarousel(mode)) if mode.aborted()
+            ) {
+                self.finish_session("mettle_decoder_abort");
                 break;
             }
 
@@ -457,6 +468,7 @@ impl SessionReceiver {
             Some(ReceiverMode::Plain(mode)) => mode.is_complete(),
             Some(ReceiverMode::Cloudcast(mode)) => mode.is_complete(),
             Some(ReceiverMode::Fec(mode)) => mode.is_complete(),
+            Some(ReceiverMode::MettleCarousel(mode)) => mode.is_complete(),
             None => false,
         }
     }
@@ -467,7 +479,17 @@ impl SessionReceiver {
     }
 
     fn object_complete(&self) -> bool {
+        if let Some(ReceiverMode::MettleCarousel(mode)) = self.mode.as_ref() {
+            return mode.is_complete();
+        }
         self.shared.has_all_blocks()
+    }
+
+    fn block_ack(&self) -> Option<BlockAck> {
+        match self.mode.as_ref() {
+            Some(ReceiverMode::MettleCarousel(mode)) => mode.block_ack(),
+            _ => self.shared.block_ack(),
+        }
     }
 
     fn is_passive_complete(&self) -> bool {
@@ -544,7 +566,7 @@ impl SessionReceiver {
     }
 
     async fn send_carousel_ack(&mut self) {
-        let Some(ack) = self.shared.block_ack() else {
+        let Some(ack) = self.block_ack() else {
             if let Some(state) = self.carousel_ack.as_mut() {
                 // An armed carousel timer without an installed FEC manifest
                 // must still advance; otherwise its expired deadline spins the
@@ -628,11 +650,17 @@ impl SessionReceiver {
         &mut self,
         frame: InboundFrame,
     ) -> Result<(), SinkWriteError> {
-        let Some(ReceiverMode::Fec(mode)) = self.mode.as_mut() else {
-            return Ok(());
-        };
-        mode.handle_block_symbol_frame(&mut self.shared, frame)
-            .await
+        match self.mode.as_mut() {
+            Some(ReceiverMode::Fec(mode)) => {
+                mode.handle_block_symbol_frame(&mut self.shared, frame)
+                    .await
+            }
+            Some(ReceiverMode::MettleCarousel(mode)) => {
+                mode.handle_block_symbol_frame(&mut self.shared, frame)
+                    .await
+            }
+            _ => Ok(()),
+        }
     }
 
     /// Install the first valid manifest and send READY.
@@ -713,10 +741,42 @@ impl SessionReceiver {
                 else {
                     return Ok(());
                 };
-                ReceiverMode::Fec(FecReceiver::new(
-                    geometry,
-                    validated_geometry.symbol_id_bounds(),
-                ))
+                if mettle_carousel::is_mettle_carousel(&manifest.mode) {
+                    let Some(object_geometry) = fec.mettle_object_stream else {
+                        self.finish_session("mettle_manifest_missing_geometry");
+                        return Ok(());
+                    };
+                    let Ok(object_plan) =
+                        ObjectSymbolPlan::from_negotiated(manifest.total_bytes, object_geometry)
+                    else {
+                        self.finish_session("mettle_manifest_invalid_geometry");
+                        return Ok(());
+                    };
+                    match MettleCarouselReceiver::install(
+                        self.shared.session_id,
+                        object_plan,
+                        fec.clone(),
+                        self.shared.cfg.mettle_decoder_budget.as_ref(),
+                    )
+                    .await
+                    {
+                        Ok(mode) => ReceiverMode::MettleCarousel(Box::new(mode)),
+                        Err(error) => {
+                            warn!(
+                                session_id = self.shared.session_id,
+                                %error,
+                                "Lossless receiver rejected METTLE carousel before Ready"
+                            );
+                            self.finish_session("mettle_decoder_rejected");
+                            return Ok(());
+                        }
+                    }
+                } else {
+                    ReceiverMode::Fec(FecReceiver::new(
+                        geometry,
+                        validated_geometry.symbol_id_bounds(),
+                    ))
+                }
             }
         };
 
@@ -828,7 +888,7 @@ impl SessionReceiver {
         if self.is_carousel() && self.reported_complete() {
             return Some(CompletedReceiverReplay::Carousel {
                 route: self.shared.route,
-                ack: self.shared.block_ack()?,
+                ack: self.block_ack()?,
                 local_node_id: self.shared.local_node_id,
                 retain_until: checked_deadline(
                     Instant::now(),
@@ -893,7 +953,7 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
     match (fec.scheme_kind(), fec.feedback_mode) {
         (Some(FecScheme::RaptorQ), _) => true,
         (Some(FecScheme::Mettle), FecFeedbackMode::Rounds) => true,
-        (Some(FecScheme::Mettle), FecFeedbackMode::Carousel) => false,
+        (Some(FecScheme::Mettle), FecFeedbackMode::Carousel) => fec.mettle_object_stream.is_some(),
         (None, _) => false,
     }
 }
@@ -1105,6 +1165,53 @@ impl ReceiverShared {
                 .map_err(SinkWriteError::FileWrite)?;
         }
 
+        Ok(())
+    }
+
+    /// Commit one decoded object-stream source at its global object offset.
+    /// The write completes before the METTLE watermark is advanced.
+    pub(super) async fn write_object_symbol(
+        &self,
+        plan: ObjectSymbolPlan,
+        global_source_id: u64,
+        payload: &[u8],
+    ) -> Result<(), SinkWriteError> {
+        let span = plan
+            .source_span(global_source_id)
+            .ok_or(SinkWriteError::InvalidRange(
+                "global source id is outside the object plan",
+            ))?;
+        let copy_len = payload.len().min(span.len());
+        if copy_len == 0 {
+            return Ok(());
+        }
+        let start = usize::try_from(span.offset())
+            .map_err(|_| SinkWriteError::InvalidRange("object source offset does not fit host"))?;
+        let end = start
+            .checked_add(copy_len)
+            .ok_or(SinkWriteError::InvalidRange("object source range overflow"))?;
+
+        if let Some(sink) = &self.cfg.sink_buffer {
+            let mut guard = sink.lock().await;
+            if end > guard.len() {
+                return Err(SinkWriteError::BufferRange {
+                    start,
+                    end,
+                    sink_len: guard.len(),
+                });
+            }
+            guard[start..end].copy_from_slice(&payload[..copy_len]);
+        }
+
+        if let Some(sink) = &self.cfg.sink_file {
+            let mut guard = sink.lock().await;
+            guard
+                .seek(SeekFrom::Start(span.offset()))
+                .map_err(SinkWriteError::FileSeek)?;
+            guard
+                .write_all(&payload[..copy_len])
+                .map_err(SinkWriteError::FileWrite)?;
+        }
         Ok(())
     }
 
@@ -1707,9 +1814,144 @@ mod tests {
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(16, vec![0])
                 .with_feedback_mode(FecFeedbackMode::Carousel)
         ));
+        let geometry = ObjectSymbolPlan::derive(32, 2)
+            .expect("valid object plan")
+            .geometry();
+        assert!(receiver_supports_fec_scheme(
+            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(4, vec![0])
+                .with_feedback_mode(FecFeedbackMode::Carousel)
+                .with_mettle_object_stream(geometry)
+        ));
         assert!(receiver_supports_fec_scheme(
             &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])
         ));
+    }
+
+    #[tokio::test]
+    async fn mettle_carousel_writes_global_sources_across_prefix_boundaries() {
+        use std::num::NonZeroUsize;
+
+        use nextmini_messages::lossless_session::MettleObjectStreamGeometry;
+
+        let session_id = 0xA55A;
+        let source = b"abcdefghi";
+        let geometry = MettleObjectStreamGeometry::new(2, 2, 3, 1);
+        let plan = ObjectSymbolPlan::from_negotiated(source.len() as u64, geometry)
+            .expect("valid multi-prefix plan");
+        let fec_mode =
+            nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(4, vec![0])
+                .with_feedback_mode(FecFeedbackMode::Carousel)
+                .with_mettle_object_stream(geometry);
+        let manifest = LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: source.len() as u64,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Fec(fec_mode.clone()),
+        };
+        manifest.validate().expect("valid carousel manifest");
+
+        let route = crate::node::session::runtime::TransportRoute {
+            src_ip: Ipv4Addr::new(10, 0, 0, 2),
+            dst_ip: Ipv4Addr::new(10, 0, 0, 1),
+            src_port: 4752,
+            dst_port: 5752,
+        };
+        let sink = Arc::new(tokio::sync::Mutex::new(vec![0; source.len()]));
+        let budget = crate::node::session::runtime::MettleDecoderBudget::from_lossless(
+            &crate::node::config::LosslessConfig::default(),
+        )
+        .expect("default decoder budget");
+        let mode =
+            MettleCarouselReceiver::install(session_id, plan, fec_mode.clone(), Some(&budget))
+                .await
+                .expect("dense decoder admission succeeds");
+        let mut receiver = SessionReceiver {
+            shared: ReceiverShared {
+                session_id,
+                route,
+                local_node_id: RECEIVER_NODE_ID,
+                cfg: ReceiverConfig {
+                    session_id,
+                    route,
+                    local_node_id: RECEIVER_NODE_ID,
+                    sink_buffer: Some(sink.clone()),
+                    sink_file: None,
+                    progress: None,
+                    peer_report_timeout_ms: 200,
+                    fec_enabled: true,
+                    cloudcast: None,
+                    carousel: Default::default(),
+                    mettle_decoder_budget: Some(budget),
+                },
+                processors: ProcessorHandle::new(Default::default()),
+                manifest: Some(manifest),
+                plan: BlockPlan::new(source.len() as u64, 8).ok(),
+                complete_blocks: BTreeSet::new(),
+                metrics: Arc::new(SessionMetrics::default()),
+            },
+            mode: Some(ReceiverMode::MettleCarousel(Box::new(mode))),
+            lifecycle: ReceiverLifecycle::Active,
+            passive_complete_deadline: None,
+            pending_control_frames: VecDeque::new(),
+            carousel_ack: Some(CarouselAckState::new(Instant::now(), Default::default())),
+        };
+
+        for stream_id in 0..plan.stream_count() {
+            let source_count = plan
+                .stream_source_count(stream_id)
+                .expect("stream belongs to plan");
+            let mut encoder = mettle::stream::Encoder::new_terminated(
+                mettle::MettleParams::new(
+                    crate::node::session::fec::mettle_overhead_from_fec_mode(&fec_mode)
+                        .expect("valid METTLE rate"),
+                ),
+                NonZeroUsize::new(plan.symbol_size()).expect("non-zero symbol size"),
+                crate::node::session::fec::block_seed(session_id, stream_id),
+                u64::from(source_count),
+            );
+            let mut bins = Vec::new();
+            for local_source_id in 0..source_count {
+                let global_source_id = plan
+                    .global_source_id(stream_id, local_source_id)
+                    .expect("global source mapping");
+                let span = plan
+                    .source_span(global_source_id)
+                    .expect("source span mapping");
+                let mut payload = vec![0; plan.symbol_size()];
+                let start = usize::try_from(span.offset()).expect("test offset fits");
+                payload[..span.len()].copy_from_slice(&source[start..start + span.len()]);
+                bins.extend(encoder.push_source(&payload));
+            }
+            bins.extend(encoder.finish());
+            bins.sort_by_key(|bin| bin.bin_id());
+            for bin in bins {
+                let (bin_id, payload) = bin.into_parts();
+                receiver
+                    .handle_block_symbol_frame(InboundFrame {
+                        bytes: lossless_session::encode_block_symbol(
+                            session_id,
+                            stream_id,
+                            u32::try_from(bin_id).expect("test bin id fits wire"),
+                            0,
+                            &payload,
+                        ),
+                        peer_id: Some(SOURCE_NODE_ID),
+                    })
+                    .await
+                    .expect("decoded source commits to sink");
+            }
+        }
+
+        assert!(receiver.reported_complete());
+        assert_eq!(*sink.lock().await, source);
+        assert_eq!(
+            receiver.block_ack(),
+            Some(BlockAck::MettleStream {
+                stream_id: 2,
+                decoded_source_watermark: 1,
+                stalled: None,
+            })
+        );
     }
 
     #[tokio::test]
@@ -1944,7 +2186,9 @@ mod tests {
                 .as_ref()
                 .and_then(|mode| match mode {
                     ReceiverMode::Fec(fec) => fec.blocks.get(&0),
-                    ReceiverMode::Plain(_) | ReceiverMode::Cloudcast(_) => None,
+                    ReceiverMode::Plain(_)
+                    | ReceiverMode::Cloudcast(_)
+                    | ReceiverMode::MettleCarousel(_) => None,
                 })
                 .is_none(),
             "malformed FEC symbol payloads must be dropped before insertion"
@@ -1976,7 +2220,9 @@ mod tests {
                 .as_ref()
                 .and_then(|mode| match mode {
                     ReceiverMode::Fec(fec) => fec.blocks.get(&0),
-                    ReceiverMode::Plain(_) | ReceiverMode::Cloudcast(_) => None,
+                    ReceiverMode::Plain(_)
+                    | ReceiverMode::Cloudcast(_)
+                    | ReceiverMode::MettleCarousel(_) => None,
                 })
                 .is_none(),
             "out-of-range peer ESIs must be dropped before storage or decoder input"

@@ -16,7 +16,7 @@ use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder, FecError, FecSymbolIdBounds};
 use crate::node::session::metrics::SenderWaitState;
-use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
+use crate::node::session::plan::{BlockPlan, BlockSpan, ObjectSymbolPlan, SymbolGeometry};
 
 use super::block_symbol_frame;
 use super::state::{CarouselLivenessViolation, CarouselPeerLiveness, PeerBlockCompletion};
@@ -95,7 +95,137 @@ pub(super) struct FecSender {
     carousel_peer_liveness: BTreeMap<usize, CarouselPeerLiveness>,
     carousel_next_repair_block: usize,
     carousel_final_ack_processed: bool,
+    mettle_carousel: Option<MettleCarouselSenderState>,
     stats: FecSenderStats,
+}
+
+/// Sender state for the paper-native object stream. It exists only for
+/// Carousel + METTLE; the Rounds adapter continues to use `blocks` above.
+struct MettleCarouselSenderState {
+    plan: ObjectSymbolPlan,
+    current_stream_id: u64,
+    stream: Option<MettleObjectSymbolStream>,
+    peer_completion: BTreeMap<usize, MettlePeerStreamCompletion>,
+}
+
+#[derive(Default)]
+struct MettlePeerStreamCompletion {
+    stream_id: u64,
+    decoded_source_watermark: u32,
+    has_ack: bool,
+}
+
+impl MettlePeerStreamCompletion {
+    fn join(&mut self, stream_id: u64, decoded_source_watermark: u32) -> bool {
+        if !self.has_ack || stream_id > self.stream_id {
+            self.stream_id = stream_id;
+            self.decoded_source_watermark = decoded_source_watermark;
+            self.has_ack = true;
+            return true;
+        }
+        if stream_id == self.stream_id && decoded_source_watermark > self.decoded_source_watermark {
+            self.decoded_source_watermark = decoded_source_watermark;
+            return true;
+        }
+        false
+    }
+
+    fn stream_complete(&self, plan: ObjectSymbolPlan, stream_id: u64) -> bool {
+        let Some(source_count) = plan.stream_source_count(stream_id) else {
+            return false;
+        };
+        self.has_ack
+            && (self.stream_id > stream_id
+                || (self.stream_id == stream_id && self.decoded_source_watermark >= source_count))
+    }
+
+    fn object_complete(&self, plan: ObjectSymbolPlan) -> bool {
+        if plan.stream_count() == 0 {
+            return true;
+        }
+        self.stream_complete(plan, plan.stream_count() - 1)
+    }
+}
+
+/// Rolling encoder for one negotiated object-stream prefix. Bins remain in
+/// bin-id order even when one source departure releases several bins.
+struct MettleObjectSymbolStream {
+    encoder: Option<mettle::stream::Encoder>,
+    plan: ObjectSymbolPlan,
+    stream_id: u64,
+    source_count: u32,
+    next_source_id: u32,
+    next_bin_id: u32,
+    finished: bool,
+    buffered_bins: BTreeMap<u32, Vec<u8>>,
+}
+
+impl MettleObjectSymbolStream {
+    fn new(
+        plan: ObjectSymbolPlan,
+        session_id: u64,
+        stream_id: u64,
+        mettle_overhead: mettle::OverheadRatio,
+    ) -> Option<Self> {
+        let source_count = plan.stream_source_count(stream_id)?;
+        Some(Self {
+            encoder: Some(mettle::stream::Encoder::new_terminated(
+                mettle::MettleParams::new(mettle_overhead),
+                NonZeroUsize::new(plan.symbol_size())?,
+                session_fec::block_seed(session_id, stream_id),
+                u64::from(source_count),
+            )),
+            plan,
+            stream_id,
+            source_count,
+            next_source_id: 0,
+            next_bin_id: 0,
+            finished: false,
+            buffered_bins: BTreeMap::new(),
+        })
+    }
+
+    fn next_symbol_payload(&mut self, source: &super::BlockSource) -> Option<(u32, Bytes)> {
+        while !self.buffered_bins.contains_key(&self.next_bin_id) {
+            if !self.advance(source)? {
+                return None;
+            }
+        }
+        let payload = self.buffered_bins.remove(&self.next_bin_id)?;
+        Some((self.next_bin_id, Bytes::from(payload)))
+    }
+
+    fn mark_queued(&mut self, symbol_id: u32) -> bool {
+        if symbol_id != self.next_bin_id {
+            return false;
+        }
+        let Some(next) = self.next_bin_id.checked_add(1) else {
+            return false;
+        };
+        self.next_bin_id = next;
+        true
+    }
+
+    fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
+        let bins = if self.next_source_id < self.source_count {
+            let payload =
+                source.object_source_payload(self.plan, self.stream_id, self.next_source_id)?;
+            self.next_source_id = self.next_source_id.checked_add(1)?;
+            self.encoder.as_mut()?.push_source(&payload)
+        } else {
+            if self.finished {
+                return Some(false);
+            }
+            self.finished = true;
+            self.encoder.take()?.finish()
+        };
+        for bin in bins {
+            let (bin_id, payload) = bin.into_parts();
+            self.buffered_bins
+                .insert(u32::try_from(bin_id).ok()?, payload);
+        }
+        Some(true)
+    }
 }
 
 /// Per-block sender cursor and encoder state for FEC mode.
@@ -391,9 +521,29 @@ impl FecSender {
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
         let tree_schedule = unweighted_tree_schedule(&fec.tree_ids);
+        let mettle_carousel =
+            if scheme == FecScheme::Mettle && fec.feedback_mode == FecFeedbackMode::Carousel {
+                let geometry = fec
+                    .mettle_object_stream
+                    .ok_or("missing object-stream geometry for METTLE carousel")?;
+                Some(MettleCarouselSenderState {
+                    plan: ObjectSymbolPlan::from_negotiated(manifest.total_bytes, geometry)
+                        .map_err(|_| "invalid object-stream geometry for METTLE carousel")?,
+                    current_stream_id: 0,
+                    stream: None,
+                    peer_completion: BTreeMap::new(),
+                })
+            } else {
+                None
+            };
+        let finite_block_count = if mettle_carousel.is_some() {
+            0
+        } else {
+            block_count
+        };
 
         Ok(Self {
-            blocks: (0..block_count)
+            blocks: (0..finite_block_count)
                 .map(|_| FecBlockState {
                     next_source_symbol: 0,
                     next_fountain_symbol: if scheme == FecScheme::Mettle {
@@ -432,6 +582,7 @@ impl FecSender {
             carousel_peer_liveness: BTreeMap::new(),
             carousel_next_repair_block: 0,
             carousel_final_ack_processed: false,
+            mettle_carousel,
             stats: FecSenderStats::new(&fec.tree_ids),
         })
     }
@@ -533,21 +684,235 @@ impl FecSender {
         SessionOutcome::Completed
     }
 
-    /// Work-conserving RaptorQ carousel from protocol P6.
     async fn run_carousel(
         &mut self,
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> SessionOutcome {
-        if self.scheme != FecScheme::RaptorQ {
-            warn!(
-                session_id = shared.session.session_id,
-                scheme = ?self.scheme,
-                "Lossless sender rejected a non-RaptorQ carousel session"
-            );
+        match self.scheme {
+            FecScheme::RaptorQ => self.run_raptorq_carousel(shared, ctrl_rx).await,
+            FecScheme::Mettle => self.run_mettle_carousel(shared, ctrl_rx).await,
+        }
+    }
+
+    /// Paper-native METTLE carousel: one terminated stream per negotiated
+    /// prefix, with the next prefix opened only after cumulative receiver
+    /// progress proves the previous prefix durable.
+    async fn run_mettle_carousel(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> SessionOutcome {
+        let Some(state) = self.mettle_carousel.as_mut() else {
             return SessionOutcome::Aborted;
+        };
+        state
+            .peer_completion
+            .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
+        self.carousel_peer_liveness
+            .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
+        let started_at = tokio::time::Instant::now();
+        for peer_id in shared.active_quorum.active_members() {
+            state.peer_completion.entry(*peer_id).or_default();
+            self.carousel_peer_liveness.insert(
+                *peer_id,
+                CarouselPeerLiveness::new(started_at, shared.carousel.ack_probe_interval),
+            );
         }
 
+        if shared.active_quorum_is_empty() || state.plan.stream_count() == 0 {
+            self.send_session_complete(shared).await;
+            return SessionOutcome::Completed;
+        }
+
+        let mut pending: Option<PendingCarouselSymbol> = None;
+        loop {
+            let controls_open = self.drain_carousel_controls(shared, ctrl_rx);
+            if self.carousel_quorum_complete(shared) {
+                self.carousel_final_ack_processed = true;
+                self.send_session_complete(shared).await;
+                return SessionOutcome::Completed;
+            }
+            if !controls_open
+                || !self.service_due_carousel_timers(shared, tokio::time::Instant::now())
+            {
+                return SessionOutcome::Aborted;
+            }
+
+            let stream_id = self
+                .mettle_carousel
+                .as_ref()
+                .expect("METTLE carousel state exists")
+                .current_stream_id;
+            if self.carousel_block_complete(shared, stream_id) {
+                let state = self
+                    .mettle_carousel
+                    .as_mut()
+                    .expect("METTLE carousel state exists");
+                state.current_stream_id = match state.current_stream_id.checked_add(1) {
+                    Some(next) => next,
+                    None => return SessionOutcome::Aborted,
+                };
+                state.stream = None;
+                pending = None;
+                continue;
+            }
+
+            if pending.is_none() {
+                pending = self.next_mettle_carousel_symbol(shared);
+                if pending.is_none() {
+                    let wait_started = tokio::time::Instant::now();
+                    let waited = self.wait_for_carousel_ack(shared, ctrl_rx).await;
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Feedback, wait_started.elapsed());
+                    if !waited && !self.carousel_quorum_complete(shared) {
+                        return SessionOutcome::Aborted;
+                    }
+                    continue;
+                }
+            }
+
+            let symbol = pending
+                .as_ref()
+                .expect("pending METTLE symbol exists")
+                .symbol;
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
+                continue;
+            }
+
+            if !pending
+                .as_ref()
+                .expect("pending METTLE symbol exists")
+                .paced
+            {
+                let pacing_started = tokio::time::Instant::now();
+                let pacing_enabled = shared.pacer.is_some();
+                let outcome = self
+                    .pace_carousel_symbol(
+                        shared,
+                        ctrl_rx,
+                        symbol.block_id,
+                        pending
+                            .as_ref()
+                            .expect("pending METTLE symbol exists")
+                            .payload
+                            .len(),
+                    )
+                    .await;
+                if pacing_enabled {
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Pacing, pacing_started.elapsed());
+                }
+                match outcome {
+                    CarouselPaceOutcome::Ready => {
+                        pending
+                            .as_mut()
+                            .expect("pending METTLE symbol exists")
+                            .paced = true;
+                    }
+                    CarouselPaceOutcome::BlockComplete => {
+                        pending = None;
+                        continue;
+                    }
+                    CarouselPaceOutcome::Timer => continue,
+                    CarouselPaceOutcome::Closed => return SessionOutcome::Aborted,
+                }
+            }
+
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
+                continue;
+            }
+            if !self.drain_carousel_controls(shared, ctrl_rx) {
+                return SessionOutcome::Aborted;
+            }
+            if self.carousel_block_complete(shared, symbol.block_id) {
+                pending = None;
+                continue;
+            }
+
+            match self.send_symbol(
+                shared,
+                symbol.block_id,
+                symbol.symbol_id,
+                pending
+                    .as_ref()
+                    .expect("pending METTLE symbol exists")
+                    .payload
+                    .as_ref(),
+                SymbolKind::Source,
+            ) {
+                SendSweepOutcome::Queued => {
+                    if !shared
+                        .metrics
+                        .record_sender_esi(symbol.block_id, symbol.symbol_id)
+                    {
+                        return SessionOutcome::Aborted;
+                    }
+                    let queued = self
+                        .mettle_carousel
+                        .as_mut()
+                        .and_then(|state| state.stream.as_mut())
+                        .is_some_and(|stream| stream.mark_queued(symbol.symbol_id));
+                    if !queued {
+                        return SessionOutcome::Aborted;
+                    }
+                    shared.mark_payload_emitted();
+                    pending = None;
+                }
+                SendSweepOutcome::AllWouldBlock => {
+                    shared.metrics.record_backpressure_sweep();
+                    let wait_started = tokio::time::Instant::now();
+                    let serviced = self.service_carousel_backpressure(shared, ctrl_rx).await;
+                    shared
+                        .metrics
+                        .record_wait(SenderWaitState::Backpressure, wait_started.elapsed());
+                    if !serviced && !self.carousel_quorum_complete(shared) {
+                        return SessionOutcome::Aborted;
+                    }
+                }
+                SendSweepOutcome::AllClosed => return SessionOutcome::Aborted,
+            }
+        }
+    }
+
+    fn next_mettle_carousel_symbol(
+        &mut self,
+        shared: &super::SenderShared,
+    ) -> Option<PendingCarouselSymbol> {
+        let state = self.mettle_carousel.as_mut()?;
+        if state.current_stream_id >= state.plan.stream_count() {
+            return None;
+        }
+        if state.stream.is_none() {
+            state.stream = Some(MettleObjectSymbolStream::new(
+                state.plan,
+                shared.session.session_id,
+                state.current_stream_id,
+                self.mettle_overhead,
+            )?);
+        }
+        let (symbol_id, payload) = state.stream.as_mut()?.next_symbol_payload(&shared.source)?;
+        Some(PendingCarouselSymbol {
+            symbol: CarouselSymbol {
+                block_id: state.current_stream_id,
+                symbol_id,
+                kind: SymbolKind::Source,
+            },
+            payload,
+            paced: false,
+        })
+    }
+
+    /// Work-conserving RaptorQ carousel from protocol P6.
+    async fn run_raptorq_carousel(
+        &mut self,
+        shared: &mut super::SenderShared,
+        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
+    ) -> SessionOutcome {
         self.carousel_peer_completion
             .retain(|peer_id, _| shared.active_quorum.active_members().contains(peer_id));
         self.carousel_peer_liveness
@@ -844,6 +1209,14 @@ impl FecSender {
     }
 
     fn carousel_block_complete(&self, shared: &super::SenderShared, block_id: u64) -> bool {
+        if let Some(state) = &self.mettle_carousel {
+            return shared.active_quorum.active_members().iter().all(|peer_id| {
+                state
+                    .peer_completion
+                    .get(peer_id)
+                    .is_some_and(|completion| completion.stream_complete(state.plan, block_id))
+            });
+        }
         shared.active_quorum.active_members().iter().all(|peer_id| {
             self.carousel_peer_completion
                 .get(peer_id)
@@ -852,6 +1225,14 @@ impl FecSender {
     }
 
     fn carousel_quorum_complete(&self, shared: &super::SenderShared) -> bool {
+        if let Some(state) = &self.mettle_carousel {
+            return shared.active_quorum.active_members().iter().all(|peer_id| {
+                state
+                    .peer_completion
+                    .get(peer_id)
+                    .is_some_and(|completion| completion.object_complete(state.plan))
+            });
+        }
         shared.active_quorum.active_members().iter().all(|peer_id| {
             self.carousel_peer_completion
                 .get(peer_id)
@@ -860,6 +1241,12 @@ impl FecSender {
     }
 
     fn carousel_peer_is_complete(&self, shared: &super::SenderShared, peer_id: usize) -> bool {
+        if let Some(state) = &self.mettle_carousel {
+            return state
+                .peer_completion
+                .get(&peer_id)
+                .is_some_and(|completion| completion.object_complete(state.plan));
+        }
         self.carousel_peer_completion
             .get(&peer_id)
             .is_some_and(|completion| completion.object_complete(shared.manifest.total_blocks))
@@ -1498,11 +1885,29 @@ impl super::ModeHooks for FecSender {
         if self.feedback_mode != FecFeedbackMode::Carousel {
             return;
         }
-        let progress = self
-            .carousel_peer_completion
-            .entry(peer_id)
-            .or_default()
-            .join(&ack);
+        let progress = match ack {
+            BlockAck::Blocks { .. } => self
+                .carousel_peer_completion
+                .entry(peer_id)
+                .or_default()
+                .join(&ack),
+            BlockAck::MettleStream {
+                stream_id,
+                decoded_source_watermark,
+                ..
+            } => self
+                .mettle_carousel
+                .as_mut()
+                .map(|state| {
+                    state
+                        .peer_completion
+                        .entry(peer_id)
+                        .or_default()
+                        .join(stream_id, decoded_source_watermark)
+                })
+                .unwrap_or(false),
+            _ => false,
+        };
         if let Some(liveness) = self.carousel_peer_liveness.get_mut(&peer_id) {
             liveness.note_ack(
                 tokio::time::Instant::now(),
@@ -2577,6 +2982,70 @@ mod tests {
             stream.finished,
             "requesting a future bin should finish the terminated METTLE stream"
         );
+    }
+
+    #[tokio::test]
+    async fn mettle_carousel_departs_bins_in_order_and_has_no_finite_block_state() {
+        let object_geometry =
+            nextmini_messages::lossless_session::MettleObjectStreamGeometry::new(2, 2, 3, 1);
+        let manifest = LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 9,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(4, vec![7])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(object_geometry),
+            ),
+        };
+        manifest.validate().expect("valid METTLE carousel manifest");
+        let plan = BlockPlan::new(9, 8).expect("valid compatibility block plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE carousel sender");
+        let mut shared = test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefghi"));
+        shared.active_quorum.record_ready(22);
+        shared.active_quorum.freeze();
+
+        assert!(
+            sender.blocks.is_empty(),
+            "Carousel must not allocate block streams"
+        );
+        let mut bin_ids = Vec::new();
+        while let Some(pending) = sender.next_mettle_carousel_symbol(&shared) {
+            bin_ids.push(pending.symbol.symbol_id);
+            assert!(
+                sender
+                    .mettle_carousel
+                    .as_mut()
+                    .and_then(|state| state.stream.as_mut())
+                    .is_some_and(|stream| stream.mark_queued(pending.symbol.symbol_id))
+            );
+        }
+        assert_eq!(
+            bin_ids,
+            (0..u32::try_from(bin_ids.len()).expect("test bin count fits")).collect::<Vec<_>>()
+        );
+
+        sender.on_block_ack(
+            &mut shared,
+            22,
+            BlockAck::MettleStream {
+                stream_id: 0,
+                decoded_source_watermark: 2,
+                stalled: None,
+            },
+        );
+        assert!(sender.carousel_block_complete(&shared, 0));
+        let state = sender
+            .mettle_carousel
+            .as_mut()
+            .expect("METTLE carousel state");
+        state.current_stream_id = 1;
+        state.stream = None;
+        let first_next_prefix = sender
+            .next_mettle_carousel_symbol(&shared)
+            .expect("next prefix has a first bin");
+        assert_eq!(first_next_prefix.symbol.block_id, 1);
+        assert_eq!(first_next_prefix.symbol.symbol_id, 0);
     }
 
     fn test_manifest() -> LosslessSessionManifest {

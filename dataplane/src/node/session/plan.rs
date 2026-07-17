@@ -80,13 +80,11 @@ impl Error for PlanError {}
 
 /// Absolute object span represented by one source symbol.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
 pub(crate) struct ObjectSymbolSpan {
     offset: u64,
     len: usize,
 }
 
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
 impl ObjectSymbolSpan {
     pub(crate) const fn offset(self) -> u64 {
         self.offset
@@ -99,13 +97,13 @@ impl ObjectSymbolSpan {
 
 /// One global source id expressed in the negotiated prefix namespace.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct StreamSourceId {
     stream_id: u64,
     source_id: u32,
 }
 
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
+#[cfg_attr(not(test), allow(dead_code))]
 impl StreamSourceId {
     pub(crate) const fn stream_id(self) -> u64 {
         self.stream_id
@@ -123,7 +121,6 @@ impl StreamSourceId {
 /// Large objects are partitioned into deterministic, sequential decoder
 /// prefixes whose geometry is carried by the manifest.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
 pub(crate) struct ObjectSymbolPlan {
     total_bytes: u64,
     total_sources: u64,
@@ -132,7 +129,6 @@ pub(crate) struct ObjectSymbolPlan {
     geometry: ObjectStreamGeometry,
 }
 
-#[allow(dead_code)] // Stage 2.1 API is consumed by the Stage 2.2/2.3 protocol slice.
 impl ObjectSymbolPlan {
     /// Derive the canonical largest legal prefix geometry for an object.
     pub(crate) fn derive(total_bytes: u64, symbol_size: u32) -> Result<Self, PlanError> {
@@ -250,12 +246,21 @@ impl ObjectSymbolPlan {
         self.geometry
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) const fn total_sources(self) -> u64 {
         self.total_sources
     }
 
     pub(crate) const fn symbol_size(self) -> usize {
         self.symbol_size
+    }
+
+    pub(crate) fn maximum_stream_payload_bytes(self) -> Option<usize> {
+        usize::try_from(
+            u64::from(self.geometry.source_symbols_per_stream())
+                .checked_mul(self.symbol_size_u64)?,
+        )
+        .ok()
     }
 
     pub(crate) const fn stream_count(self) -> u64 {
@@ -289,6 +294,7 @@ impl ObjectSymbolPlan {
             .filter(|&global_id| global_id < self.total_sources)
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn stream_source_id(self, global_source_id: u64) -> Option<StreamSourceId> {
         if global_source_id >= self.total_sources {
             return None;

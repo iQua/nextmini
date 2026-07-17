@@ -70,15 +70,12 @@ pub struct CarouselRuntimeConfig {
 #[derive(Clone, Debug)]
 pub struct MettleDecoderBudget {
     reservation_bytes: usize,
-    max_concurrent: usize,
     permits: Arc<Semaphore>,
 }
 
 /// One logical dense-decoder reservation.
 #[derive(Debug)]
-#[allow(dead_code)] // Acquired by the Stage 2.3 manifest-install path.
 pub struct MettleDecoderPermit {
-    reservation_bytes: usize,
     _permit: OwnedSemaphorePermit,
 }
 
@@ -110,9 +107,8 @@ impl std::fmt::Display for MettleDecoderBudgetError {
 
 impl std::error::Error for MettleDecoderBudgetError {}
 
-#[allow(dead_code)] // Admission methods are consumed by the Stage 2.3 receiver path.
 impl MettleDecoderBudget {
-    fn from_lossless(config: &LosslessConfig) -> Result<Self, MettleDecoderBudgetError> {
+    pub(super) fn from_lossless(config: &LosslessConfig) -> Result<Self, MettleDecoderBudgetError> {
         let reservation_bytes = config.mettle_decoder_reservation_bytes;
         if reservation_bytes == 0 {
             return Err(MettleDecoderBudgetError::ZeroReservation);
@@ -130,7 +126,6 @@ impl MettleDecoderBudget {
 
         Ok(Self {
             reservation_bytes,
-            max_concurrent,
             permits: Arc::new(Semaphore::new(max_concurrent)),
         })
     }
@@ -139,29 +134,16 @@ impl MettleDecoderBudget {
         let permit = Arc::clone(&self.permits)
             .try_acquire_owned()
             .map_err(|_| MettleDecoderBudgetError::Exhausted)?;
-        Ok(MettleDecoderPermit {
-            reservation_bytes: self.reservation_bytes,
-            _permit: permit,
-        })
+        Ok(MettleDecoderPermit { _permit: permit })
     }
 
     pub(super) const fn reservation_bytes(&self) -> usize {
         self.reservation_bytes
     }
 
-    pub(super) const fn max_concurrent(&self) -> usize {
-        self.max_concurrent
-    }
-
+    #[cfg(test)]
     pub(super) fn available_permits(&self) -> usize {
         self.permits.available_permits()
-    }
-}
-
-#[allow(dead_code)] // Admission methods are consumed by the Stage 2.3 receiver path.
-impl MettleDecoderPermit {
-    pub(super) const fn reservation_bytes(&self) -> usize {
-        self.reservation_bytes
     }
 }
 
@@ -376,7 +358,6 @@ pub struct ReceiverConfig {
     /// Timing validated if and when a carousel manifest is installed.
     pub carousel: CarouselRuntimeConfig,
     /// Shared process-wide dense METTLE decoder admission pool.
-    #[allow(dead_code)] // Consumed by the Stage 2.3 manifest-install path.
     pub mettle_decoder_budget: Option<MettleDecoderBudget>,
 }
 
@@ -1153,13 +1134,12 @@ mod tests {
         let config = LosslessConfig::default();
         let budget = MettleDecoderBudget::from_lossless(&config).expect("valid default budget");
         assert_eq!(budget.reservation_bytes(), 192 * 1024 * 1024);
-        assert_eq!(budget.max_concurrent(), 4);
+        assert_eq!(budget.available_permits(), 4);
 
         let mut permits = Vec::new();
         for _ in 0..4 {
             permits.push(budget.try_acquire().expect("one of four decoder permits"));
         }
-        assert_eq!(permits[0].reservation_bytes(), 192 * 1024 * 1024);
         assert_eq!(budget.available_permits(), 0);
         assert!(matches!(
             budget.try_acquire(),

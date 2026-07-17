@@ -27,7 +27,7 @@ use crate::node::scheduler::token_bucket::TokenBucket;
 use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
 use crate::node::session::metrics::SessionMetrics;
-use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
+use crate::node::session::plan::{BlockPlan, BlockSpan, ObjectSymbolPlan, SymbolGeometry};
 use crate::node::session::runtime::{
     CarouselRuntimeConfig, SenderConfig, SessionConfig, TransportRoute,
 };
@@ -213,6 +213,30 @@ impl BlockSource {
             out[..available].copy_from_slice(&self.bytes[offset..offset + available]);
         }
         out
+    }
+
+    /// Materialize one globally segmented METTLE source, padding only the
+    /// final source of the object to the negotiated symbol width.
+    fn object_source_payload(
+        &self,
+        plan: ObjectSymbolPlan,
+        stream_id: u64,
+        source_id: u32,
+    ) -> Option<Vec<u8>> {
+        let global_source_id = plan.global_source_id(stream_id, source_id)?;
+        let span = plan.source_span(global_source_id)?;
+        let mut out = vec![0u8; plan.symbol_size()];
+        if self.synthetic {
+            fill_synthetic_payload(span.offset(), self.total_bytes, &mut out[..span.len()]);
+            return Some(out);
+        }
+
+        let offset = usize::try_from(span.offset()).ok()?;
+        let available = span.len().min(self.bytes.len().saturating_sub(offset));
+        if available > 0 && offset < self.bytes.len() {
+            out[..available].copy_from_slice(&self.bytes[offset..offset + available]);
+        }
+        Some(out)
     }
 
     /// Materialize one padded block image sized for fixed-width source symbols.
