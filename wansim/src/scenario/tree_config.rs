@@ -13,6 +13,7 @@ use super::RegistrationOrder;
 pub enum FanoutAdmission {
     Sequential,
     Concurrent,
+    IsolatedCredit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]

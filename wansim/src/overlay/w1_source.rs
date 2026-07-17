@@ -20,7 +20,7 @@ use crate::transport::{SocketPairConfig, emit_packets, now_ns, seconds_from_ns};
 use super::{ControlRx, ControlStream, ControlTx};
 
 const TREE_COUNT: usize = 2;
-const MAX_PEERS: usize = 3;
+const MAX_PEERS: usize = 8;
 
 #[derive(Clone, Debug)]
 pub(crate) enum W1SourceProtocol {
@@ -262,6 +262,46 @@ impl W1SourceEndpoint {
         context: &Context<Self>,
     ) {
         self.control_packet(2, tracked, context).await;
+    }
+
+    pub(crate) async fn control_peer3_packet(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.control_packet(3, tracked, context).await;
+    }
+
+    pub(crate) async fn control_peer4_packet(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.control_packet(4, tracked, context).await;
+    }
+
+    pub(crate) async fn control_peer5_packet(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.control_packet(5, tracked, context).await;
+    }
+
+    pub(crate) async fn control_peer6_packet(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.control_packet(6, tracked, context).await;
+    }
+
+    pub(crate) async fn control_peer7_packet(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.control_packet(7, tracked, context).await;
     }
 
     async fn start(&mut self, _: (), context: &Context<Self>) {

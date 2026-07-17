@@ -10,12 +10,12 @@ use nexosim::ports::Output;
 
 use crate::metrics::{MailboxTracker, OwnershipLedger, Recorder, TrackedPacket};
 use crate::overlay::{FrameAssembler, FramedStream};
-use crate::scenario::{FanoutAdmission, TreeEndpoint};
+use crate::scenario::FanoutAdmission;
 use crate::transport::{SocketPairConfig, emit_packets, now_ns, seconds_from_ns};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct RelayChildSpec {
-    pub(crate) endpoint: TreeEndpoint,
+    pub(crate) endpoint_component: &'static str,
     pub(crate) flow_id: usize,
     pub(crate) forward_link_mailbox: &'static str,
     pub(crate) queue_owner: &'static str,
@@ -23,11 +23,11 @@ pub(crate) struct RelayChildSpec {
     pub(crate) downstream_receive_owner: &'static str,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct PendingFanoutFrame {
     frame_id: usize,
     wire_bytes: usize,
-    admitted: [bool; 2],
+    admitted: Vec<bool>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -40,6 +40,7 @@ struct RelayChild {
     spec: RelayChildSpec,
     sender: TcpSocketSender,
     queue: VecDeque<ChildQueueFrame>,
+    deferred: VecDeque<ChildQueueFrame>,
     queue_capacity: usize,
     queue_occupied: usize,
     stream_cursor: usize,
@@ -53,7 +54,7 @@ pub(crate) struct FanoutRelayEndpoint {
     upstream_receive_owner: &'static str,
     application_owner: &'static str,
     upstream_receiver: TcpSocketReceiver,
-    children: [RelayChild; 2],
+    children: Vec<RelayChild>,
     stream: FramedStream,
     assembler: FrameAssembler,
     application_buffer_capacity: usize,
@@ -62,7 +63,7 @@ pub(crate) struct FanoutRelayEndpoint {
     admission: FanoutAdmission,
     timer_interval_ns: u64,
     pub(crate) upstream_ack_output: Output<TrackedPacket>,
-    pub(crate) child_data_outputs: [Output<TrackedPacket>; 2],
+    pub(crate) child_data_outputs: [Output<TrackedPacket>; 4],
     recorder: Recorder,
     mailbox_tracker: MailboxTracker,
     ownership: OwnershipLedger,
@@ -82,7 +83,7 @@ impl FanoutRelayEndpoint {
         application_owner: &'static str,
         upstream_socket: SocketPairConfig,
         child_socket: SocketPairConfig,
-        child_specs: [RelayChildSpec; 2],
+        child_specs: Vec<RelayChildSpec>,
         stream: FramedStream,
         maximum_frame_payload: usize,
         application_buffer_capacity: usize,
@@ -93,9 +94,10 @@ impl FanoutRelayEndpoint {
         mailbox_tracker: MailboxTracker,
         ownership: OwnershipLedger,
     ) -> Result<Self, days::flows::tcp_socket::TcpSocketError> {
+        assert!((1..=4).contains(&child_specs.len()));
         ownership.set(upstream_receive_owner, 0);
         ownership.set(application_owner, 0);
-        for spec in child_specs {
+        for spec in &child_specs {
             ownership.set(spec.queue_owner, 0);
             ownership.set(spec.send_owner, 0);
         }
@@ -111,7 +113,7 @@ impl FanoutRelayEndpoint {
             );
             recorder.record(
                 0,
-                spec.endpoint.component(),
+                spec.endpoint_component,
                 "fanout_parent_configured",
                 spec.flow_id,
                 index,
@@ -119,7 +121,20 @@ impl FanoutRelayEndpoint {
                 index,
             );
         }
-        let [first, second] = child_specs;
+        let children = child_specs
+            .into_iter()
+            .map(|spec| {
+                Ok(RelayChild {
+                    spec,
+                    sender: TcpSocketSender::new_reno(spec.flow_id, 0, child_socket.socket)?,
+                    queue: VecDeque::new(),
+                    deferred: VecDeque::new(),
+                    queue_capacity: child_queue_capacity,
+                    queue_occupied: 0,
+                    stream_cursor: 0,
+                })
+            })
+            .collect::<Result<Vec<_>, days::flows::tcp_socket::TcpSocketError>>()?;
         Ok(Self {
             component,
             mailbox,
@@ -128,24 +143,7 @@ impl FanoutRelayEndpoint {
             upstream_receive_owner,
             application_owner,
             upstream_receiver: TcpSocketReceiver::new(upstream_flow_id, 0, upstream_socket.socket)?,
-            children: [
-                RelayChild {
-                    spec: first,
-                    sender: TcpSocketSender::new_reno(first.flow_id, 0, child_socket.socket)?,
-                    queue: VecDeque::new(),
-                    queue_capacity: child_queue_capacity,
-                    queue_occupied: 0,
-                    stream_cursor: 0,
-                },
-                RelayChild {
-                    spec: second,
-                    sender: TcpSocketSender::new_reno(second.flow_id, 0, child_socket.socket)?,
-                    queue: VecDeque::new(),
-                    queue_capacity: child_queue_capacity,
-                    queue_occupied: 0,
-                    stream_cursor: 0,
-                },
-            ],
+            children,
             stream,
             assembler: FrameAssembler::new(maximum_frame_payload),
             application_buffer_capacity,
@@ -195,6 +193,22 @@ impl FanoutRelayEndpoint {
         context: &Context<Self>,
     ) {
         self.child_acknowledgment(1, tracked, context).await;
+    }
+
+    pub(crate) async fn child2_acknowledgment(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.child_acknowledgment(2, tracked, context).await;
+    }
+
+    pub(crate) async fn child3_acknowledgment(
+        &mut self,
+        tracked: TrackedPacket,
+        context: &Context<Self>,
+    ) {
+        self.child_acknowledgment(3, tracked, context).await;
     }
 
     async fn child_acknowledgment(
@@ -355,7 +369,7 @@ impl FanoutRelayEndpoint {
             self.pending_frames.push_back(PendingFanoutFrame {
                 frame_id: frame.frame_id,
                 wire_bytes: frame.wire_bytes,
-                admitted: [false; 2],
+                admitted: vec![false; self.children.len()],
             });
         }
         true
@@ -368,9 +382,15 @@ impl FanoutRelayEndpoint {
             for child_index in 0..self.children.len() {
                 progressed |= self.drain_child(child_index, now).await;
             }
+            if self.admission == FanoutAdmission::IsolatedCredit {
+                for child_index in 0..self.children.len() {
+                    progressed |= self.replay_deferred(child_index, now);
+                }
+            }
             let (released, admitted) = match self.admission {
                 FanoutAdmission::Sequential => self.admit_sequential(now),
                 FanoutAdmission::Concurrent => self.admit_concurrent(now),
+                FanoutAdmission::IsolatedCredit => self.admit_isolated_credit(now),
             };
             released_total = released_total.saturating_add(released);
             progressed |= admitted > 0;
@@ -387,7 +407,7 @@ impl FanoutRelayEndpoint {
     fn admit_sequential(&mut self, now: u64) -> (usize, usize) {
         let mut released = 0_usize;
         let mut admitted = 0_usize;
-        while let Some(frame) = self.pending_frames.front().copied() {
+        while let Some(frame) = self.pending_frames.front().cloned() {
             let Some(child_index) = frame.admitted.iter().position(|value| !value) else {
                 self.pending_frames.pop_front();
                 self.application_buffer_occupied = self
@@ -409,7 +429,7 @@ impl FanoutRelayEndpoint {
         let mut admitted = 0_usize;
         for child_index in 0..self.children.len() {
             for frame_index in 0..self.pending_frames.len() {
-                let frame = self.pending_frames[frame_index];
+                let frame = self.pending_frames[frame_index].clone();
                 if frame.admitted[child_index] {
                     continue;
                 }
@@ -435,6 +455,85 @@ impl FanoutRelayEndpoint {
             self.update_application_owner();
         }
         (released, admitted)
+    }
+
+    fn admit_isolated_credit(&mut self, now: u64) -> (usize, usize) {
+        let mut admitted = 0_usize;
+        for frame_index in 0..self.pending_frames.len() {
+            for child_index in 0..self.children.len() {
+                if self.pending_frames[frame_index].admitted[child_index] {
+                    continue;
+                }
+                let frame = self.pending_frames[frame_index].clone();
+                if self.children[child_index].deferred.is_empty()
+                    && self.try_admit_frame(frame_index, child_index, frame.clone(), now)
+                {
+                    admitted = admitted.saturating_add(1);
+                } else {
+                    let child = &mut self.children[child_index];
+                    child.deferred.push_back(ChildQueueFrame {
+                        frame_id: frame.frame_id,
+                        remaining_bytes: frame.wire_bytes,
+                    });
+                    self.pending_frames[frame_index].admitted[child_index] = true;
+                    self.recorder.record(
+                        now,
+                        self.component,
+                        "isolated_credit_deferred",
+                        child.spec.flow_id,
+                        frame.frame_id,
+                        frame.wire_bytes,
+                        child.deferred.len(),
+                    );
+                    admitted = admitted.saturating_add(1);
+                }
+            }
+        }
+        let mut released = 0_usize;
+        while self
+            .pending_frames
+            .front()
+            .is_some_and(|frame| frame.admitted.iter().all(|value| *value))
+        {
+            let Some(frame) = self.pending_frames.pop_front() else {
+                break;
+            };
+            self.application_buffer_occupied = self
+                .application_buffer_occupied
+                .saturating_sub(frame.wire_bytes);
+            released = released.saturating_add(frame.wire_bytes);
+            self.update_application_owner();
+        }
+        (released, admitted)
+    }
+
+    fn replay_deferred(&mut self, child_index: usize, now: u64) -> bool {
+        let child = &mut self.children[child_index];
+        let Some(frame) = child.deferred.front().copied() else {
+            return false;
+        };
+        let can_admit = child
+            .queue_occupied
+            .checked_add(frame.remaining_bytes)
+            .is_some_and(|occupied| occupied <= child.queue_capacity);
+        if !can_admit {
+            return false;
+        }
+        child.deferred.pop_front();
+        child.queue.push_back(frame);
+        child.queue_occupied += frame.remaining_bytes;
+        self.ownership
+            .set(child.spec.queue_owner, child.queue_occupied);
+        self.recorder.record(
+            now,
+            self.component,
+            "isolated_credit_replay",
+            child.spec.flow_id,
+            frame.frame_id,
+            frame.remaining_bytes,
+            child.deferred.len(),
+        );
+        true
     }
 
     fn try_admit_frame(
@@ -606,10 +705,11 @@ impl FanoutRelayEndpoint {
     fn is_active(&self) -> bool {
         self.upstream_receiver.application_read_sequence() < self.stream.total_bytes()
             || self.application_buffer_occupied > 0
-            || self
-                .children
-                .iter()
-                .any(|child| child.queue_occupied > 0 || child.sender.send_buffered_bytes() > 0)
+            || self.children.iter().any(|child| {
+                child.queue_occupied > 0
+                    || !child.deferred.is_empty()
+                    || child.sender.send_buffered_bytes() > 0
+            })
     }
 
     fn schedule_timer(&self, context: &Context<Self>) {

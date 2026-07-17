@@ -18,6 +18,7 @@ fn externality_scenario(admission: FanoutAdmission) -> TreeScenario {
     scenario.scenario_id = match admission {
         FanoutAdmission::Sequential => "w0b-sequential-externality".to_owned(),
         FanoutAdmission::Concurrent => "w0b-concurrent-externality".to_owned(),
+        FanoutAdmission::IsolatedCredit => "w0b-isolated-externality".to_owned(),
     };
     scenario.fanout_admission = admission;
     scenario.relay_application_buffer_bytes = scenario.stream_bytes().expect("stream geometry");

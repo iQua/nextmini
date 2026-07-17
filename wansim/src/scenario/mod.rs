@@ -4,6 +4,8 @@ mod tree;
 mod tree_config;
 mod w1;
 mod w1_config;
+mod w2;
+mod w2_config;
 
 pub use chain::{ChainOutcome, ChainRunError, run_chain};
 pub use config::{ChainScenario, RegistrationOrder, ScenarioError};
@@ -13,3 +15,8 @@ pub use tree_config::{
 };
 pub use w1::{W1Outcome, W1RunError, run_w1};
 pub use w1_config::{W1RateProfile, W1Scenario, W1ScenarioError};
+pub use w2::{CriticalPathAttribution, W2Outcome, W2RunError, run_w2};
+pub use w2_config::{
+    BufferBudget, BufferGeometry, ChildOrder, ReceiverAdmissionPolicy, ReceiverServiceRate,
+    W2Scenario, W2ScenarioError,
+};

@@ -106,7 +106,7 @@ pub fn run_tree(scenario: &TreeScenario) -> Result<TreeOutcome, TreeRunError> {
         "relay_a.application",
         socket,
         socket,
-        relay_a_specs,
+        relay_a_specs.into(),
         stream.clone(),
         scenario.frame_payload_bytes,
         scenario.relay_application_buffer_bytes,
@@ -127,7 +127,7 @@ pub fn run_tree(scenario: &TreeScenario) -> Result<TreeOutcome, TreeRunError> {
         "relay_b.application",
         socket,
         socket,
-        relay_b_specs,
+        relay_b_specs.into(),
         stream.clone(),
         scenario.frame_payload_bytes,
         scenario.relay_application_buffer_bytes,
@@ -560,7 +560,7 @@ fn tree_receiver(
 fn relay_a_child_spec(endpoint: TreeEndpoint) -> RelayChildSpec {
     match endpoint {
         TreeEndpoint::Receiver1 => RelayChildSpec {
-            endpoint,
+            endpoint_component: endpoint.component(),
             flow_id: FLOW_RELAY_A_RECEIVER_1,
             forward_link_mailbox: RELAY_A_RECEIVER_1_FORWARD,
             queue_owner: "relay_a.receiver1.queue",
@@ -568,7 +568,7 @@ fn relay_a_child_spec(endpoint: TreeEndpoint) -> RelayChildSpec {
             downstream_receive_owner: "receiver1.tcp_rcv",
         },
         TreeEndpoint::RelayB => RelayChildSpec {
-            endpoint,
+            endpoint_component: endpoint.component(),
             flow_id: FLOW_RELAY_A_RELAY_B,
             forward_link_mailbox: RELAY_A_RELAY_B_FORWARD,
             queue_owner: "relay_a.relay_b.queue",
@@ -584,7 +584,7 @@ fn relay_a_child_spec(endpoint: TreeEndpoint) -> RelayChildSpec {
 fn relay_b_child_spec(endpoint: TreeEndpoint) -> RelayChildSpec {
     match endpoint {
         TreeEndpoint::Receiver2 => RelayChildSpec {
-            endpoint,
+            endpoint_component: endpoint.component(),
             flow_id: FLOW_RELAY_B_RECEIVER_2,
             forward_link_mailbox: RELAY_B_RECEIVER_2_FORWARD,
             queue_owner: "relay_b.receiver2.queue",
@@ -592,7 +592,7 @@ fn relay_b_child_spec(endpoint: TreeEndpoint) -> RelayChildSpec {
             downstream_receive_owner: "receiver2.tcp_rcv",
         },
         TreeEndpoint::Receiver3 => RelayChildSpec {
-            endpoint,
+            endpoint_component: endpoint.component(),
             flow_id: FLOW_RELAY_B_RECEIVER_3,
             forward_link_mailbox: RELAY_B_RECEIVER_3_FORWARD,
             queue_owner: "relay_b.receiver3.queue",

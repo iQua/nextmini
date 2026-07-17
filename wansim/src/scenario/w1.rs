@@ -12,9 +12,7 @@ use crate::overlay::{
     ControlStream, FanoutRelayEndpoint, FramedStream, ReceiverControlGeometry, RelayChildSpec,
     W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint, W1SourceProtocol,
 };
-use crate::scenario::{
-    FanoutAdmission, RegistrationOrder, TreeEndpoint, W1Scenario, W1ScenarioError,
-};
+use crate::scenario::{FanoutAdmission, RegistrationOrder, W1Scenario, W1ScenarioError};
 use crate::transport::SocketPairConfig;
 
 const TREE_COUNT: usize = 2;
@@ -255,6 +253,8 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
                 scenario.frame_payload_bytes,
                 scenario.runtime_command_capacity_frames,
                 scenario.receiver_data_inbox_capacity_frames,
+                crate::scenario::ReceiverAdmissionPolicy::HybridDrop,
+                scenario.runtime_command_capacity_frames,
                 scenario.runtime_command_service_ns,
                 scenario.decoder_sink_service_ns,
                 protocol,
@@ -407,7 +407,7 @@ fn build_relay(
         application_owner,
         socket,
         socket,
-        child_specs,
+        child_specs.into(),
         stream,
         scenario.frame_payload_bytes,
         scenario.relay_application_buffer_bytes,
@@ -422,16 +422,16 @@ fn build_relay(
 }
 
 fn child_spec(tree: usize, hop: usize) -> RelayChildSpec {
-    let endpoint = match hop {
-        1 => TreeEndpoint::Receiver1,
-        2 => TreeEndpoint::RelayB,
-        3 => TreeEndpoint::Receiver2,
-        4 => TreeEndpoint::Receiver3,
+    let endpoint_component = match hop {
+        1 => RECEIVER_COMPONENTS[0],
+        2 => RELAY_COMPONENTS[tree][1],
+        3 => RECEIVER_COMPONENTS[1],
+        4 => RECEIVER_COMPONENTS[2],
         _ => unreachable!("W1 relay child hop"),
     };
     let (queue_owner, send_owner, receive_owner) = child_owners(tree, hop);
     RelayChildSpec {
-        endpoint,
+        endpoint_component,
         flow_id: DATA_FLOW_IDS[tree][hop],
         forward_link_mailbox: DATA_FORWARD_LINKS[tree][hop],
         queue_owner,

@@ -14,6 +14,7 @@ use crate::protocol::{
     CarouselConfigError, CarouselReceiver, CarouselTiming, ControlFrame, ProtocolKind,
     RoundsReceiver, StripeReceiver,
 };
+use crate::scenario::ReceiverAdmissionPolicy;
 use crate::transport::{SocketPairConfig, emit_packets, now_ns, seconds_from_ns};
 
 use super::{ControlRx, ControlStream, ControlTx, FrameAssembler, FramedStream};
@@ -140,6 +141,10 @@ impl RuntimeCommand {
             Self::Data { wire_bytes, .. } | Self::Control { wire_bytes, .. } => *wire_bytes,
         }
     }
+
+    fn is_data(&self) -> bool {
+        matches!(self, Self::Data { .. })
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -156,7 +161,9 @@ pub(crate) struct W1ReceiverEndpoint {
     data_frame_wire_bytes: usize,
     runtime_commands: VecDeque<RuntimeCommand>,
     runtime_command_capacity: usize,
+    initial_credit_per_tree_frames: usize,
     runtime_busy: bool,
+    admission_policy: ReceiverAdmissionPolicy,
     data_inbox: VecDeque<DataServiceItem>,
     data_inbox_capacity: usize,
     decoder_busy: bool,
@@ -190,6 +197,8 @@ impl W1ReceiverEndpoint {
         maximum_frame_payload: usize,
         runtime_command_capacity: usize,
         data_inbox_capacity: usize,
+        admission_policy: ReceiverAdmissionPolicy,
+        initial_credit_per_tree_frames: usize,
         runtime_service_ns: u64,
         decoder_sink_service_ns: u64,
         protocol: W1ReceiverProtocol,
@@ -246,7 +255,9 @@ impl W1ReceiverEndpoint {
             data_frame_wire_bytes,
             runtime_commands: VecDeque::new(),
             runtime_command_capacity,
+            initial_credit_per_tree_frames,
             runtime_busy: false,
+            admission_policy,
             data_inbox: VecDeque::new(),
             data_inbox_capacity,
             decoder_busy: false,
@@ -309,7 +320,7 @@ impl W1ReceiverEndpoint {
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         let credit = match self
-            .runtime_command_capacity
+            .initial_credit_per_tree_frames
             .checked_mul(self.data_frame_wire_bytes)
         {
             Some(credit) => credit,
@@ -351,7 +362,10 @@ impl W1ReceiverEndpoint {
         self.mailbox_tracker.dequeue(self.mailbox);
         self.runtime_busy = false;
         let now = now_ns(context);
-        let Some(command) = self.runtime_commands.pop_front() else {
+        let Some(command_index) = self.runnable_runtime_command(now) else {
+            return;
+        };
+        let Some(command) = self.runtime_commands.remove(command_index) else {
             self.recorder.fail("runtime service fired with no command");
             return;
         };
@@ -371,17 +385,24 @@ impl W1ReceiverEndpoint {
                 wire_bytes,
                 transport_acked_through,
             } => {
+                let mut accepted = false;
                 if self.data_inbox.len() >= self.data_inbox_capacity {
-                    self.recorder.record(
-                        now,
-                        self.component,
-                        "data_inbox_drop_after_tcp_ack",
-                        self.data_ingress[tree].flow_id,
-                        frame_id,
-                        wire_bytes,
-                        transport_acked_through,
-                    );
+                    if self.admission_policy == ReceiverAdmissionPolicy::HybridDrop {
+                        self.recorder.record(
+                            now,
+                            self.component,
+                            "data_inbox_drop_after_tcp_ack",
+                            self.data_ingress[tree].flow_id,
+                            frame_id,
+                            wire_bytes,
+                            transport_acked_through,
+                        );
+                    } else {
+                        self.recorder
+                            .fail("blocking data command dispatched into a full inbox");
+                    }
                 } else {
+                    accepted = true;
                     self.data_inbox.push_back(DataServiceItem {
                         tree,
                         frame_id,
@@ -398,7 +419,9 @@ impl W1ReceiverEndpoint {
                     );
                     self.schedule_decoder(context);
                 }
-                self.grant_data_credit(tree, wire_bytes, now, context).await;
+                if accepted || self.admission_policy == ReceiverAdmissionPolicy::HybridDrop {
+                    self.grant_data_credit(tree, wire_bytes, now, context).await;
+                }
             }
             RuntimeCommand::Control { frame, wire_bytes } => {
                 let (event, value) = match &frame {
@@ -459,14 +482,15 @@ impl W1ReceiverEndpoint {
                 completion_ns,
                 self.component,
                 "protocol_local_complete",
-                0,
-                0,
-                0,
-                1,
+                self.data_ingress[item.tree].flow_id,
+                item.frame_id,
+                item.wire_bytes,
+                item.tree,
             );
         }
         self.drive_control(now).await;
         self.schedule_decoder(context);
+        self.schedule_runtime(context);
     }
 
     async fn data_segment(&mut self, tree: usize, tracked: TrackedPacket, context: &Context<Self>) {
@@ -570,6 +594,42 @@ impl W1ReceiverEndpoint {
             self.mailbox_tracker.dequeue(self.mailbox);
             self.recorder.fail(error);
         }
+    }
+
+    fn runnable_runtime_command(&mut self, now: u64) -> Option<usize> {
+        let front = self.runtime_commands.front()?;
+        if !front.is_data() || self.data_inbox.len() < self.data_inbox_capacity {
+            return Some(0);
+        }
+        let (event, control_index) = match self.admission_policy {
+            ReceiverAdmissionPolicy::HybridDrop => return Some(0),
+            ReceiverAdmissionPolicy::NaiveBlocking => ("data_inbox_blocking_wait", None),
+            ReceiverAdmissionPolicy::IsolatedCredit => (
+                "isolated_credit_wait",
+                self.runtime_commands
+                    .iter()
+                    .position(|command| !command.is_data()),
+            ),
+        };
+        let RuntimeCommand::Data {
+            tree,
+            frame_id,
+            wire_bytes,
+            transport_acked_through,
+        } = front
+        else {
+            unreachable!("front command was checked as data")
+        };
+        self.recorder.record(
+            now,
+            self.component,
+            event,
+            self.data_ingress[*tree].flow_id,
+            *frame_id,
+            *wire_bytes,
+            *transport_acked_through,
+        );
+        control_index
     }
 
     fn schedule_decoder(&mut self, context: &Context<Self>) {

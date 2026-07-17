@@ -2,7 +2,8 @@
 //!
 //! W0a models a single persistent source -> relay -> receiver chain. W0b adds the fixed fan-out
 //! tree, per-child transport state, hybrid receiver admission, and ideal DoF accounting. W1 adds
-//! independent section-P protocol endpoints and runs them over the same transport substrate.
+//! independent section-P protocol endpoints and runs them over the same transport substrate. W2
+//! studies receiver admission under deterministic straggler service.
 
 pub mod days_bridge;
 pub mod determinism;
