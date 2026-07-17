@@ -1,0 +1,41 @@
+schema_version = 1
+scenario_kind = "tree"
+scenario_id = "w0b-tree-golden"
+master_seed = 1311768467463790320
+source_symbols_k = 16
+frame_count = 16
+frame_payload_bytes = 508
+tcp_mss_bytes = 512
+socket_send_buffer_bytes = 1024
+socket_receive_buffer_bytes = 1024
+relay_application_buffer_bytes = 1024
+relay_child_queue_bytes = 1024
+runtime_command_capacity_frames = 4
+receiver_data_inbox_capacity_frames = 4
+receiver_control_inbox_capacity_frames = 2
+runtime_command_service_ns = 100000
+decoder_sink_service_ns = 500000
+link_rate_bps = 1000000
+link_propagation_ns = 1000000
+link_queue_bytes = 4096
+simulation_end_ns = 3000000000
+plateau_probe_at_ns = 199000000
+timer_interval_ns = 1000000
+initial_rto_ns = 20000000
+persist_interval_ns = 20000000
+fanout_admission = "sequential"
+relay_a_children = ["receiver1", "relay_b"]
+relay_b_children = ["receiver2", "receiver3"]
+registration_order = "forward"
+
+[receiver1]
+transport_resume_at_ns = 200000000
+service_start_at_ns = 200000000
+
+[receiver2]
+transport_resume_at_ns = 200000000
+service_start_at_ns = 200000000
+
+[receiver3]
+transport_resume_at_ns = 200000000
+service_start_at_ns = 200000000
