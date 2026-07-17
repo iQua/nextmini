@@ -4,7 +4,9 @@ Source:
 - Qianru Yu, Tianji Yang, Jingfan Meng, Jun Xu, "METTLE: Efficient Streaming Erasure Code with Peeling Decodability", arXiv:2602.10020.
 - Extended PDF: `https://sites.cc.gatech.edu/home/jx/reprints/METTLE_isit_extended.pdf`
 
-This note records the paper semantics that the implementation must match. It is intentionally written as a specification, not as a description of the current code.
+The first sections of this note record the paper semantics that the implementation must match. The
+final section records the runtime's integration modes and deviations so that implementation evidence
+is not mistaken for a claim made by the paper.
 
 ## Top-Level Semantics
 
@@ -269,3 +271,87 @@ A paper-aligned implementation should satisfy:
 3. The public encoded symbols are coded bins keyed by bin id, including TLE bins.
 4. `c` is explicit/configurable. A hard-coded `1/20` default is not paper-equivalent for all evaluated channels.
 5. `k` is not treated as a required small block size. If the lossless protocol needs a finite transfer boundary, it should map the object or a large source prefix to one terminated METTLE stream, not many unrelated small METTLE blocks.
+
+## Runtime Integration Modes and Deviations
+
+The deployed behavior is deliberately mode-specific. The distinction is negotiated on the wire; an
+existing Rounds configuration does not silently acquire object-stream semantics.
+
+| Runtime mode | Segmentation and completion | Relationship to the paper |
+| --- | --- | --- |
+| `Rounds + METTLE` | Legacy independent finite blocks. Each block's initial phase sends its full terminated codeword and uses the Rounds `SourceDone`/`Need` contract. | **Finite-block METTLE adaptation.** Repeated independent block boundaries and repeated termination tails are not the paper's large time-coupled stream. This path remains regression-frozen. |
+| `Carousel + METTLE` | One non-systematic terminated METTLE stream per deterministic, manifest-negotiated object prefix. Bins depart in bin-id order; decoded global sources are mapped directly to object offsets and committed before their watermark advances. | **Paper-native object/prefix stream path**, with an explicit deployment bound: an arbitrary object may be split into multiple negotiated prefixes. The prefix cap is an engineering deviation needed to bound decoder ownership. |
+
+For Carousel, each prefix has at most 65,536 source symbols and checked
+`source_count * symbol_bytes <= 96 MiB`. Prefix geometry is deterministic and negotiated; receiver
+decoders live sequentially. These caps define the verified deployment envelope and are not limits
+claimed by the paper. The mode-matrix tests are indexed in
+[`perfect-runtime-invariants.md`](perfect-runtime-invariants.md).
+
+### Finite termination tail and the small-K floor
+
+Tail compression reduces the termination penalty but does not remove its discrete finite-stream
+cost. For a terminated stream with `K` source symbols, the transmitted total overhead is:
+
+$$
+c_{\mathrm{actual}} = \frac{\mathrm{terminal\_symbol\_count}}{K} - 1
+$$
+
+It is not generally equal to the graph's interior expansion parameter `c`. At small `K`, even the
+smallest interior expansion still produces a compressed termination tail whose integer symbol count
+can exceed a requested total. Such a target is unattainable for that `K`; silently reporting the
+requested percentage would undercount actual traffic.
+
+The committed negative fixture applies the paper's 5.5% total-overhead target at `K=256`; that target
+is below the finite tail floor and is rejected. The source-count sweep at `K=8,192`, `16,384`, `32,768`, and
+`65,536` shows why the Carousel object-prefix design removes the earlier `K=256` pathology: one
+prefix pays one compressed tail instead of paying one tail per small independent block. The CI
+assertions are `small_prefix_target_below_tail_floor_is_explicitly_rejected` and
+`object_stream_sweep_avoids_repeated_k256_termination_tails` in
+[`mettle/tests/paper_coding_efficiency.rs`](../mettle/tests/paper_coding_efficiency.rs).
+
+### Corrected finite-overhead accounting
+
+The paper's table targets are interpreted as **total transmitted overhead including the compressed
+tail**. The harness first computes the integer target:
+
+$$
+B_{\mathrm{target}} = \left\lceil K(1 + c_{\mathrm{target}}) \right\rceil
+$$
+
+and then deterministically solves for an interior `c` whose terminated departure contains exactly
+`B_target` symbols. Reports expose the target total, solved interior `c`, terminal count, and actual
+total overhead. At `K=100,000`, the 5.5% row therefore means exactly 105,500 transmitted symbols.
+`table_iv_targets_are_solved_against_actual_finite_transmission_counts` pins this accounting in CI.
+
+The manual Table-IV harness defaults to 4,096 trials. If it observes zero failures, the exact
+one-sided 95% upper bound is:
+
+$$
+1 - 0.05^{1/4096} = 0.000731113\ldots
+$$
+
+That is enough to resolve a `10^{-3}` target, but no smaller failure probability claimed by the paper
+is independently verified here. Claims below roughly `7.3e-4` are below this experiment's resolution.
+The implementation's graph/profile tests verify our translation of the construction; they do not
+reproduce the paper's large-stream effectiveness or latency results. See the full classification in
+[`perfect-runtime-invariants.md`](perfect-runtime-invariants.md).
+
+### Reservoir repair was a rejected beyond-paper experiment
+
+Reservoir puncturing was designed and evaluated as an extension **BEYOND the METTLE paper**. The
+paper endorses feedback and rate adaptation; it does not specify the deterministic PRF-selected
+reserve set tested here.
+
+The best Stage 3 point used 4.0039% initial wire overhead and 7% reserve overhead, for 11.0107%
+actual total overhead. In 4,096 deterministic trials per channel it completed:
+
+- 99.731% on a 2% memoryless BEC;
+- 91.040% on the short-burst Gilbert–Elliott trace; and
+- 64.868% on the long-burst Gilbert–Elliott trace.
+
+The memoryless result did not compensate for the burst-loss failure. The Stage 3 research gate
+therefore issued a **NO-GO**: Stage 3.2 was not implemented, reservoir fields were not added to the
+manifest or wire protocol, and current Carousel repair behavior stands. The methodology and
+confidence intervals are in [`plans/stage3-sim-report.md`](../plans/stage3-sim-report.md); the final
+ruling is [`plans/stage3-review-claude.md`](../plans/stage3-review-claude.md).
