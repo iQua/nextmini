@@ -7,6 +7,11 @@ use crate::metrics::{MailboxTracker, TrackedPacket};
 
 pub(crate) const FLOW_HOP_1: usize = 10_001;
 pub(crate) const FLOW_HOP_2: usize = 10_002;
+pub(crate) const FLOW_SOURCE_RELAY_A: usize = 20_001;
+pub(crate) const FLOW_RELAY_A_RECEIVER_1: usize = 20_002;
+pub(crate) const FLOW_RELAY_A_RELAY_B: usize = 20_003;
+pub(crate) const FLOW_RELAY_B_RECEIVER_2: usize = 20_004;
+pub(crate) const FLOW_RELAY_B_RECEIVER_3: usize = 20_005;
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SocketPairConfig {
