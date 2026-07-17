@@ -5,7 +5,10 @@ use nexosim::simulation::{Mailbox, SimInit};
 use nexosim::time::MonotonicTime;
 use thiserror::Error;
 
-use crate::days_bridge::{PhysicalLink, PhysicalLinkConfig};
+use crate::days_bridge::{
+    BackgroundFlow, BackgroundFlowConfig, BackgroundTrafficKind, CoupledPath, CoupledPathConfig,
+    PhysicalLink, PhysicalLinkConfig,
+};
 use crate::determinism::CounterPrf;
 use crate::metrics::{MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder};
 use crate::overlay::{
@@ -80,6 +83,21 @@ const CONTROL_REVERSE_LINKS: [&str; RECEIVER_COUNT] = [
 ];
 const CONTROL_FLOW_IDS: [(usize, usize); RECEIVER_COUNT] =
     [(40_001, 40_002), (40_003, 40_004), (40_005, 40_006)];
+const COUPLED_FORWARD: &str = "w3_coupled_data_forward";
+const COUPLED_REVERSE: &str = "w3_coupled_data_reverse";
+const BACKGROUND_COMPONENTS: [&str; 8] = [
+    "w3_bg_l0_forward_bulk",
+    "w3_bg_l0_forward_onoff",
+    "w3_bg_l0_reverse_bulk",
+    "w3_bg_l0_reverse_onoff",
+    "w3_bg_l1_forward_bulk",
+    "w3_bg_l1_forward_onoff",
+    "w3_bg_l1_reverse_bulk",
+    "w3_bg_l1_reverse_onoff",
+];
+const BACKGROUND_FLOW_IDS: [usize; 8] = [
+    70_000, 70_001, 70_002, 70_003, 70_004, 70_005, 70_006, 70_007,
+];
 
 #[derive(Clone, Debug)]
 pub struct W1Outcome {
@@ -122,9 +140,33 @@ struct LinkSlot {
     name: &'static str,
 }
 
+struct CoupledPathSlot {
+    model: CoupledPath,
+    mailbox: Mailbox<CoupledPath>,
+    name: &'static str,
+}
+
+struct BackgroundSlot {
+    model: BackgroundFlow,
+    mailbox: Mailbox<BackgroundFlow>,
+    name: &'static str,
+    flow_id: usize,
+    data_forward: bool,
+}
+
+struct CoupledFabric {
+    forward: CoupledPathSlot,
+    reverse: CoupledPathSlot,
+    background: Vec<BackgroundSlot>,
+}
+
 pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
     scenario.validate()?;
-    let recorder = Recorder::new(scenario.scenario_id.as_str(), scenario.master_seed);
+    let recorder = if scenario.coupling.is_some() {
+        Recorder::new_compact_w3(scenario.scenario_id.as_str(), scenario.master_seed)
+    } else {
+        Recorder::new(scenario.scenario_id.as_str(), scenario.master_seed)
+    };
     let mailbox_tracker = MailboxTracker::default();
     let ownership = OwnershipLedger::default();
     let data_socket = SocketPairConfig::new(
@@ -176,11 +218,16 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
     let uplink_streams: Vec<_> = peer_ids.iter().map(|_| ControlStream::default()).collect();
     let active_control_flows = CONTROL_FLOW_IDS[..scenario.active_receivers].to_vec();
     let active_control_forward_links = CONTROL_FORWARD_LINKS[..scenario.active_receivers].to_vec();
+    let data_forward_mailboxes = if scenario.coupling.is_some() {
+        [COUPLED_FORWARD; TREE_COUNT]
+    } else {
+        [DATA_FORWARD_LINKS[0][0], DATA_FORWARD_LINKS[1][0]]
+    };
     let mut source = W1SourceEndpoint::new(
         SOURCE_COMPONENT,
         SOURCE_MAILBOX,
         [DATA_FLOW_IDS[0][0], DATA_FLOW_IDS[1][0]],
-        [DATA_FORWARD_LINKS[0][0], DATA_FORWARD_LINKS[1][0]],
+        data_forward_mailboxes,
         data_socket,
         frame_wire_bytes,
         maximum_frames,
@@ -196,6 +243,13 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
         mailbox_tracker.clone(),
     )
     .map_err(|error| W1RunError::Construction(error.to_string()))?;
+
+    if let Some(lane) = scenario
+        .coupling
+        .and_then(|coupling| coupling.flow_count_match_lane)
+    {
+        source.enable_flow_count_match(lane);
+    }
 
     let mut relays = Vec::with_capacity(TREE_COUNT * 2);
     for (tree, stream) in streams.iter().enumerate() {
@@ -269,6 +323,7 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
     }
 
     let mut links = build_links(scenario, &recorder, &mailbox_tracker);
+    let mut coupled = build_coupled_fabric(scenario, data_socket, &recorder, &mailbox_tracker)?;
     let source_mailbox = Mailbox::with_capacity(MAILBOX_CAPACITY);
     let relay_mailboxes: Vec<_> = (0..relays.len())
         .map(|_| Mailbox::with_capacity(MAILBOX_CAPACITY))
@@ -285,6 +340,7 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
         &mut receivers,
         &receiver_mailboxes,
         &mut links,
+        coupled.as_mut(),
     );
     wire_control_plane(
         scenario.active_receivers,
@@ -353,12 +409,62 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
     for slot in links {
         bench = bench.add_model(slot.model, slot.mailbox, slot.name);
     }
+    if let Some(mut fabric) = coupled {
+        if scenario.registration_order == RegistrationOrder::Forward {
+            bench = bench.add_model(
+                fabric.forward.model,
+                fabric.forward.mailbox,
+                fabric.forward.name,
+            );
+            bench = bench.add_model(
+                fabric.reverse.model,
+                fabric.reverse.mailbox,
+                fabric.reverse.name,
+            );
+            for slot in fabric.background {
+                bench = bench.add_model(slot.model, slot.mailbox, slot.name);
+            }
+        } else {
+            fabric.background.reverse();
+            for slot in fabric.background {
+                bench = bench.add_model(slot.model, slot.mailbox, slot.name);
+            }
+            bench = bench.add_model(
+                fabric.reverse.model,
+                fabric.reverse.mailbox,
+                fabric.reverse.name,
+            );
+            bench = bench.add_model(
+                fabric.forward.model,
+                fabric.forward.mailbox,
+                fabric.forward.name,
+            );
+        }
+    }
     let mut simulation = bench
         .init(MonotonicTime::EPOCH)
         .map_err(|error| W1RunError::Simulation(error.to_string()))?;
-    simulation
-        .step_until(Duration::from_nanos(scenario.simulation_end_ns))
-        .map_err(|error| W1RunError::Simulation(error.to_string()))?;
+    let mut elapsed_ns = scenario.simulation_end_ns;
+    if scenario.coupling.is_some() {
+        let observation_quantum_ns = 10_000_000_u64;
+        elapsed_ns = 0;
+        while elapsed_ns < scenario.simulation_end_ns {
+            let step_ns = observation_quantum_ns.min(scenario.simulation_end_ns - elapsed_ns);
+            simulation
+                .step_until(Duration::from_nanos(step_ns))
+                .map_err(|error| W1RunError::Simulation(error.to_string()))?;
+            elapsed_ns = elapsed_ns.saturating_add(step_ns);
+            if recorder.event_count("protocol_local_complete") >= scenario.active_receivers
+                && recorder.event_count("protocol_sender_complete") == 1
+            {
+                break;
+            }
+        }
+    } else {
+        simulation
+            .step_until(Duration::from_nanos(scenario.simulation_end_ns))
+            .map_err(|error| W1RunError::Simulation(error.to_string()))?;
+    }
     if let Some(failure) = recorder.failure() {
         return Err(W1RunError::Model(failure));
     }
@@ -366,7 +472,7 @@ pub fn run_w1(scenario: &W1Scenario) -> Result<W1Outcome, W1RunError> {
     let mailbox_high_water = mailbox_tracker.high_water_marks();
     for (&mailbox, &high_water) in &mailbox_high_water {
         recorder.record(
-            scenario.simulation_end_ns,
+            elapsed_ns,
             mailbox,
             "mailbox_high_water",
             0,
@@ -398,11 +504,16 @@ fn build_relay(
     } else {
         [child_spec(tree, 1), child_spec(tree, 2)]
     };
+    let upstream_reverse_mailbox = if !relay_b && scenario.coupling.is_some() {
+        COUPLED_REVERSE
+    } else {
+        DATA_REVERSE_LINKS[tree][upstream_hop]
+    };
     FanoutRelayEndpoint::new(
         RELAY_COMPONENTS[tree][relay],
         RELAY_MAILBOXES[tree][relay],
         DATA_FLOW_IDS[tree][upstream_hop],
-        DATA_REVERSE_LINKS[tree][upstream_hop],
+        upstream_reverse_mailbox,
         upstream_receive_owner,
         application_owner,
         socket,
@@ -419,6 +530,181 @@ fn build_relay(
         ownership,
     )
     .map_err(|error| W1RunError::Construction(error.to_string()))
+}
+
+fn build_coupled_fabric(
+    scenario: &W1Scenario,
+    socket: SocketPairConfig,
+    recorder: &Recorder,
+    mailbox_tracker: &MailboxTracker,
+) -> Result<Option<CoupledFabric>, W1RunError> {
+    let Some(config) = scenario.coupling else {
+        return Ok(None);
+    };
+    let mut specs = Vec::new();
+    if config.background_traffic {
+        for lane in 0..TREE_COUNT {
+            let base = lane * 4;
+            specs.extend([
+                (
+                    BACKGROUND_COMPONENTS[base],
+                    BACKGROUND_FLOW_IDS[base],
+                    lane,
+                    true,
+                    BackgroundTrafficKind::Bulk,
+                ),
+                (
+                    BACKGROUND_COMPONENTS[base + 1],
+                    BACKGROUND_FLOW_IDS[base + 1],
+                    lane,
+                    true,
+                    BackgroundTrafficKind::HeavyTailedOnOff,
+                ),
+                (
+                    BACKGROUND_COMPONENTS[base + 2],
+                    BACKGROUND_FLOW_IDS[base + 2],
+                    lane,
+                    false,
+                    BackgroundTrafficKind::Bulk,
+                ),
+                (
+                    BACKGROUND_COMPONENTS[base + 3],
+                    BACKGROUND_FLOW_IDS[base + 3],
+                    lane,
+                    false,
+                    BackgroundTrafficKind::HeavyTailedOnOff,
+                ),
+            ]);
+        }
+    }
+    let mut flow_lanes = BTreeMap::from([
+        (DATA_FLOW_IDS[0][0], 0_usize),
+        (DATA_FLOW_IDS[1][0], 1_usize),
+    ]);
+    let mut forward_downstreams = BTreeMap::from([
+        (DATA_FLOW_IDS[0][0], RELAY_MAILBOXES[0][0]),
+        (DATA_FLOW_IDS[1][0], RELAY_MAILBOXES[1][0]),
+    ]);
+    let mut reverse_downstreams = BTreeMap::from([
+        (DATA_FLOW_IDS[0][0], SOURCE_MAILBOX),
+        (DATA_FLOW_IDS[1][0], SOURCE_MAILBOX),
+    ]);
+    for (component, flow_id, lane, _, _) in &specs {
+        flow_lanes.insert(*flow_id, *lane);
+        forward_downstreams.insert(*flow_id, *component);
+        reverse_downstreams.insert(*flow_id, *component);
+    }
+    let path = |component, mailbox, downstream_mailboxes| {
+        CoupledPath::new(
+            CoupledPathConfig {
+                component,
+                mailbox,
+                aggregate_rate_bps: config.aggregate_rate_bps,
+                propagation_ns: scenario.link_propagation_ns,
+                aggregate_queue_bytes: config.aggregate_queue_bytes,
+                overlap_percent: config.overlap_percent,
+                flow_lanes: flow_lanes.clone(),
+                downstream_mailboxes,
+            },
+            recorder.clone(),
+            mailbox_tracker.clone(),
+        )
+        .map_err(|error| W1RunError::Construction(error.to_owned()))
+    };
+    let mut forward = CoupledPathSlot {
+        model: path(COUPLED_FORWARD, COUPLED_FORWARD, forward_downstreams)?,
+        mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+        name: COUPLED_FORWARD,
+    };
+    let mut reverse = CoupledPathSlot {
+        model: path(COUPLED_REVERSE, COUPLED_REVERSE, reverse_downstreams)?,
+        mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+        name: COUPLED_REVERSE,
+    };
+    let mut background = Vec::with_capacity(specs.len());
+    for (component, flow_id, _lane, data_forward, kind) in specs {
+        let data_path_mailbox = if data_forward {
+            COUPLED_FORWARD
+        } else {
+            COUPLED_REVERSE
+        };
+        let ack_path_mailbox = if data_forward {
+            COUPLED_REVERSE
+        } else {
+            COUPLED_FORWARD
+        };
+        background.push(BackgroundSlot {
+            model: BackgroundFlow::new(
+                BackgroundFlowConfig {
+                    component,
+                    mailbox: component,
+                    flow_id,
+                    data_path_mailbox,
+                    ack_path_mailbox,
+                    kind,
+                    timer_interval_ns: 1_000_000,
+                    on_base_ns: 500_000,
+                    off_base_ns: 750_000,
+                    prf: CounterPrf::new(
+                        scenario.master_seed,
+                        &format!("{}-{component}", scenario.scenario_id),
+                    ),
+                },
+                socket,
+                recorder.clone(),
+                mailbox_tracker.clone(),
+            )
+            .map_err(|error| W1RunError::Construction(error.to_string()))?,
+            mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+            name: component,
+            flow_id,
+            data_forward,
+        });
+    }
+    wire_background(&mut forward, &mut reverse, &mut background);
+    Ok(Some(CoupledFabric {
+        forward,
+        reverse,
+        background,
+    }))
+}
+
+fn wire_background(
+    forward: &mut CoupledPathSlot,
+    reverse: &mut CoupledPathSlot,
+    background: &mut [BackgroundSlot],
+) {
+    for slot in background {
+        if slot.data_forward {
+            slot.model
+                .data_output
+                .connect(CoupledPath::receive, &forward.mailbox);
+            slot.model
+                .ack_output
+                .connect(CoupledPath::receive, &reverse.mailbox);
+        } else {
+            slot.model
+                .data_output
+                .connect(CoupledPath::receive, &reverse.mailbox);
+            slot.model
+                .ack_output
+                .connect(CoupledPath::receive, &forward.mailbox);
+        }
+        let flow_id = slot.flow_id;
+        let route = move |tracked: &crate::metrics::TrackedPacket| {
+            (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+        };
+        forward.model.output.filter_map_connect(
+            route,
+            BackgroundFlow::network_packet,
+            &slot.mailbox,
+        );
+        reverse.model.output.filter_map_connect(
+            route,
+            BackgroundFlow::network_packet,
+            &slot.mailbox,
+        );
+    }
 }
 
 fn child_spec(tree: usize, hop: usize) -> RelayChildSpec {
@@ -582,33 +868,67 @@ fn wire_data_plane(
     receivers: &mut [W1ReceiverEndpoint],
     receiver_mailboxes: &[Mailbox<W1ReceiverEndpoint>],
     links: &mut [LinkSlot],
+    coupled: Option<&mut CoupledFabric>,
 ) {
+    let mut coupled = coupled;
     for tree in 0..TREE_COUNT {
         let relay_a = tree * 2;
         let relay_b = relay_a + 1;
 
-        source.data_outputs[tree].connect(
-            PhysicalLink::receive,
-            &links[data_link_index(tree, 0, false)].mailbox,
-        );
-        links[data_link_index(tree, 0, false)].model.output.connect(
-            FanoutRelayEndpoint::upstream_segment,
-            &relay_mailboxes[relay_a],
-        );
-        relays[relay_a].upstream_ack_output.connect(
-            PhysicalLink::receive,
-            &links[data_link_index(tree, 0, true)].mailbox,
-        );
-        if tree == 0 {
-            links[data_link_index(tree, 0, true)]
-                .model
-                .output
-                .connect(W1SourceEndpoint::data0_ack, source_mailbox);
+        if let Some(fabric) = coupled.as_deref_mut() {
+            source.data_outputs[tree].connect(CoupledPath::receive, &fabric.forward.mailbox);
+            let flow_id = DATA_FLOW_IDS[tree][0];
+            fabric.forward.model.output.filter_map_connect(
+                move |tracked: &crate::metrics::TrackedPacket| {
+                    (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+                },
+                FanoutRelayEndpoint::upstream_segment,
+                &relay_mailboxes[relay_a],
+            );
+            relays[relay_a]
+                .upstream_ack_output
+                .connect(CoupledPath::receive, &fabric.reverse.mailbox);
+            if tree == 0 {
+                fabric.reverse.model.output.filter_map_connect(
+                    move |tracked: &crate::metrics::TrackedPacket| {
+                        (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+                    },
+                    W1SourceEndpoint::data0_ack,
+                    source_mailbox,
+                );
+            } else {
+                fabric.reverse.model.output.filter_map_connect(
+                    move |tracked: &crate::metrics::TrackedPacket| {
+                        (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+                    },
+                    W1SourceEndpoint::data1_ack,
+                    source_mailbox,
+                );
+            }
         } else {
-            links[data_link_index(tree, 0, true)]
-                .model
-                .output
-                .connect(W1SourceEndpoint::data1_ack, source_mailbox);
+            source.data_outputs[tree].connect(
+                PhysicalLink::receive,
+                &links[data_link_index(tree, 0, false)].mailbox,
+            );
+            links[data_link_index(tree, 0, false)].model.output.connect(
+                FanoutRelayEndpoint::upstream_segment,
+                &relay_mailboxes[relay_a],
+            );
+            relays[relay_a].upstream_ack_output.connect(
+                PhysicalLink::receive,
+                &links[data_link_index(tree, 0, true)].mailbox,
+            );
+            if tree == 0 {
+                links[data_link_index(tree, 0, true)]
+                    .model
+                    .output
+                    .connect(W1SourceEndpoint::data0_ack, source_mailbox);
+            } else {
+                links[data_link_index(tree, 0, true)]
+                    .model
+                    .output
+                    .connect(W1SourceEndpoint::data1_ack, source_mailbox);
+            }
         }
 
         relays[relay_a].child_data_outputs[0].connect(

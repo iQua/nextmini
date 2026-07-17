@@ -14,6 +14,16 @@ pub enum W1RateProfile {
     CrossedHeterogeneous,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W1CouplingConfig {
+    pub overlap_percent: u8,
+    pub aggregate_rate_bps: u64,
+    pub aggregate_queue_bytes: usize,
+    pub background_traffic: bool,
+    /// The otherwise-unused lane receives a saturated matched flow in a best-single-tree run.
+    pub flow_count_match_lane: Option<usize>,
+}
+
 impl W1RateProfile {
     pub const ALL: [Self; 2] = [Self::Homogeneous, Self::CrossedHeterogeneous];
 
@@ -38,6 +48,7 @@ pub struct W1Scenario {
     pub data_rate_override_bps: Option<[[u64; 5]; 2]>,
     /// Test-only/experiment override for exact stripe ownership.
     pub quota_override: Option<[usize; 2]>,
+    pub coupling: Option<W1CouplingConfig>,
     pub active_receivers: usize,
     pub source_symbols: usize,
     pub frame_payload_bytes: usize,
@@ -85,6 +96,7 @@ impl W1Scenario {
             rate_profile,
             data_rate_override_bps: None,
             quota_override: None,
+            coupling: None,
             active_receivers,
             source_symbols,
             frame_payload_bytes: 508,
@@ -118,6 +130,55 @@ impl W1Scenario {
                 session_complete_interval_ns: 100_000,
             },
         }
+    }
+
+    pub fn w3_coupling(
+        protocol: ProtocolKind,
+        overlap_percent: u8,
+        best_single_tree: Option<usize>,
+        seed: u64,
+    ) -> Self {
+        let mut scenario = Self::experiment0(protocol, W1RateProfile::Homogeneous, 3, seed);
+        let best_label =
+            best_single_tree.map_or("two-tree".to_owned(), |tree| format!("best-tree{tree}"));
+        scenario.scenario_id = format!(
+            "w3-{}-overlap{}-{}-s{}",
+            protocol.name(),
+            overlap_percent,
+            best_label,
+            seed
+        );
+        scenario.source_symbols = 512;
+        scenario.quota_override = best_single_tree.map(|tree| {
+            if tree == 0 {
+                [scenario.source_symbols, 0]
+            } else {
+                [0, scenario.source_symbols]
+            }
+        });
+        scenario.coupling = Some(W1CouplingConfig {
+            overlap_percent,
+            aggregate_rate_bps: 160_000_000,
+            aggregate_queue_bytes: 131_072,
+            background_traffic: true,
+            flow_count_match_lane: best_single_tree.map(|tree| 1 - tree),
+        });
+        scenario.data_rate_override_bps = Some([[160_000_000; 5]; 2]);
+        scenario.socket_send_buffer_bytes = 4_096;
+        scenario.socket_receive_buffer_bytes = 4_096;
+        scenario.relay_application_buffer_bytes = 65_536;
+        scenario.relay_child_queue_bytes = 65_536;
+        scenario.runtime_command_capacity_frames = 2_048;
+        scenario.receiver_data_inbox_capacity_frames = 256;
+        scenario.runtime_command_service_ns = 5_000;
+        scenario.decoder_sink_service_ns = 10_000;
+        scenario.link_queue_bytes = 131_072;
+        scenario.simulation_end_ns = 5_000_000_000;
+        scenario.timer_interval_ns = 100_000;
+        scenario.carousel.peer_silence_timeout_ns = 500_000_000;
+        scenario.carousel.peer_stall_timeout_ns = 4_000_000_000;
+        scenario.carousel.receiver_passive_window_ns = 4_500_000_000;
+        scenario
     }
 
     pub fn validate(&self) -> Result<(), W1ScenarioError> {
@@ -180,6 +241,17 @@ impl W1Scenario {
             .is_some_and(|rates| rates.into_iter().flatten().any(|rate| rate == 0))
         {
             return Err(W1ScenarioError::ZeroU64Value("data_rate_override_bps"));
+        }
+        if let Some(coupling) = self.coupling {
+            if !matches!(coupling.overlap_percent, 0 | 25 | 50 | 100) {
+                return Err(W1ScenarioError::CouplingOverlap(coupling.overlap_percent));
+            }
+            if coupling.aggregate_rate_bps < 2 || coupling.aggregate_queue_bytes < 2 {
+                return Err(W1ScenarioError::CouplingGeometry);
+            }
+            if coupling.flow_count_match_lane.is_some_and(|lane| lane > 1) {
+                return Err(W1ScenarioError::CouplingMatchLane);
+            }
         }
         let frame_wire_bytes = self.frame_wire_bytes()?;
         if self.tcp_mss_bytes < frame_wire_bytes {
@@ -277,6 +349,12 @@ pub enum W1ScenarioError {
     BufferBelowFrame,
     #[error("W1 stripe quotas do not sum exactly to K")]
     QuotaMismatch,
+    #[error("W1 coupling overlap must be 0, 25, 50, or 100 percent, got {0}")]
+    CouplingOverlap(u8),
+    #[error("W1 coupling aggregate rate and queue geometry must support two lanes")]
+    CouplingGeometry,
+    #[error("W1 coupling flow-count match lane must be 0 or 1")]
+    CouplingMatchLane,
     #[error(transparent)]
     Carousel(#[from] crate::protocol::CarouselConfigError),
 }

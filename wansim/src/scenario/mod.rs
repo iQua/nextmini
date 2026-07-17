@@ -14,9 +14,9 @@ pub use tree_config::{
     FanoutAdmission, ReceiverTiming, TreeEndpoint, TreeScenario, TreeScenarioError,
 };
 pub use w1::{W1Outcome, W1RunError, run_w1};
-pub use w1_config::{W1RateProfile, W1Scenario, W1ScenarioError};
+pub use w1_config::{W1CouplingConfig, W1RateProfile, W1Scenario, W1ScenarioError};
 pub use w2::{CriticalPathAttribution, W2Outcome, W2RunError, run_w2};
 pub use w2_config::{
     BufferBudget, BufferGeometry, ChildOrder, ReceiverAdmissionPolicy, ReceiverServiceRate,
-    W2Scenario, W2ScenarioError,
+    W2ControlAsymmetry, W2Scenario, W2ScenarioError, W2SharedLeafBottleneck,
 };

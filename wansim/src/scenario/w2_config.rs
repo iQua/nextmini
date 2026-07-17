@@ -100,6 +100,18 @@ pub struct BufferGeometry {
     pub receiver_data_inbox_frames: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W2ControlAsymmetry {
+    pub reverse_rate_bps: u64,
+    pub reverse_propagation_ns: u64,
+    pub reverse_background_bursts: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct W2SharedLeafBottleneck {
+    pub receivers: [usize; 2],
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct W2Scenario {
     pub scenario_id: String,
@@ -126,6 +138,8 @@ pub struct W2Scenario {
     pub fanout_admission: FanoutAdmission,
     pub registration_order: RegistrationOrder,
     pub carousel: CarouselTiming,
+    pub w3_control_asymmetry: Option<W2ControlAsymmetry>,
+    pub w3_shared_leaf_bottleneck: Option<W2SharedLeafBottleneck>,
 }
 
 impl W2Scenario {
@@ -181,6 +195,8 @@ impl W2Scenario {
                 session_complete_repeats: 3,
                 session_complete_interval_ns: 100_000,
             },
+            w3_control_asymmetry: None,
+            w3_shared_leaf_bottleneck: None,
         }
     }
 
@@ -216,6 +232,19 @@ impl W2Scenario {
             return Err(W2ScenarioError::MssBelowFrame);
         }
         self.carousel.validate()?;
+        if let Some(control) = self.w3_control_asymmetry
+            && (self.receiver_count != 8
+                || control.reverse_rate_bps == 0
+                || control.reverse_propagation_ns == 0)
+        {
+            return Err(W2ScenarioError::ControlAsymmetryGeometry);
+        }
+        if let Some(shared) = self.w3_shared_leaf_bottleneck {
+            let [left, right] = shared.receivers;
+            if left == right || left >= self.receiver_count || right >= self.receiver_count {
+                return Err(W2ScenarioError::SharedLeafGeometry);
+            }
+        }
         let geometry = self.buffer_geometry()?;
         if [
             geometry.socket_send_bytes,
@@ -313,6 +342,10 @@ pub enum W2ScenarioError {
     MssBelowFrame,
     #[error("a modeled W2 buffer is below one framed symbol")]
     BufferBelowFrame,
+    #[error("W3 control asymmetry requires eight receivers and nonzero reverse geometry")]
+    ControlAsymmetryGeometry,
+    #[error("W3 shared-leaf receivers must be distinct in-range receiver indexes")]
+    SharedLeafGeometry,
     #[error(transparent)]
     Carousel(#[from] crate::protocol::CarouselConfigError),
 }

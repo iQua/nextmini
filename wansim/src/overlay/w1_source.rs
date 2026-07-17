@@ -144,6 +144,7 @@ pub(crate) struct W1SourceEndpoint {
     total_emissions: usize,
     completion_recorded: bool,
     next_pool_tree: usize,
+    flow_count_match_lane: Option<usize>,
     protocol: W1SourceProtocol,
     controls: Vec<SourceControlPeer>,
     control_forward_mailboxes: Vec<&'static str>,
@@ -220,6 +221,7 @@ impl W1SourceEndpoint {
             total_emissions: 0,
             completion_recorded: false,
             next_pool_tree: 0,
+            flow_count_match_lane: None,
             protocol,
             controls,
             control_forward_mailboxes,
@@ -230,6 +232,11 @@ impl W1SourceEndpoint {
             recorder,
             mailbox_tracker,
         })
+    }
+
+    pub(crate) fn enable_flow_count_match(&mut self, lane: usize) {
+        assert!(lane < TREE_COUNT);
+        self.flow_count_match_lane = Some(lane);
     }
 
     pub(crate) async fn data0_ack(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
@@ -465,7 +472,15 @@ impl W1SourceEndpoint {
             if writable.is_empty() {
                 break;
             }
-            let tree = if self.protocol.is_pooled() {
+            let matched_tree = self.flow_count_match_lane.filter(|lane| {
+                writable.contains(lane)
+                    && !self.protocol.finished()
+                    && self.emitted_per_tree[*lane]
+                        < self.emitted_per_tree[(*lane + 1) % TREE_COUNT]
+            });
+            let (tree, flow_count_match) = if let Some(tree) = matched_tree {
+                (tree, true)
+            } else if self.protocol.is_pooled() {
                 let selected = (0..TREE_COUNT)
                     .map(|offset| (self.next_pool_tree + offset) % TREE_COUNT)
                     .find(|tree| writable.contains(tree));
@@ -476,12 +491,12 @@ impl W1SourceEndpoint {
                     break;
                 }
                 self.next_pool_tree = (tree + 1) % TREE_COUNT;
-                tree
+                (tree, false)
             } else {
                 let Some(tree) = self.protocol.next_striped_emission(&writable) else {
                     break;
                 };
-                tree
+                (tree, false)
             };
 
             let admission =
@@ -510,6 +525,17 @@ impl W1SourceEndpoint {
                 self.data_frame_wire_bytes,
                 local_frame,
             );
+            if flow_count_match {
+                self.recorder.record(
+                    now,
+                    self.component,
+                    "flow_count_match_frame_emitted",
+                    self.data_flow_ids[tree],
+                    self.total_emissions - 1,
+                    self.data_frame_wire_bytes,
+                    local_frame,
+                );
+            }
             match self.data_senders[tree].poll_transmit(seconds_from_ns(now)) {
                 Ok(packets) => self.emit_data(tree, packets).await,
                 Err(error) => {

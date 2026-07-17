@@ -5,7 +5,10 @@ use nexosim::simulation::{Mailbox, SimInit};
 use nexosim::time::MonotonicTime;
 use thiserror::Error;
 
-use crate::days_bridge::{PhysicalLink, PhysicalLinkConfig};
+use crate::days_bridge::{
+    BackgroundFlow, BackgroundFlowConfig, BackgroundTrafficKind, CoupledPath, CoupledPathConfig,
+    PhysicalLink, PhysicalLinkConfig,
+};
 use crate::determinism::CounterPrf;
 use crate::metrics::{MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder};
 use crate::overlay::{
@@ -23,6 +26,11 @@ const MAX_RECEIVERS: usize = 8;
 const MAX_RELAYS_PER_TREE: usize = 7;
 const MAX_EDGES_PER_TREE: usize = 15;
 const CONTROL_RUNTIME_RESERVE: usize = 32;
+const W3_CONTROL_REVERSE: &str = "w3_control_reverse_shared";
+const W3_CONTROL_BACKGROUND: &str = "w3_control_reverse_onoff";
+const W3_CONTROL_BACKGROUND_ACK: &str = "w3_control_background_ack";
+const W3_CONTROL_BACKGROUND_FLOW_ID: usize = 80_000;
+const W3_SHARED_LEAF_LINKS: [&str; TREE_COUNT] = ["w3_shared_leaf_t0", "w3_shared_leaf_t1"];
 
 const SOURCE_COMPONENT: &str = "w2_source";
 const SOURCE_MAILBOX: &str = "w2_source";
@@ -257,6 +265,28 @@ struct LinkSlot {
     name: &'static str,
 }
 
+struct CoupledSlot {
+    model: CoupledPath,
+    mailbox: Mailbox<CoupledPath>,
+    name: &'static str,
+}
+
+struct ControlBackgroundSlot {
+    model: BackgroundFlow,
+    mailbox: Mailbox<BackgroundFlow>,
+}
+
+struct ControlAsymmetryFabric {
+    reverse: CoupledSlot,
+    background: Option<ControlBackgroundSlot>,
+    background_ack: Option<LinkSlot>,
+}
+
+struct SharedLeafFabric {
+    links: Vec<CoupledSlot>,
+    edges: [usize; 2],
+}
+
 pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
     scenario.validate()?;
     let topology = build_topology(&scenario.ordered_receivers(), scenario.fanout_degree);
@@ -343,7 +373,13 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
                     RelayChildSpec {
                         endpoint_component: endpoint_component(tree, edge.child),
                         flow_id: data_flow_id(tree, *edge_index),
-                        forward_link_mailbox: DATA_FORWARD_LINKS[tree][*edge_index],
+                        forward_link_mailbox: shared_leaf_mailbox(
+                            scenario,
+                            &topology,
+                            tree,
+                            *edge_index,
+                        )
+                        .unwrap_or(DATA_FORWARD_LINKS[tree][*edge_index]),
                         queue_owner: DATA_FORWARD_LINKS[tree][*edge_index],
                         send_owner: DATA_REVERSE_LINKS[tree][*edge_index],
                         downstream_receive_owner: endpoint_component(tree, edge.child),
@@ -414,7 +450,11 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
                 Some(ReceiverControlGeometry {
                     downlink_flow_id,
                     uplink_flow_id,
-                    reverse_link_mailbox: CONTROL_REVERSE_LINKS[receiver],
+                    reverse_link_mailbox: if scenario.w3_control_asymmetry.is_some() {
+                        W3_CONTROL_REVERSE
+                    } else {
+                        CONTROL_REVERSE_LINKS[receiver]
+                    },
                     downlink_stream: downlink_streams[receiver].clone(),
                     uplink_stream: uplink_streams[receiver].clone(),
                 }),
@@ -428,6 +468,10 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
     }
 
     let mut links = build_links(scenario, &topology, &recorder, &mailbox_tracker);
+    let mut shared_leaf =
+        build_shared_leaf_fabric(scenario, &topology, &recorder, &mailbox_tracker)?;
+    let mut control_asymmetry =
+        build_control_asymmetry_fabric(scenario, socket, &recorder, &mailbox_tracker)?;
     let source_mailbox = Mailbox::with_capacity(MAILBOX_CAPACITY);
     let relay_mailboxes: Vec<_> = (0..relays.len())
         .map(|_| Mailbox::with_capacity(MAILBOX_CAPACITY))
@@ -444,6 +488,7 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
         &mut receivers,
         &receiver_mailboxes,
         &mut links,
+        shared_leaf.as_mut(),
     );
     wire_control_plane(
         scenario.receiver_count,
@@ -453,6 +498,7 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
         &mut receivers,
         &receiver_mailboxes,
         &mut links,
+        control_asymmetry.as_mut(),
     );
 
     record_geometry(scenario, &topology, &recorder)?;
@@ -497,6 +543,27 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
     }
     for slot in links {
         bench = bench.add_model(slot.model, slot.mailbox, slot.name);
+    }
+    if let Some(mut fabric) = shared_leaf {
+        if scenario.registration_order == RegistrationOrder::Reverse {
+            fabric.links.reverse();
+        }
+        for slot in fabric.links {
+            bench = bench.add_model(slot.model, slot.mailbox, slot.name);
+        }
+    }
+    if let Some(fabric) = control_asymmetry {
+        if let Some(background) = fabric.background {
+            bench = bench.add_model(background.model, background.mailbox, W3_CONTROL_BACKGROUND);
+        }
+        if let Some(slot) = fabric.background_ack {
+            bench = bench.add_model(slot.model, slot.mailbox, slot.name);
+        }
+        bench = bench.add_model(
+            fabric.reverse.model,
+            fabric.reverse.mailbox,
+            fabric.reverse.name,
+        );
     }
     let mut simulation = bench
         .init(MonotonicTime::EPOCH)
@@ -663,6 +730,188 @@ fn build_links(
     links
 }
 
+fn shared_leaf_mailbox(
+    scenario: &W2Scenario,
+    topology: &Topology,
+    tree: usize,
+    edge: usize,
+) -> Option<&'static str> {
+    let shared = scenario.w3_shared_leaf_bottleneck?;
+    shared
+        .receivers
+        .iter()
+        .map(|receiver| topology.receiver_edges[*receiver])
+        .any(|shared_edge| shared_edge == edge)
+        .then_some(W3_SHARED_LEAF_LINKS[tree])
+}
+
+fn build_shared_leaf_fabric(
+    scenario: &W2Scenario,
+    topology: &Topology,
+    recorder: &Recorder,
+    mailbox_tracker: &MailboxTracker,
+) -> Result<Option<SharedLeafFabric>, W2RunError> {
+    let Some(shared) = scenario.w3_shared_leaf_bottleneck else {
+        return Ok(None);
+    };
+    let edges = shared
+        .receivers
+        .map(|receiver| topology.receiver_edges[receiver]);
+    let geometry = scenario.buffer_geometry()?;
+    let aggregate_rate_bps = scenario
+        .data_rate_bps
+        .checked_mul(2)
+        .ok_or_else(|| W2RunError::Construction("shared-leaf rate overflow".to_owned()))?;
+    let aggregate_queue_bytes = geometry
+        .link_queue_bytes
+        .checked_mul(2)
+        .ok_or_else(|| W2RunError::Construction("shared-leaf queue overflow".to_owned()))?;
+    let mut links = Vec::with_capacity(TREE_COUNT);
+    for (tree, name) in W3_SHARED_LEAF_LINKS.iter().copied().enumerate() {
+        let flow_lanes = BTreeMap::from([
+            (data_flow_id(tree, edges[0]), 0_usize),
+            (data_flow_id(tree, edges[1]), 1_usize),
+        ]);
+        let downstream_mailboxes = BTreeMap::from([
+            (
+                data_flow_id(tree, edges[0]),
+                RECEIVER_COMPONENTS[shared.receivers[0]],
+            ),
+            (
+                data_flow_id(tree, edges[1]),
+                RECEIVER_COMPONENTS[shared.receivers[1]],
+            ),
+        ]);
+        links.push(CoupledSlot {
+            model: CoupledPath::new(
+                CoupledPathConfig {
+                    component: name,
+                    mailbox: name,
+                    aggregate_rate_bps,
+                    propagation_ns: scenario.link_propagation_ns,
+                    aggregate_queue_bytes,
+                    overlap_percent: 100,
+                    flow_lanes,
+                    downstream_mailboxes,
+                },
+                recorder.clone(),
+                mailbox_tracker.clone(),
+            )
+            .map_err(|error| W2RunError::Construction(error.to_owned()))?,
+            mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+            name,
+        });
+    }
+    Ok(Some(SharedLeafFabric { links, edges }))
+}
+
+fn build_control_asymmetry_fabric(
+    scenario: &W2Scenario,
+    socket: SocketPairConfig,
+    recorder: &Recorder,
+    mailbox_tracker: &MailboxTracker,
+) -> Result<Option<ControlAsymmetryFabric>, W2RunError> {
+    let Some(control) = scenario.w3_control_asymmetry else {
+        return Ok(None);
+    };
+    let geometry = scenario.buffer_geometry()?;
+    let mut flow_lanes = BTreeMap::new();
+    let mut downstream_mailboxes = BTreeMap::new();
+    for receiver in 0..scenario.receiver_count {
+        let (downlink, uplink) = control_flow_ids(receiver);
+        for flow_id in [downlink, uplink] {
+            flow_lanes.insert(flow_id, receiver % 2);
+            downstream_mailboxes.insert(flow_id, SOURCE_MAILBOX);
+        }
+    }
+    if control.reverse_background_bursts {
+        flow_lanes.insert(W3_CONTROL_BACKGROUND_FLOW_ID, 0);
+        downstream_mailboxes.insert(W3_CONTROL_BACKGROUND_FLOW_ID, W3_CONTROL_BACKGROUND);
+    }
+    let mut reverse = CoupledSlot {
+        model: CoupledPath::new(
+            CoupledPathConfig {
+                component: W3_CONTROL_REVERSE,
+                mailbox: W3_CONTROL_REVERSE,
+                aggregate_rate_bps: control.reverse_rate_bps,
+                propagation_ns: control.reverse_propagation_ns,
+                aggregate_queue_bytes: geometry.link_queue_bytes,
+                overlap_percent: 100,
+                flow_lanes,
+                downstream_mailboxes,
+            },
+            recorder.clone(),
+            mailbox_tracker.clone(),
+        )
+        .map_err(|error| W2RunError::Construction(error.to_owned()))?,
+        mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+        name: W3_CONTROL_REVERSE,
+    };
+    let (background, background_ack) = if control.reverse_background_bursts {
+        let mut background = ControlBackgroundSlot {
+            model: BackgroundFlow::new(
+                BackgroundFlowConfig {
+                    component: W3_CONTROL_BACKGROUND,
+                    mailbox: W3_CONTROL_BACKGROUND,
+                    flow_id: W3_CONTROL_BACKGROUND_FLOW_ID,
+                    data_path_mailbox: W3_CONTROL_REVERSE,
+                    ack_path_mailbox: W3_CONTROL_BACKGROUND_ACK,
+                    kind: BackgroundTrafficKind::HeavyTailedOnOff,
+                    timer_interval_ns: 1_000_000,
+                    on_base_ns: 250_000,
+                    off_base_ns: 500_000,
+                    prf: CounterPrf::new(
+                        scenario.master_seed,
+                        &format!("{}-control-reverse-bursts", scenario.scenario_id),
+                    ),
+                },
+                socket,
+                recorder.clone(),
+                mailbox_tracker.clone(),
+            )
+            .map_err(|error| W2RunError::Construction(error.to_string()))?,
+            mailbox: Mailbox::with_capacity(MAILBOX_CAPACITY),
+        };
+        let mut acknowledgment = link_slot(
+            W3_CONTROL_BACKGROUND_ACK,
+            W3_CONTROL_BACKGROUND,
+            scenario.control_rate_bps,
+            scenario.link_propagation_ns,
+            geometry.link_queue_bytes,
+            recorder,
+            mailbox_tracker,
+        );
+        background
+            .model
+            .data_output
+            .connect(CoupledPath::receive, &reverse.mailbox);
+        background
+            .model
+            .ack_output
+            .connect(PhysicalLink::receive, &acknowledgment.mailbox);
+        let flow_id = W3_CONTROL_BACKGROUND_FLOW_ID;
+        reverse.model.output.filter_map_connect(
+            move |tracked: &crate::metrics::TrackedPacket| {
+                (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+            },
+            BackgroundFlow::network_packet,
+            &background.mailbox,
+        );
+        acknowledgment
+            .model
+            .output
+            .connect(BackgroundFlow::network_packet, &background.mailbox);
+        (Some(background), Some(acknowledgment))
+    } else {
+        (None, None)
+    };
+    Ok(Some(ControlAsymmetryFabric {
+        reverse,
+        background,
+        background_ack,
+    }))
+}
+
 #[allow(clippy::too_many_arguments)]
 fn link_slot(
     name: &'static str,
@@ -702,43 +951,86 @@ fn wire_data_plane(
     receivers: &mut [W1ReceiverEndpoint],
     receiver_mailboxes: &[Mailbox<W1ReceiverEndpoint>],
     links: &mut [LinkSlot],
+    shared_leaf: Option<&mut SharedLeafFabric>,
 ) {
     let relay_count = topology.relays.len();
+    let mut shared_leaf = shared_leaf;
     for tree in 0..TREE_COUNT {
         for (edge_index, edge) in topology.edges.iter().copied().enumerate() {
             let forward = data_link_index(topology.edges.len(), tree, edge_index, false);
             let reverse = data_link_index(topology.edges.len(), tree, edge_index, true);
-            match edge.parent {
-                None => source.data_outputs[tree]
-                    .connect(PhysicalLink::receive, &links[forward].mailbox),
-                Some(parent) => relays[tree * relay_count + parent].child_data_outputs
-                    [edge.child_slot]
-                    .connect(PhysicalLink::receive, &links[forward].mailbox),
-            }
-            match edge.child {
-                Endpoint::Relay(child) => {
-                    links[forward].model.output.connect(
-                        FanoutRelayEndpoint::upstream_segment,
-                        &relay_mailboxes[tree * relay_count + child],
-                    );
-                    relays[tree * relay_count + child]
-                        .upstream_ack_output
-                        .connect(PhysicalLink::receive, &links[reverse].mailbox);
-                }
-                Endpoint::Receiver(receiver) => {
-                    if tree == 0 {
-                        links[forward].model.output.connect(
-                            W1ReceiverEndpoint::data0_segment,
-                            &receiver_mailboxes[receiver],
-                        );
-                    } else {
-                        links[forward].model.output.connect(
-                            W1ReceiverEndpoint::data1_segment,
-                            &receiver_mailboxes[receiver],
-                        );
+            let shared_position = shared_leaf
+                .as_ref()
+                .and_then(|fabric| fabric.edges.iter().position(|shared| *shared == edge_index));
+            if let Some(position) = shared_position {
+                let fabric = shared_leaf
+                    .as_deref_mut()
+                    .expect("position came from fabric");
+                let coupled = &mut fabric.links[tree];
+                match edge.parent {
+                    None => {
+                        source.data_outputs[tree].connect(CoupledPath::receive, &coupled.mailbox)
                     }
-                    receivers[receiver].data_ack_outputs[tree]
-                        .connect(PhysicalLink::receive, &links[reverse].mailbox);
+                    Some(parent) => relays[tree * relay_count + parent].child_data_outputs
+                        [edge.child_slot]
+                        .connect(CoupledPath::receive, &coupled.mailbox),
+                }
+                let Endpoint::Receiver(receiver) = edge.child else {
+                    unreachable!("shared-leaf route targets receiver edges")
+                };
+                let flow_id = data_flow_id(tree, fabric.edges[position]);
+                if tree == 0 {
+                    coupled.model.output.filter_map_connect(
+                        move |tracked: &crate::metrics::TrackedPacket| {
+                            (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+                        },
+                        W1ReceiverEndpoint::data0_segment,
+                        &receiver_mailboxes[receiver],
+                    );
+                } else {
+                    coupled.model.output.filter_map_connect(
+                        move |tracked: &crate::metrics::TrackedPacket| {
+                            (tracked.packet.flow_id == flow_id).then(|| tracked.clone())
+                        },
+                        W1ReceiverEndpoint::data1_segment,
+                        &receiver_mailboxes[receiver],
+                    );
+                }
+                receivers[receiver].data_ack_outputs[tree]
+                    .connect(PhysicalLink::receive, &links[reverse].mailbox);
+            } else {
+                match edge.parent {
+                    None => source.data_outputs[tree]
+                        .connect(PhysicalLink::receive, &links[forward].mailbox),
+                    Some(parent) => relays[tree * relay_count + parent].child_data_outputs
+                        [edge.child_slot]
+                        .connect(PhysicalLink::receive, &links[forward].mailbox),
+                }
+                match edge.child {
+                    Endpoint::Relay(child) => {
+                        links[forward].model.output.connect(
+                            FanoutRelayEndpoint::upstream_segment,
+                            &relay_mailboxes[tree * relay_count + child],
+                        );
+                        relays[tree * relay_count + child]
+                            .upstream_ack_output
+                            .connect(PhysicalLink::receive, &links[reverse].mailbox);
+                    }
+                    Endpoint::Receiver(receiver) => {
+                        if tree == 0 {
+                            links[forward].model.output.connect(
+                                W1ReceiverEndpoint::data0_segment,
+                                &receiver_mailboxes[receiver],
+                            );
+                        } else {
+                            links[forward].model.output.connect(
+                                W1ReceiverEndpoint::data1_segment,
+                                &receiver_mailboxes[receiver],
+                            );
+                        }
+                        receivers[receiver].data_ack_outputs[tree]
+                            .connect(PhysicalLink::receive, &links[reverse].mailbox);
+                    }
                 }
             }
             match edge.parent {
@@ -791,7 +1083,9 @@ fn wire_control_plane(
     receivers: &mut [W1ReceiverEndpoint],
     receiver_mailboxes: &[Mailbox<W1ReceiverEndpoint>],
     links: &mut [LinkSlot],
+    control_asymmetry: Option<&mut ControlAsymmetryFabric>,
 ) {
+    let mut control_asymmetry = control_asymmetry;
     for receiver in 0..receiver_count {
         let forward = control_link_index(edge_count, receiver, false);
         let reverse = control_link_index(edge_count, receiver, true);
@@ -801,10 +1095,79 @@ fn wire_control_plane(
             W1ReceiverEndpoint::control_packet,
             &receiver_mailboxes[receiver],
         );
-        receivers[receiver]
-            .control_reverse_output
-            .connect(PhysicalLink::receive, &links[reverse].mailbox);
-        connect_source_control(&mut links[reverse].model, receiver, source_mailbox);
+        if let Some(fabric) = control_asymmetry.as_deref_mut() {
+            receivers[receiver]
+                .control_reverse_output
+                .connect(CoupledPath::receive, &fabric.reverse.mailbox);
+            let (downlink, uplink) = control_flow_ids(receiver);
+            connect_source_control_coupled(
+                &mut fabric.reverse.model,
+                receiver,
+                [downlink, uplink],
+                source_mailbox,
+            );
+        } else {
+            receivers[receiver]
+                .control_reverse_output
+                .connect(PhysicalLink::receive, &links[reverse].mailbox);
+            connect_source_control(&mut links[reverse].model, receiver, source_mailbox);
+        }
+    }
+}
+
+fn connect_source_control_coupled(
+    link: &mut CoupledPath,
+    receiver: usize,
+    flow_ids: [usize; 2],
+    source_mailbox: &Mailbox<W1SourceEndpoint>,
+) {
+    let route = move |tracked: &crate::metrics::TrackedPacket| {
+        flow_ids
+            .contains(&tracked.packet.flow_id)
+            .then(|| tracked.clone())
+    };
+    match receiver {
+        0 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer0_packet,
+            source_mailbox,
+        ),
+        1 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer1_packet,
+            source_mailbox,
+        ),
+        2 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer2_packet,
+            source_mailbox,
+        ),
+        3 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer3_packet,
+            source_mailbox,
+        ),
+        4 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer4_packet,
+            source_mailbox,
+        ),
+        5 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer5_packet,
+            source_mailbox,
+        ),
+        6 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer6_packet,
+            source_mailbox,
+        ),
+        7 => link.output.filter_map_connect(
+            route,
+            W1SourceEndpoint::control_peer7_packet,
+            source_mailbox,
+        ),
+        _ => unreachable!("validated W2 receiver count"),
     }
 }
 
