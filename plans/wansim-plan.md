@@ -162,3 +162,28 @@ The critique's source-level findings are accepted in full. Amendments:
 6. **Size acknowledgment**: W0 as split is estimated at 4,500–7,000 net lines (W0a ≈ 2,500–3,500),
    25–40 tests. This is a real foundation build, not a scaffold; W0a's backpressure-plateau and
    loss-recovery gates are the go/no-go for the whole days-based approach.
+
+## Stage WR — realistic cloud envelope (added 2026-07-17, user directive)
+
+Between W3 (mechanism isolation on toy topologies) and W4 (calibration to a specific deployment),
+add a realistic-envelope stage. Simulate representative PUBLIC-CLOUD inter-region environments —
+not limited to Arbutus; AWS-like, GCP-like, and DigitalOcean-like profiles — using publicly known
+parameter magnitudes, and SWEEP what is uncertain instead of pretending to know it. A verdict
+counts as robust only if it holds across the whole plausible envelope; otherwise it is reported as
+regime-dependent with its boundary.
+
+Scenario families (per cloud profile): 5–6 regions with representative inter-region RTT matrices
+(intra-metro 1–2 ms, same-continent 10–60 ms, cross-Atlantic 70–90 ms, trans-Pacific 100–150 ms;
+asymmetry and jitter included), overlay trees placed over a modeled provider backbone with shared
+trunk/transit resources so bottleneck sharing EMERGES from placement rather than being dialed;
+per-flow effective capacities in the hundreds-of-Mbit/s range with VM-NIC caps; explicit background
+flows scaled to utilization {30, 50, 70}%; production-representative K (8,192 main, 65,536 spot
+cells) and real frame sizes; multiple concurrent sessions in at least one slice.
+
+Questions re-asked inside the envelope: rounds vs carousel gap; pooling vs path-diversity
+decomposition; hybrid-vs-blocking spot check; A4 correlation distribution; BlockAck cadence check;
+liveness margins. Deliverables: scenario generator + committed scenarios, results/wansim/
+wr-realistic/ with digests, plans/wansim-wr-report.md with per-question robustness verdicts
+(holds-everywhere vs regime-dependent), parameter-source notes ("representative public values",
+never measured claims), and honest limits. W4 calibration afterwards reduces to locating a specific
+deployment inside this envelope.
