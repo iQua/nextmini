@@ -15,6 +15,7 @@ use std::time::Instant;
 
 use mettle::experimental_reservoir::{
     FiniteReservoirGeometry, ReserveSet, ReservoirRate, checked_reserve_payload_bytes,
+    checked_reserve_strategy_bytes,
 };
 use mettle::test_support::{
     Encoder, edge_bin_ids_with_terminal_source_count, possible_source_id_range_for_bin,
@@ -278,12 +279,15 @@ fn main() -> Result<(), String> {
     let fetch = fetch_all(config, geometry, &reserve, &object, &mut storage)?;
     let repair_fetch_ns = fetch_started.elapsed().as_nanos();
     let peak_rss_bytes = peak_rss_bytes();
-    let strategy_memory_bytes = strategy_index_bytes
-        .checked_add(match config.strategy {
+    let strategy_memory_bytes = checked_reserve_strategy_bytes(
+        match config.strategy {
             Strategy::Retain => reserve_payload_bytes,
             Strategy::Recompute | Strategy::Spill => config.symbol_bytes.get(),
-        })
-        .ok_or_else(|| "strategy memory byte count overflowed".to_owned())?;
+        },
+        strategy_index_bytes,
+        RESERVE_PAYLOAD_BUDGET_BYTES,
+    )
+    .map_err(|error| format!("independent sender strategy budget rejected case: {error:?}"))?;
 
     println!(
         "research_scope,strategy,source_count,symbol_bytes,object_bytes,c_wire_num,c_wire_den,c_reserve_num,c_reserve_den,interior_c_num,interior_c_den,wire_bin_count,reserve_cardinality,terminal_bin_count,actual_wire_overhead,actual_total_overhead,reserve_payload_bytes,strategy_index_bytes,strategy_memory_bytes,spill_bytes,sender_reserve_budget_bytes,budget_pass,object_build_ns,initial_encode_ns,repair_fetch_ns,candidate_sources_checked,touching_sources,payload_digest,rss_before_bytes,rss_after_object_bytes,rss_after_encode_bytes,process_peak_rss_bytes"

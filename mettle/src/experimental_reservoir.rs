@@ -381,6 +381,24 @@ pub fn checked_reserve_payload_bytes(
     Ok(required_bytes)
 }
 
+/// Check all incremental bytes owned by a prototype sender reserve strategy.
+pub fn checked_reserve_strategy_bytes(
+    payload_or_scratch_bytes: usize,
+    index_bytes: usize,
+    budget_bytes: usize,
+) -> Result<usize, ReservoirError> {
+    let required_bytes = payload_or_scratch_bytes
+        .checked_add(index_bytes)
+        .ok_or(ReservoirError::ArithmeticOverflow)?;
+    if required_bytes > budget_bytes {
+        return Err(ReservoirError::ReservePayloadBudgetExceeded {
+            required_bytes,
+            budget_bytes,
+        });
+    }
+    Ok(required_bytes)
+}
+
 /// Errors from the simulation-only finite geometry and reserve selector.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ReservoirError {
@@ -460,6 +478,7 @@ mod tests {
     use super::{
         FiniteReservoirGeometry, FreshReserveEmitter, RESERVE_PRF_VERSION, ReserveSet,
         ReservoirError, ReservoirRate, checked_reserve_payload_bytes,
+        checked_reserve_strategy_bytes,
     };
 
     fn rate(numerator: u32, denominator: u32) -> ReservoirRate {
@@ -581,6 +600,17 @@ mod tests {
         assert_eq!(
             checked_reserve_payload_bytes(8, 0, usize::MAX),
             Err(ReservoirError::ZeroSymbolBytes)
+        );
+        assert_eq!(
+            checked_reserve_strategy_bytes(11_200, 384, 11_584),
+            Ok(11_584)
+        );
+        assert_eq!(
+            checked_reserve_strategy_bytes(11_200, 384, 11_583),
+            Err(ReservoirError::ReservePayloadBudgetExceeded {
+                required_bytes: 11_584,
+                budget_bytes: 11_583,
+            })
         );
     }
 }
