@@ -54,7 +54,7 @@ impl RelayEndpoint {
     ) -> Result<Self, days::flows::tcp_socket::TcpSocketError> {
         Ok(Self {
             upstream_receiver: TcpSocketReceiver::new(FLOW_HOP_1, 0, upstream_socket.socket)?,
-            downstream_sender: TcpSocketSender::new_reno(FLOW_HOP_2, 0, downstream_socket.socket)?,
+            downstream_sender: downstream_socket.sender(FLOW_HOP_2, 0)?,
             stream,
             assembler: FrameAssembler::new(maximum_frame_payload),
             application_buffer_capacity,

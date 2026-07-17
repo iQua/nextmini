@@ -19,7 +19,7 @@ use crate::protocol::{CarouselTiming, ProtocolKind, equal_quotas, proportional_q
 use crate::scenario::{
     CloudScenario, CloudScenarioError, FanoutAdmission, ReceiverAdmissionPolicy, RegistrationOrder,
 };
-use crate::transport::SocketPairConfig;
+use crate::transport::{SocketPairConfig, TcpCongestionControl};
 
 const TREE_COUNT: usize = 2;
 const HOPS_PER_TREE: usize = 5;
@@ -29,6 +29,7 @@ const BACKGROUND_COUNT: usize = 8;
 const BACKBONE_COMPONENT: &str = "wr_regional_backbone";
 const BACKBONE_MAILBOX: &str = "wr_regional_backbone";
 const BACKBONE_MAILBOX_CAPACITY: usize = 1_048_576;
+pub const WR_FOREGROUND_START_NS: u64 = 1_000_000_000;
 const PRODUCTION_DEFAULT_BLOCK_BYTES: usize = 8_500;
 const FRAME_PAYLOAD_BYTES: usize = 508;
 const SOURCE_COMPONENTS: [&str; MAX_SESSIONS] = ["wr_s0_source", "wr_s1_source"];
@@ -204,6 +205,7 @@ pub struct WrOutcome {
     pub mailbox_high_water: BTreeMap<&'static str, usize>,
     pub mailbox_capacities: BTreeMap<&'static str, usize>,
     pub link_drops: usize,
+    pub maximum_background_trunk_utilization_ppm: u64,
 }
 
 #[derive(Debug, Error)]
@@ -253,6 +255,7 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
     let tracker = MailboxTracker::default();
     let data_socket = socket_config()?;
     let control_socket = data_socket;
+    let background_socket = background_socket_config()?;
     let timing = carousel_timing(config.ack_cadence_multiplier);
     let mut sessions = Vec::with_capacity(config.concurrent_sessions);
     for session in 0..config.concurrent_sessions {
@@ -266,7 +269,7 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
             &tracker,
         )?);
     }
-    let mut background = build_background(config, data_socket, &recorder, &tracker)?;
+    let mut background = build_background(config, background_socket, &recorder, &tracker)?;
     let geometry = build_backbone_geometry(config)?;
     let sharing = geometry.sharing;
     let mut backbone = RegionalBackbone::new(geometry.config, recorder.clone(), tracker.clone())
@@ -317,14 +320,29 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
         .init(MonotonicTime::EPOCH)
         .map_err(|error| WrRunError::Simulation(error.to_string()))?;
     let simulation_end_ns = simulation_end_ns(config);
-    let quantum_ns = 10_000_000_u64;
-    let mut elapsed_ns = 0_u64;
+    let report_progress = std::env::var_os("WANSIM_WR_PROGRESS").is_some();
+    // No foreground payload can complete during warm-up. Advance it in one host call so the
+    // single-worker engine does not pay controller synchronization overhead every few
+    // milliseconds while the background TCP flows reach their operating point.
+    simulation
+        .step_until(Duration::from_nanos(WR_FOREGROUND_START_NS))
+        .map_err(|error| WrRunError::Simulation(error.to_string()))?;
+    let mut elapsed_ns = WR_FOREGROUND_START_NS;
+    let quantum_ns = 100_000_000_u64;
     while elapsed_ns < simulation_end_ns {
         let step = quantum_ns.min(simulation_end_ns - elapsed_ns);
         simulation
             .step_until(Duration::from_nanos(step))
             .map_err(|error| WrRunError::Simulation(error.to_string()))?;
         elapsed_ns = elapsed_ns.saturating_add(step);
+        if report_progress {
+            eprintln!(
+                "wr_progress elapsed_ns={elapsed_ns} records={} local_complete={} sender_complete={}",
+                recorder.record_count(),
+                recorder.event_count("protocol_local_complete"),
+                recorder.event_count("protocol_sender_complete"),
+            );
+        }
         if recorder.event_count("protocol_local_complete")
             >= RECEIVER_COUNT * config.concurrent_sessions
             && recorder.event_count("protocol_sender_complete") >= config.concurrent_sessions
@@ -362,6 +380,15 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
     }
     let records = recorder.records();
     let sessions = summarize_sessions(config, &records, timing.peer_stall_timeout_ns)?;
+    let maximum_background_trunk_utilization_ppm = maximum_background_trunk_utilization_ppm(
+        &config.cloud,
+        &records,
+        sessions
+            .iter()
+            .map(|session| session.barrier_completion_ns)
+            .max()
+            .unwrap_or(0),
+    );
     let link_drops = records
         .iter()
         .filter(|record| matches!(record.event, "queue_drop" | "segment_drop"))
@@ -374,6 +401,7 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
         mailbox_high_water,
         mailbox_capacities,
         link_drops,
+        maximum_background_trunk_utilization_ppm,
     })
 }
 
@@ -385,6 +413,19 @@ fn socket_config() -> Result<SocketPairConfig, WrRunError> {
         1_000_000_000,
         20_000_000,
     )
+    .map(|socket| socket.with_congestion_control(TcpCongestionControl::WindowScaledReno))
+    .map_err(|error| WrRunError::Construction(error.to_string()))
+}
+
+fn background_socket_config() -> Result<SocketPairConfig, WrRunError> {
+    SocketPairConfig::new(
+        256 * 1024,
+        1024 * 1024,
+        32 * 1024 * 1024,
+        1_000_000_000,
+        20_000_000,
+    )
+    .map(|socket| socket.with_congestion_control(TcpCongestionControl::WindowScaledReno))
     .map_err(|error| WrRunError::Construction(error.to_string()))
 }
 
@@ -406,14 +447,14 @@ fn carousel_timing(multiplier: u8) -> CarouselTiming {
 
 fn simulation_end_ns(config: &WrRunConfig) -> u64 {
     if config.slow_receiver.is_some() {
-        30_000_000_000
+        WR_FOREGROUND_START_NS.saturating_add(60_000_000_000)
     } else if config.source_symbols >= 65_536 {
         // This is an observation horizon, not a protocol timeout. The slowest
         // representative single-tree path can legitimately need more than 60 s
         // at K=65,536; run_wr still stops as soon as all endpoints complete.
-        180_000_000_000
+        WR_FOREGROUND_START_NS.saturating_add(180_000_000_000)
     } else {
-        20_000_000_000
+        WR_FOREGROUND_START_NS.saturating_add(60_000_000_000)
     }
 }
 
@@ -447,7 +488,7 @@ fn build_session(
         config.source_symbols,
         quotas.clone(),
         &peer_ids,
-        0,
+        WR_FOREGROUND_START_NS,
         timing,
         ack_progress_units(config.source_symbols)?,
     )
@@ -480,6 +521,8 @@ fn build_session(
     if let Some(tree) = single_tree(config.protocol) {
         source.enable_flow_count_match(1 - tree);
     }
+    source.set_start_delay_ns(WR_FOREGROUND_START_NS);
+    source.set_data_not_before_ns(WR_FOREGROUND_START_NS);
 
     let ownership = OwnershipLedger::default();
     let mut relays = Vec::with_capacity(TREE_COUNT * 2);
@@ -499,29 +542,29 @@ fn build_session(
                     downstream_receive_owner: OWNER_CHILD_RECEIVE[tree][relay][child],
                 })
                 .collect();
-            relays.push(
-                FanoutRelayEndpoint::new(
-                    RELAY_COMPONENTS[session][tree][relay],
-                    RELAY_COMPONENTS[session][tree][relay],
-                    data_flow_id(session, tree, upstream_hop),
-                    BACKBONE_MAILBOX,
-                    OWNER_UPSTREAM_RECEIVE[tree][relay],
-                    OWNER_APPLICATION[tree][relay],
-                    data_socket,
-                    data_socket,
-                    specs,
-                    streams[tree].clone(),
-                    508,
-                    4 * 1024 * 1024,
-                    4 * 1024 * 1024,
-                    FanoutAdmission::Sequential,
-                    100_000,
-                    recorder.clone(),
-                    tracker.clone(),
-                    ownership.clone(),
-                )
-                .map_err(|error| WrRunError::Construction(error.to_string()))?,
-            );
+            let mut endpoint = FanoutRelayEndpoint::new(
+                RELAY_COMPONENTS[session][tree][relay],
+                RELAY_COMPONENTS[session][tree][relay],
+                data_flow_id(session, tree, upstream_hop),
+                BACKBONE_MAILBOX,
+                OWNER_UPSTREAM_RECEIVE[tree][relay],
+                OWNER_APPLICATION[tree][relay],
+                data_socket,
+                data_socket,
+                specs,
+                streams[tree].clone(),
+                508,
+                4 * 1024 * 1024,
+                4 * 1024 * 1024,
+                FanoutAdmission::Sequential,
+                100_000,
+                recorder.clone(),
+                tracker.clone(),
+                ownership.clone(),
+            )
+            .map_err(|error| WrRunError::Construction(error.to_string()))?;
+            endpoint.set_start_delay_ns(WR_FOREGROUND_START_NS);
+            relays.push(endpoint);
         }
     }
 
@@ -538,7 +581,7 @@ fn build_session(
             peer_ids[receiver],
             config.source_symbols,
             quotas.clone(),
-            0,
+            WR_FOREGROUND_START_NS,
             timing,
             true,
             ack_progress_units(config.source_symbols)?,
@@ -546,40 +589,40 @@ fn build_session(
         .map_err(|error| WrRunError::Construction(error.to_string()))?;
         let hop = receiver_hop(receiver);
         let (downlink_flow_id, uplink_flow_id) = control_flow_ids(session, receiver);
-        receivers.push(
-            W1ReceiverEndpoint::new(
-                RECEIVER_COMPONENTS[session][receiver],
-                RECEIVER_COMPONENTS[session][receiver],
-                [data_flow_id(session, 0, hop), data_flow_id(session, 1, hop)],
-                [BACKBONE_MAILBOX; TREE_COUNT],
-                data_socket,
-                [streams[0].clone(), streams[1].clone()],
-                508,
-                runtime_capacity,
-                inbox_capacity,
-                config.receiver_admission,
-                runtime_capacity,
-                5_000,
-                if config.slow_receiver == Some(receiver) {
-                    1_000_000
-                } else {
-                    8_000
-                },
-                protocol,
-                Some(ReceiverControlGeometry {
-                    downlink_flow_id,
-                    uplink_flow_id,
-                    reverse_link_mailbox: BACKBONE_MAILBOX,
-                    downlink_stream: downlinks[receiver].clone(),
-                    uplink_stream: uplinks[receiver].clone(),
-                }),
-                control_socket,
-                100_000,
-                recorder.clone(),
-                tracker.clone(),
-            )
-            .map_err(|error| WrRunError::Construction(error.to_string()))?,
-        );
+        let mut endpoint = W1ReceiverEndpoint::new(
+            RECEIVER_COMPONENTS[session][receiver],
+            RECEIVER_COMPONENTS[session][receiver],
+            [data_flow_id(session, 0, hop), data_flow_id(session, 1, hop)],
+            [BACKBONE_MAILBOX; TREE_COUNT],
+            data_socket,
+            [streams[0].clone(), streams[1].clone()],
+            508,
+            runtime_capacity,
+            inbox_capacity,
+            config.receiver_admission,
+            runtime_capacity,
+            5_000,
+            if config.slow_receiver == Some(receiver) {
+                1_000_000
+            } else {
+                8_000
+            },
+            protocol,
+            Some(ReceiverControlGeometry {
+                downlink_flow_id,
+                uplink_flow_id,
+                reverse_link_mailbox: BACKBONE_MAILBOX,
+                downlink_stream: downlinks[receiver].clone(),
+                uplink_stream: uplinks[receiver].clone(),
+            }),
+            control_socket,
+            100_000,
+            recorder.clone(),
+            tracker.clone(),
+        )
+        .map_err(|error| WrRunError::Construction(error.to_string()))?;
+        endpoint.set_start_delay_ns(WR_FOREGROUND_START_NS);
+        receivers.push(endpoint);
     }
     Ok(SessionSlot {
         source,
@@ -671,10 +714,13 @@ fn build_background(
 ) -> Result<Vec<BackgroundSlot>, WrRunError> {
     let utilization = u64::from(config.background_utilization_percent);
     let reference = config.cloud.background_reference_rate_bps;
-    let bulk_rate = reference.saturating_mul(utilization) / 200;
+    // Each tree-root pair gets one requested 30/50/70 load bundle, split evenly between its two
+    // directions and between bulk and mean on/off contribution. Placement can make both bundles
+    // converge on one resource; that emergent saturation is reported as realized utilization.
+    let bulk_rate = reference.saturating_mul(utilization) / 400;
     // The bounded heavy-tail generator has mean on/off ratio 2:3, so 1.25x target load
     // contributes the other half in expectation.
-    let onoff_rate = reference.saturating_mul(utilization).saturating_mul(5) / 400;
+    let onoff_rate = reference.saturating_mul(utilization).saturating_mul(5) / 800;
     let mut slots = Vec::with_capacity(BACKGROUND_COUNT);
     for (index, &component) in BACKGROUND_COMPONENTS.iter().enumerate() {
         let kind = if index % 2 == 0 {
@@ -691,9 +737,9 @@ fn build_background(
                     data_path_mailbox: BACKBONE_MAILBOX,
                     ack_path_mailbox: BACKBONE_MAILBOX,
                     kind,
-                    timer_interval_ns: 250_000,
-                    on_base_ns: 5_000_000,
-                    off_base_ns: 7_500_000,
+                    timer_interval_ns: 10_000_000,
+                    on_base_ns: 100_000_000,
+                    off_base_ns: 150_000_000,
                     application_rate_bps: Some(if kind == BackgroundTrafficKind::Bulk {
                         bulk_rate
                     } else {
@@ -1301,11 +1347,11 @@ fn summarize_sessions(
                     record.component == RECEIVER_COMPONENTS[session][receiver]
                         && record.event == "protocol_local_complete"
                 })
-                .map(|record| record.time_ns)
+                .map(|record| record.time_ns.saturating_sub(WR_FOREGROUND_START_NS))
                 .ok_or(WrRunError::IncompleteReceiver { session, receiver })?;
         }
         let barrier_completion_ns = completion_times_ns.iter().copied().max().unwrap_or(0);
-        let sender_completion_ns = records
+        let sender_completion_at_ns = records
             .iter()
             .find(|record| {
                 record.component == SOURCE_COMPONENTS[session]
@@ -1313,6 +1359,7 @@ fn summarize_sessions(
             })
             .map(|record| record.time_ns)
             .ok_or(WrRunError::IncompleteSender(session))?;
+        let sender_completion_ns = sender_completion_at_ns.saturating_sub(WR_FOREGROUND_START_NS);
         let source_records = records
             .iter()
             .filter(|record| record.component == SOURCE_COMPONENTS[session])
@@ -1361,8 +1408,8 @@ fn summarize_sessions(
         let maximum_ack_gap_ns = ack_times
             .iter()
             .copied()
-            .chain(std::iter::once(sender_completion_ns))
-            .scan(0_u64, |prior, now| {
+            .chain(std::iter::once(sender_completion_at_ns))
+            .scan(WR_FOREGROUND_START_NS, |prior, now| {
                 let gap = now.saturating_sub(*prior);
                 *prior = now;
                 Some(gap)
@@ -1386,6 +1433,44 @@ fn summarize_sessions(
         });
     }
     Ok(outcomes)
+}
+
+fn maximum_background_trunk_utilization_ppm(
+    cloud: &CloudScenario,
+    records: &[Record],
+    foreground_duration_ns: u64,
+) -> u64 {
+    if foreground_duration_ns == 0 {
+        return 0;
+    }
+    let first_trunk = cloud.regions.len();
+    let end_ns = WR_FOREGROUND_START_NS.saturating_add(foreground_duration_ns);
+    let mut background_bytes = vec![0_u128; cloud.trunks.len()];
+    for record in records.iter().filter(|record| {
+        record.event == "wr_resource_sample"
+            && record.time_ns > WR_FOREGROUND_START_NS
+            && record.time_ns <= end_ns
+            && record.flow_id >= first_trunk
+    }) {
+        let Some(slot) = record.flow_id.checked_sub(first_trunk) else {
+            continue;
+        };
+        if let Some(bytes) = background_bytes.get_mut(slot) {
+            *bytes = bytes.saturating_add(record.value as u128);
+        }
+    }
+    background_bytes
+        .into_iter()
+        .zip(&cloud.trunks)
+        .map(|(bytes, trunk)| {
+            let numerator = bytes.saturating_mul(8_000_000_000_000_000);
+            let denominator = u128::from(foreground_duration_ns)
+                .saturating_mul(u128::from(trunk.capacity_bps))
+                .max(1);
+            u64::try_from(numerator / denominator).unwrap_or(u64::MAX)
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 fn data_flow_id(session: usize, tree: usize, hop: usize) -> usize {
@@ -1498,12 +1583,15 @@ mod tests {
         );
         let mut scaling = config();
         scaling.source_symbols = 65_536;
-        assert_eq!(simulation_end_ns(&scaling), 180_000_000_000);
+        assert_eq!(simulation_end_ns(&scaling), 181_000_000_000);
     }
 
     #[test]
     fn cloud_carousel_run_is_deterministic_across_registration_order() {
         let forward = run_wr(&config()).expect("forward");
+        assert!(forward.records.iter().any(|record| {
+            record.event == "data_frame_emitted" && record.time_ns >= WR_FOREGROUND_START_NS
+        }));
         let mut reverse_config = config();
         reverse_config.registration_order = RegistrationOrder::Reverse;
         let reverse = run_wr(&reverse_config).expect("reverse");

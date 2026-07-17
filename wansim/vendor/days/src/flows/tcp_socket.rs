@@ -197,6 +197,21 @@ impl TcpSocketSender {
         Self::new(flow_id, priority, config, Box::new(TCPReno::new()))
     }
 
+    pub fn new_window_scaled_reno(
+        flow_id: usize,
+        priority: u8,
+        config: TcpSocketConfig,
+    ) -> Result<Self, TcpSocketError> {
+        let maximum_window = config.receive_buffer_bytes;
+        let mss = config.mss;
+        Self::new(
+            flow_id,
+            priority,
+            config,
+            Box::new(TCPReno::with_max_cwnd_and_mss(maximum_window, mss)),
+        )
+    }
+
     pub fn metrics(&self) -> TcpSocketMetrics {
         self.metrics
     }
@@ -733,6 +748,18 @@ mod tests {
             max_rto_seconds: 60.0,
             persist_interval_seconds: 0.25,
         }
+    }
+
+    #[test]
+    fn scaled_socket_constructor_selects_window_scaled_reno() {
+        let scaled = TcpSocketSender::new_window_scaled_reno(3, 0, config())
+            .expect("window-scaled Reno socket");
+        let reno = scaled
+            .congestion_control
+            .as_any()
+            .downcast_ref::<TCPReno>()
+            .expect("Reno controller");
+        assert_eq!(reno.get_cwnd(), 2 * config().mss);
     }
 
     #[test]

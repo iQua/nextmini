@@ -32,7 +32,7 @@ impl SourceEndpoint {
         mailbox_tracker: MailboxTracker,
     ) -> Result<Self, days::flows::tcp_socket::TcpSocketError> {
         Ok(Self {
-            sender: TcpSocketSender::new_reno(FLOW_HOP_1, 0, socket.socket)?,
+            sender: socket.sender(FLOW_HOP_1, 0)?,
             stream_bytes,
             application_cursor: 0,
             timer_interval_ns,

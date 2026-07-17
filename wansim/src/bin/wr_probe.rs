@@ -1,8 +1,8 @@
 use std::process::ExitCode;
 
 use wansim::scenario::{
-    CloudProfileKind, CloudScenario, ReceiverAdmissionPolicy, RegistrationOrder, WrProtocol,
-    WrRunConfig, run_wr,
+    CloudProfileKind, CloudScenario, ReceiverAdmissionPolicy, RegistrationOrder,
+    WR_FOREGROUND_START_NS, WrProtocol, WrRunConfig, run_wr,
 };
 
 const USAGE: &str = "usage: wr_probe <profile> <placement> <util> <jitter:0|1> <protocol> <K> <seed> <cadence:1|2|4> <admission> <slow:-1|0|1|2> <sessions>";
@@ -77,10 +77,27 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             session.stall_budget_consumption_ppm,
         );
     }
+    let foreground_ns = outcome.sessions[0].barrier_completion_ns.max(1);
+    let probe_mbps = [200_000, 200_004].map(|flow_id| {
+        let bytes: u128 = outcome
+            .records
+            .iter()
+            .filter(|record| {
+                record.event == "wr_tree_rate_sample"
+                    && record.flow_id == flow_id
+                    && record.time_ns > WR_FOREGROUND_START_NS
+            })
+            .map(|record| record.bytes as u128)
+            .sum();
+        bytes.saturating_mul(8_000) / u128::from(foreground_ns)
+    });
     println!(
-        "link_drops={},mailboxes={}",
+        "link_drops={},mailboxes={},max_background_trunk_utilization_ppm={},probe_mbps={}/{}",
         outcome.link_drops,
-        outcome.mailbox_high_water.len()
+        outcome.mailbox_high_water.len(),
+        outcome.maximum_background_trunk_utilization_ppm,
+        probe_mbps[0],
+        probe_mbps[1],
     );
     Ok(())
 }

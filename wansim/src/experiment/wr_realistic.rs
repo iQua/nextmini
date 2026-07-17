@@ -113,6 +113,7 @@ struct RawTrial {
     ack_probes: usize,
     stall_ppm: u64,
     link_drops: usize,
+    background_trunk_utilization_ppm: u64,
     a4_trace_correlation_ppm: i64,
     tree_bytes: [u64; 2],
     maximum_mailbox_high_water: usize,
@@ -138,6 +139,7 @@ struct TrialRow {
     profile: &'static str,
     placement: String,
     utilization_percent: u8,
+    realized_background_trunk_utilization_ppm: u64,
     jitter: bool,
     protocol: &'static str,
     source_symbols: usize,
@@ -193,6 +195,9 @@ struct SummaryRow {
     emissions_p5: u64,
     emissions_p95: u64,
     application_drops_mean: u64,
+    background_trunk_utilization_mean_ppm: u64,
+    background_trunk_utilization_p5_ppm: u64,
+    background_trunk_utilization_p95_ppm: u64,
     stall_consumption_p95_ppm: u64,
     link_drops_total: usize,
 }
@@ -272,6 +277,7 @@ struct PairRow {
     emissions_mean: u64,
     drops_mean: u64,
     blocking_waits_mean: u64,
+    background_trunk_utilization_mean_ppm: u64,
     stall_consumption_p95_ppm: u64,
 }
 
@@ -544,6 +550,7 @@ fn raw_trial(
         ack_probes: session.ack_probes,
         stall_ppm: session.stall_budget_consumption_ppm,
         link_drops: outcome.link_drops,
+        background_trunk_utilization_ppm: outcome.maximum_background_trunk_utilization_ppm,
         a4_trace_correlation_ppm: trace_correlation(&outcome.records),
         tree_bytes,
         maximum_mailbox_high_water: outcome
@@ -565,6 +572,7 @@ fn trial_row(trial: &RawTrial) -> TrialRow {
         profile: trial.profile_name,
         placement: trial.placement_id.clone(),
         utilization_percent: trial.task.utilization,
+        realized_background_trunk_utilization_ppm: trial.background_trunk_utilization_ppm,
         jitter: trial.task.jitter,
         protocol: trial.task.protocol.name(),
         source_symbols: trial.task.k,
@@ -649,6 +657,7 @@ fn summarize(trials: &[RawTrial]) -> Vec<SummaryRow> {
                 let sender = values(&group, |trial| trial.sender_ns);
                 let emissions = values(&group, |trial| trial.emissions as u64);
                 let drops = values(&group, |trial| trial.drops as u64);
+                let background = values(&group, |trial| trial.background_trunk_utilization_ppm);
                 let stall = values(&group, |trial| trial.stall_ppm);
                 SummaryRow {
                     schema_version: SCENARIO_SCHEMA_VERSION,
@@ -675,6 +684,9 @@ fn summarize(trials: &[RawTrial]) -> Vec<SummaryRow> {
                     emissions_p5: percentile_u64(&emissions, 5),
                     emissions_p95: percentile_u64(&emissions, 95),
                     application_drops_mean: mean_u64(&drops),
+                    background_trunk_utilization_mean_ppm: mean_u64(&background),
+                    background_trunk_utilization_p5_ppm: percentile_u64(&background, 5),
+                    background_trunk_utilization_p95_ppm: percentile_u64(&background, 95),
                     stall_consumption_p95_ppm: percentile_u64(&stall, 95),
                     link_drops_total: group.iter().map(|trial| trial.link_drops).sum(),
                 }
@@ -906,6 +918,7 @@ fn pair_rows(trials: &[RawTrial], slice: Slice, question: &'static str) -> Vec<P
             let emissions = values(&group, |trial| trial.emissions as u64);
             let drops = values(&group, |trial| trial.drops as u64);
             let blocking = values(&group, |trial| trial.blocking_waits as u64);
+            let background = values(&group, |trial| trial.background_trunk_utilization_ppm);
             let stall = values(&group, |trial| trial.stall_ppm);
             PairRow {
                 schema_version: SCENARIO_SCHEMA_VERSION,
@@ -922,6 +935,7 @@ fn pair_rows(trials: &[RawTrial], slice: Slice, question: &'static str) -> Vec<P
                 emissions_mean: mean_u64(&emissions),
                 drops_mean: mean_u64(&drops),
                 blocking_waits_mean: mean_u64(&blocking),
+                background_trunk_utilization_mean_ppm: mean_u64(&background),
                 stall_consumption_p95_ppm: percentile_u64(&stall, 95),
             }
         })
@@ -932,7 +946,11 @@ fn tree_sample_totals(records: &[Record]) -> [u64; 2] {
     [200_000, 200_004].map(|flow_id| {
         records
             .iter()
-            .filter(|record| record.event == "wr_tree_rate_sample" && record.flow_id == flow_id)
+            .filter(|record| {
+                record.event == "wr_tree_rate_sample"
+                    && record.flow_id == flow_id
+                    && record.time_ns >= crate::scenario::WR_FOREGROUND_START_NS
+            })
             .map(|record| record.bytes as u64)
             .sum()
     })
@@ -940,10 +958,10 @@ fn tree_sample_totals(records: &[Record]) -> [u64; 2] {
 
 fn trace_correlation(records: &[Record]) -> i64 {
     let mut samples: BTreeMap<usize, [u64; 2]> = BTreeMap::new();
-    for record in records
-        .iter()
-        .filter(|record| record.event == "wr_tree_rate_sample")
-    {
+    for record in records.iter().filter(|record| {
+        record.event == "wr_tree_rate_sample"
+            && record.time_ns >= crate::scenario::WR_FOREGROUND_START_NS
+    }) {
         let tree = match record.flow_id {
             200_000 => 0,
             200_004 => 1,

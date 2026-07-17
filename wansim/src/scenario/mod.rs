@@ -23,7 +23,8 @@ pub use w2_config::{
     W2ControlAsymmetry, W2Scenario, W2ScenarioError, W2SharedLeafBottleneck,
 };
 pub use wr::{
-    WrOutcome, WrProtocol, WrRunConfig, WrRunError, WrSessionOutcome, WrSharingRow, run_wr,
+    WR_FOREGROUND_START_NS, WrOutcome, WrProtocol, WrRunConfig, WrRunError, WrSessionOutcome,
+    WrSharingRow, run_wr,
 };
 pub use wr_config::{
     CloudPlacement, CloudProfileKind, CloudRegion, CloudScenario, CloudScenarioError, CloudTrunk,

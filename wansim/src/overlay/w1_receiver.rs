@@ -200,6 +200,7 @@ pub(crate) struct W1ReceiverEndpoint {
     completion_recorded: bool,
     control: Option<ReceiverControl>,
     timer_interval_ns: u64,
+    start_delay_ns: u64,
     pub(crate) data_ack_outputs: [Output<TrackedPacket>; TREE_COUNT],
     pub(crate) control_reverse_output: Output<TrackedPacket>,
     recorder: Recorder,
@@ -294,11 +295,16 @@ impl W1ReceiverEndpoint {
             completion_recorded: false,
             control,
             timer_interval_ns,
+            start_delay_ns: 1,
             data_ack_outputs: std::array::from_fn(|_| Output::default()),
             control_reverse_output: Output::default(),
             recorder,
             mailbox_tracker,
         })
+    }
+
+    pub(crate) fn set_start_delay_ns(&mut self, start_delay_ns: u64) {
+        self.start_delay_ns = start_delay_ns;
     }
 
     pub(crate) async fn data0_segment(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
@@ -760,7 +766,11 @@ impl Model for W1ReceiverEndpoint {
 
     async fn init(self, context: &Context<Self>, _: &mut Self::Env) -> InitializedModel<Self> {
         self.mailbox_tracker.enqueue(self.mailbox);
-        if let Err(error) = context.schedule_event(Duration::from_nanos(1), &Self::START_SID, ()) {
+        if let Err(error) = context.schedule_event(
+            Duration::from_nanos(self.start_delay_ns),
+            &Self::START_SID,
+            (),
+        ) {
             self.mailbox_tracker.dequeue(self.mailbox);
             self.recorder.fail(error);
         }

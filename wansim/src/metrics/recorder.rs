@@ -1,4 +1,5 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use parking_lot::Mutex;
 use serde::Serialize;
@@ -26,6 +27,8 @@ pub struct Recorder {
     seed: u64,
     records: Arc<Mutex<Vec<Record>>>,
     failure: Arc<Mutex<Option<String>>>,
+    local_completion_count: Arc<AtomicUsize>,
+    sender_completion_count: Arc<AtomicUsize>,
     compact_w2: bool,
     compact_w3: bool,
     compact_wr: bool,
@@ -38,6 +41,8 @@ impl Recorder {
             seed,
             records: Arc::default(),
             failure: Arc::default(),
+            local_completion_count: Arc::default(),
+            sender_completion_count: Arc::default(),
             compact_w2: false,
             compact_w3: false,
             compact_wr: false,
@@ -50,6 +55,8 @@ impl Recorder {
             seed,
             records: Arc::default(),
             failure: Arc::default(),
+            local_completion_count: Arc::default(),
+            sender_completion_count: Arc::default(),
             compact_w2: true,
             compact_w3: false,
             compact_wr: false,
@@ -62,6 +69,8 @@ impl Recorder {
             seed,
             records: Arc::default(),
             failure: Arc::default(),
+            local_completion_count: Arc::default(),
+            sender_completion_count: Arc::default(),
             compact_w2: false,
             compact_w3: true,
             compact_wr: false,
@@ -74,6 +83,8 @@ impl Recorder {
             seed,
             records: Arc::default(),
             failure: Arc::default(),
+            local_completion_count: Arc::default(),
+            sender_completion_count: Arc::default(),
             compact_w2: false,
             compact_w3: false,
             compact_wr: true,
@@ -100,6 +111,15 @@ impl Recorder {
         if self.compact_wr && !wr_metric_event(event) {
             return;
         }
+        match event {
+            "protocol_local_complete" => {
+                self.local_completion_count.fetch_add(1, Ordering::Relaxed);
+            }
+            "protocol_sender_complete" => {
+                self.sender_completion_count.fetch_add(1, Ordering::Relaxed);
+            }
+            _ => {}
+        }
         self.records.lock().push(Record {
             schema_version: SCENARIO_SCHEMA_VERSION,
             simulator_version: SIMULATOR_VERSION,
@@ -115,10 +135,16 @@ impl Recorder {
         });
     }
 
+    #[track_caller]
     pub fn fail(&self, error: impl std::fmt::Display) {
         let mut failure = self.failure.lock();
         if failure.is_none() {
-            *failure = Some(error.to_string());
+            let caller = std::panic::Location::caller();
+            *failure = Some(format!(
+                "{error} (reported at {}:{})",
+                caller.file(),
+                caller.line()
+            ));
         }
     }
 
@@ -132,12 +158,21 @@ impl Recorder {
         records
     }
 
+    pub(crate) fn record_count(&self) -> usize {
+        self.records.lock().len()
+    }
+
     pub(crate) fn event_count(&self, event: &str) -> usize {
-        self.records
-            .lock()
-            .iter()
-            .filter(|record| record.event == event)
-            .count()
+        match event {
+            "protocol_local_complete" => self.local_completion_count.load(Ordering::Relaxed),
+            "protocol_sender_complete" => self.sender_completion_count.load(Ordering::Relaxed),
+            _ => self
+                .records
+                .lock()
+                .iter()
+                .filter(|record| record.event == event)
+                .count(),
+        }
     }
 
     pub fn to_csv(&self) -> Result<String, csv::Error> {

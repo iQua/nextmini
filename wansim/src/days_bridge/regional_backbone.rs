@@ -382,17 +382,15 @@ impl RegionalBackbone {
         }
     }
 
-    fn jittered_propagation_ns(&self, base: u64, resource: usize, packet: &Packet) -> u64 {
+    fn jittered_propagation_ns(&self, base: u64, resource: usize, _packet: &Packet) -> u64 {
         if !self.config.jitter_enabled {
             return base;
         }
         let width = u64::from(self.config.jitter_max_ppm);
-        let draw = self.config.prf.draw_u64(
-            "wr-propagation-jitter",
-            resource as u64,
-            packet.flow_id as u64,
-            packet.packet_id as u64,
-        );
+        let draw = self
+            .config
+            .prf
+            .draw_u64("wr-propagation-jitter", resource as u64, 0, 0);
         let signed_ppm =
             i128::from(draw % (width.saturating_mul(2).saturating_add(1))) - i128::from(width);
         let adjustment = i128::from(base).saturating_mul(signed_ppm) / 1_000_000;
@@ -546,6 +544,12 @@ mod tests {
         let first = backbone.jittered_propagation_ns(1_000_000, 0, &packet);
         let second = backbone.jittered_propagation_ns(1_000_000, 0, &packet);
         assert_eq!(first, second);
+        let later_packet = Packet::new(512, 10_000, 99, 0.5);
+        assert_eq!(
+            first,
+            backbone.jittered_propagation_ns(1_000_000, 0, &later_packet),
+            "one physical resource must not reorder a flow via per-packet jitter"
+        );
         assert!((950_000..=1_050_000).contains(&first));
         let mut disabled = valid_config();
         disabled.jitter_enabled = false;

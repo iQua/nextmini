@@ -66,7 +66,7 @@ impl BackgroundFlow {
         };
         Ok(Self {
             config,
-            sender: TcpSocketSender::new_reno(config.flow_id, 0, socket.socket)?,
+            sender: socket.sender(config.flow_id, 0)?,
             receiver: TcpSocketReceiver::new(config.flow_id, 0, socket.socket)?,
             active,
             transition_at_ns,
@@ -87,15 +87,15 @@ impl BackgroundFlow {
             match self.sender.receive_ack(&packet, seconds_from_ns(now)) {
                 Ok(mut packets) => {
                     if self.active {
-                        self.refill_sender(now);
+                        self.refill_after_ack(now);
                         match self.sender.poll_transmit(seconds_from_ns(now)) {
                             Ok(new_packets) => packets.extend(new_packets),
-                            Err(error) => self.recorder.fail(error),
+                            Err(error) => self.fail("poll after ACK", error),
                         }
                     }
                     self.emit_data(packets).await;
                 }
-                Err(error) => self.recorder.fail(error),
+                Err(error) => self.fail("receive ACK", error),
             }
         } else {
             self.receive_data(packet, now).await;
@@ -110,12 +110,12 @@ impl BackgroundFlow {
             .grant_read_credit(self.receiver_capacity(), seconds_from_ns(now))
         {
             Ok(outcome) => self.emit_ack(vec![outcome.acknowledgment]).await,
-            Err(error) => self.recorder.fail(error),
+            Err(error) => self.fail("initial read credit", error),
         }
         self.refill_sender(now);
         match self.sender.poll_transmit(seconds_from_ns(now)) {
             Ok(packets) => self.emit_data(packets).await,
-            Err(error) => self.recorder.fail(error),
+            Err(error) => self.fail("initial transmit", error),
         }
         self.schedule_timer(context);
     }
@@ -127,7 +127,7 @@ impl BackgroundFlow {
         let mut packets = match self.sender.timer_tick(seconds_from_ns(now)) {
             Ok(packets) => packets,
             Err(error) => {
-                self.recorder.fail(error);
+                self.fail("timer tick", error);
                 Vec::new()
             }
         };
@@ -135,7 +135,7 @@ impl BackgroundFlow {
             self.refill_sender(now);
             match self.sender.poll_transmit(seconds_from_ns(now)) {
                 Ok(new_packets) => packets.extend(new_packets),
-                Err(error) => self.recorder.fail(error),
+                Err(error) => self.fail("timer transmit", error),
             }
         }
         self.emit_data(packets).await;
@@ -146,7 +146,7 @@ impl BackgroundFlow {
         let outcome = match self.receiver.receive_segment(&packet, seconds_from_ns(now)) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.recorder.fail(error);
+                self.fail("receive data", error);
                 return;
             }
         };
@@ -171,7 +171,7 @@ impl BackgroundFlow {
                     delivered = outcome.delivered;
                 }
                 Err(error) => {
-                    self.recorder.fail(error);
+                    self.fail("return read credit", error);
                     break;
                 }
             }
@@ -207,7 +207,13 @@ impl BackgroundFlow {
             return;
         }
         if let Err(error) = self.sender.admit_application_write(admitted) {
-            self.recorder.fail(error);
+            self.fail("application write", error);
+        }
+    }
+
+    fn refill_after_ack(&mut self, now: u64) {
+        if self.config.application_rate_bps.is_none() {
+            self.refill_sender(now);
         }
     }
 
@@ -280,6 +286,13 @@ impl BackgroundFlow {
         self.sender.send_buffer_capacity()
     }
 
+    fn fail(&self, operation: &str, error: impl std::fmt::Display) {
+        self.recorder.fail(format_args!(
+            "{} {operation}: {error}",
+            self.config.component
+        ));
+    }
+
     fn schedule_timer(&self, context: &Context<Self>) {
         self.mailbox_tracker.enqueue(self.config.mailbox);
         if let Err(error) = context.schedule_event(
@@ -288,7 +301,7 @@ impl BackgroundFlow {
             (),
         ) {
             self.mailbox_tracker.dequeue(self.config.mailbox);
-            self.recorder.fail(error);
+            self.fail("schedule timer", error);
         }
     }
 }
@@ -309,8 +322,55 @@ impl Model for BackgroundFlow {
         self.mailbox_tracker.enqueue(self.config.mailbox);
         if let Err(error) = context.schedule_event(Duration::from_nanos(1), &Self::START_SID, ()) {
             self.mailbox_tracker.dequeue(self.config.mailbox);
-            self.recorder.fail(error);
+            self.fail("schedule start", error);
         }
         self.into()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn flow(application_rate_bps: Option<u64>) -> BackgroundFlow {
+        let config = BackgroundFlowConfig {
+            component: "background-test",
+            mailbox: "background-test",
+            flow_id: 1,
+            data_path_mailbox: "network",
+            ack_path_mailbox: "network",
+            kind: BackgroundTrafficKind::Bulk,
+            timer_interval_ns: 10_000_000,
+            on_base_ns: 100_000_000,
+            off_base_ns: 150_000_000,
+            application_rate_bps,
+            prf: CounterPrf::new(7, "background-test"),
+        };
+        let socket = SocketPairConfig::new(512, 64 * 1024, 64 * 1024, 1_000_000, 1_000_000)
+            .expect("socket geometry");
+        BackgroundFlow::new(
+            config,
+            socket,
+            Recorder::new("background-test", 7),
+            MailboxTracker::default(),
+        )
+        .expect("background flow")
+    }
+
+    #[test]
+    fn paced_application_credit_is_not_refilled_by_ack_arrivals() {
+        let mut flow = flow(Some(8_000));
+        flow.refill_sender(1_000_000_000);
+        assert_eq!(flow.sender.metrics().application_bytes_admitted, 1_000);
+
+        flow.refill_after_ack(1_500_000_000);
+        assert_eq!(
+            flow.sender.metrics().application_bytes_admitted,
+            1_000,
+            "ACK-clock timing must not fragment paced writes into tiny segments"
+        );
+
+        flow.refill_sender(2_000_000_000);
+        assert_eq!(flow.sender.metrics().application_bytes_admitted, 2_000);
     }
 }

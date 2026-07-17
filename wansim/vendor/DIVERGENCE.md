@@ -42,6 +42,12 @@ The initial import commit has no source changes. The following patches are appli
    retransmission timers, and explicit 40-byte TCP/IPv4 serialization overhead. It deliberately
    contains no nextmini frame or relay semantics. Affected files: `days/src/flows/tcp_socket.rs` and
    `days/src/flows/mod.rs`.
+4. **Expose scaled-window Reno for dynamic sockets.** The socket sender gains an opt-in
+   window-scaled Reno constructor whose congestion-window ceiling and initial slow-start threshold
+   follow the configured receive buffer instead of the legacy 65,535-byte ceiling. The legacy
+   constructor is unchanged. This is general transport plumbing: policy selection remains with the
+   embedding application. Regressions pin the controller identity and scaled ceiling. Affected
+   files: `days/src/flows/tcp_socket.rs` and `days/src/flows/reno.rs`.
 
 No wansim-local change is made to `days/crates/nexosim`.
 

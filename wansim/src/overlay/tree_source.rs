@@ -38,7 +38,7 @@ impl TreeSourceEndpoint {
     ) -> Result<Self, days::flows::tcp_socket::TcpSocketError> {
         ownership.set(Self::SEND_OWNER, 0);
         Ok(Self {
-            sender: TcpSocketSender::new_reno(FLOW_SOURCE_RELAY_A, 0, socket.socket)?,
+            sender: socket.sender(FLOW_SOURCE_RELAY_A, 0)?,
             stream_bytes,
             application_cursor: 0,
             timer_interval_ns,

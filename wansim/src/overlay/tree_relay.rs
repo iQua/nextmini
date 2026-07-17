@@ -123,6 +123,7 @@ pub(crate) struct FanoutRelayEndpoint {
     pending_frames: VecDeque<PendingFanoutFrame>,
     admission: FanoutAdmission,
     timer_interval_ns: u64,
+    start_delay_ns: u64,
     pub(crate) upstream_ack_output: Output<TrackedPacket>,
     pub(crate) child_data_outputs: [Output<TrackedPacket>; 4],
     recorder: Recorder,
@@ -188,7 +189,7 @@ impl FanoutRelayEndpoint {
             .map(|spec| {
                 Ok(RelayChild {
                     spec,
-                    sender: TcpSocketSender::new_reno(spec.flow_id, 0, child_socket.socket)?,
+                    sender: child_socket.sender(spec.flow_id, 0)?,
                     queue: VecDeque::new(),
                     deferred: DeferredFrames::default(),
                     deferred_capacity_frames,
@@ -214,12 +215,17 @@ impl FanoutRelayEndpoint {
             pending_frames: VecDeque::new(),
             admission,
             timer_interval_ns,
+            start_delay_ns: 1,
             upstream_ack_output: Output::default(),
             child_data_outputs: std::array::from_fn(|_| Output::default()),
             recorder,
             mailbox_tracker,
             ownership,
         })
+    }
+
+    pub(crate) fn set_start_delay_ns(&mut self, start_delay_ns: u64) {
+        self.start_delay_ns = start_delay_ns;
     }
 
     pub(crate) async fn upstream_segment(
@@ -814,7 +820,11 @@ impl Model for FanoutRelayEndpoint {
 
     async fn init(self, context: &Context<Self>, _: &mut Self::Env) -> InitializedModel<Self> {
         self.mailbox_tracker.enqueue(self.mailbox);
-        if let Err(error) = context.schedule_event(Duration::from_nanos(1), &Self::START_SID, ()) {
+        if let Err(error) = context.schedule_event(
+            Duration::from_nanos(self.start_delay_ns),
+            &Self::START_SID,
+            (),
+        ) {
             self.mailbox_tracker.dequeue(self.mailbox);
             self.recorder.fail(error);
         }

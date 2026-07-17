@@ -162,6 +162,8 @@ pub(crate) struct W1SourceEndpoint {
     controls: Vec<SourceControlPeer>,
     control_forward_mailboxes: Vec<&'static str>,
     timer_interval_ns: u64,
+    start_delay_ns: u64,
+    data_not_before_ns: u64,
     drive_scheduled: bool,
     pub(crate) data_outputs: [Output<TrackedPacket>; TREE_COUNT],
     pub(crate) control_forward_outputs: [Output<TrackedPacket>; MAX_PEERS],
@@ -203,8 +205,8 @@ impl W1SourceEndpoint {
             return Err(W1SourceBuildError::PeerGeometry);
         }
         let data_senders = [
-            TcpSocketSender::new_reno(data_flow_ids[0], 0, data_socket.socket)?,
-            TcpSocketSender::new_reno(data_flow_ids[1], 0, data_socket.socket)?,
+            data_socket.sender(data_flow_ids[0], 0)?,
+            data_socket.sender(data_flow_ids[1], 0)?,
         ];
         let controls = peer_ids
             .iter()
@@ -239,6 +241,8 @@ impl W1SourceEndpoint {
             controls,
             control_forward_mailboxes,
             timer_interval_ns,
+            start_delay_ns: 1,
+            data_not_before_ns: 0,
             drive_scheduled: false,
             data_outputs: std::array::from_fn(|_| Output::default()),
             control_forward_outputs: std::array::from_fn(|_| Output::default()),
@@ -250,6 +254,14 @@ impl W1SourceEndpoint {
     pub(crate) fn enable_flow_count_match(&mut self, lane: usize) {
         assert!(lane < TREE_COUNT);
         self.flow_count_match_lane = Some(lane);
+    }
+
+    pub(crate) fn set_data_not_before_ns(&mut self, data_not_before_ns: u64) {
+        self.data_not_before_ns = data_not_before_ns;
+    }
+
+    pub(crate) fn set_start_delay_ns(&mut self, start_delay_ns: u64) {
+        self.start_delay_ns = start_delay_ns;
     }
 
     pub(crate) async fn data0_ack(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
@@ -475,6 +487,9 @@ impl W1SourceEndpoint {
     }
 
     async fn drive_data(&mut self, now: u64) {
+        if now < self.data_not_before_ns {
+            return;
+        }
         loop {
             let writable: BTreeSet<_> = (0..TREE_COUNT)
                 .filter(|tree| {
@@ -654,7 +669,11 @@ impl Model for W1SourceEndpoint {
 
     async fn init(self, context: &Context<Self>, _: &mut Self::Env) -> InitializedModel<Self> {
         self.mailbox_tracker.enqueue(self.mailbox);
-        if let Err(error) = context.schedule_event(Duration::from_nanos(1), &Self::START_SID, ()) {
+        if let Err(error) = context.schedule_event(
+            Duration::from_nanos(self.start_delay_ns),
+            &Self::START_SID,
+            (),
+        ) {
             self.mailbox_tracker.dequeue(self.mailbox);
             self.recorder.fail(error);
         }

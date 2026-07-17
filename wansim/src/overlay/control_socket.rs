@@ -29,7 +29,7 @@ impl ControlTx {
     ) -> Result<Self, TcpSocketError> {
         Ok(Self {
             flow_id,
-            sender: TcpSocketSender::new_reno(flow_id, 0, socket.socket)?,
+            sender: socket.sender(flow_id, 0)?,
             stream,
             pending: VecDeque::new(),
         })

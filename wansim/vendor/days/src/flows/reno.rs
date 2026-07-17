@@ -119,6 +119,24 @@ impl TCPReno {
         }
     }
 
+    /// Creates Reno with an explicitly modeled scaled-window ceiling. The legacy constructor
+    /// retains its 65,535-byte ceiling; socket users that model TCP window scaling can opt into a
+    /// larger initial slow-start threshold and congestion-window bound.
+    pub fn with_max_cwnd(max_cwnd: usize) -> TCPReno {
+        Self::with_max_cwnd_and_mss(max_cwnd, 512)
+    }
+
+    /// Creates scaled-window Reno using the socket's configured segment quantum.
+    pub fn with_max_cwnd_and_mss(max_cwnd: usize, mss: usize) -> TCPReno {
+        let mut reno = Self::new();
+        reno.mss = mss.max(1);
+        reno.cwnd = reno.mss.saturating_mul(2);
+        reno.min_cwnd = reno.mss;
+        reno.max_cwnd = max_cwnd.max(reno.cwnd);
+        reno.ssthresh = reno.max_cwnd;
+        reno
+    }
+
     /// Updates RTT measurements and RTO calculation according to RFC 6298
     ///
     /// Uses standard EWMA with alpha=0.125 for SRTT and beta=0.25 for RTTVAR
@@ -404,6 +422,17 @@ mod tests {
         assert_eq!(reno.cwnd, 1024); // 2*MSS
         assert_eq!(reno.ssthresh, 65535);
         assert_eq!(reno.mss, 512);
+    }
+
+    #[test]
+    fn scaled_window_constructor_raises_ceiling_and_slow_start_threshold() {
+        let reno = TCPReno::with_max_cwnd(4 * 1024 * 1024);
+        assert_eq!(reno.max_cwnd, 4 * 1024 * 1024);
+        assert_eq!(reno.ssthresh, 4 * 1024 * 1024);
+        assert_eq!(reno.state, TCPRenoState::SlowStart);
+        let batched = TCPReno::with_max_cwnd_and_mss(32 * 1024 * 1024, 32 * 1024);
+        assert_eq!(batched.mss, 32 * 1024);
+        assert_eq!(batched.cwnd, 64 * 1024);
     }
 
     #[test]
