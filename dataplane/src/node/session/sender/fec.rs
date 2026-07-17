@@ -3396,6 +3396,130 @@ mod tests {
         assert_eq!(repair.pending_bin_ids, (0..10).collect::<VecDeque<_>>());
     }
 
+    #[tokio::test]
+    async fn mettle_checkpoint_cannot_overtake_backpressured_epoch_payload() {
+        let object_geometry =
+            nextmini_messages::lossless_session::MettleObjectStreamGeometry::new(2, 4, 1, 4);
+        let manifest = LosslessSessionManifest {
+            block_size: 8,
+            total_bytes: 8,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(
+                LosslessSessionFecMode::new_mettle(4, vec![7])
+                    .with_feedback_mode(FecFeedbackMode::Carousel)
+                    .with_mettle_object_stream(object_geometry),
+            ),
+        };
+        let plan = BlockPlan::new(8, 8).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("METTLE carousel sender");
+        let mut shared = test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefgh"));
+        shared.processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity: 1,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+        let state = sender
+            .mettle_carousel
+            .as_mut()
+            .expect("METTLE carousel state");
+        state.initial_departure_complete = true;
+        state.bin_cache.insert(0, Bytes::from_static(b"ab"));
+        state.repair.pending_bin_ids.push_back(0);
+
+        let route = control::FrameRoute {
+            session_id: shared.session.session_id,
+            tree_id: Some(7),
+            src_ip: shared.route.src_ip,
+            src_port: shared.route.src_port,
+            dst_ip: shared.route.dst_ip,
+            dst_port: shared.route.dst_port,
+        };
+        assert_eq!(
+            control::try_send_frame(&shared.processors, route, b"fill").outcome,
+            SendOutcome::Queued
+        );
+        let pending = sender
+            .next_mettle_carousel_symbol(&shared)
+            .expect("epoch has one pending payload");
+        assert_eq!(
+            sender.send_symbol(
+                &mut shared,
+                pending.symbol.block_id,
+                pending.symbol.symbol_id,
+                &pending.payload,
+                SymbolKind::Source,
+            ),
+            SendSweepOutcome::AllWouldBlock
+        );
+        assert_eq!(
+            sender
+                .mettle_carousel
+                .as_ref()
+                .expect("state")
+                .repair
+                .pending_bin_ids
+                .front(),
+            Some(&0)
+        );
+        assert!(
+            !sender.mettle_checkpoint_required(&shared),
+            "a blocked epoch payload must keep its checkpoint ineligible"
+        );
+
+        let mut retry_outcome = SendSweepOutcome::AllWouldBlock;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+            retry_outcome = sender.send_symbol(
+                &mut shared,
+                pending.symbol.block_id,
+                pending.symbol.symbol_id,
+                &pending.payload,
+                SymbolKind::Source,
+            );
+            if retry_outcome == SendSweepOutcome::Queued {
+                break;
+            }
+        }
+        assert_eq!(retry_outcome, SendSweepOutcome::Queued);
+        assert!(sender.mark_mettle_symbol_queued(pending.symbol.symbol_id));
+        assert!(sender.mettle_checkpoint_required(&shared));
+        assert_eq!(
+            sender.try_send_mettle_checkpoint(&shared),
+            SendSweepOutcome::AllWouldBlock,
+            "the queued payload must remain ahead of its checkpoint in the shared lane"
+        );
+        assert!(
+            !sender
+                .mettle_carousel
+                .as_ref()
+                .expect("state")
+                .repair
+                .checkpoint_queued
+        );
+
+        let mut checkpoint_outcome = SendSweepOutcome::AllWouldBlock;
+        for _ in 0..16 {
+            tokio::task::yield_now().await;
+            checkpoint_outcome = sender.try_send_mettle_checkpoint(&shared);
+            if checkpoint_outcome == SendSweepOutcome::Queued {
+                break;
+            }
+        }
+        assert_eq!(checkpoint_outcome, SendSweepOutcome::Queued);
+        assert!(
+            sender
+                .mettle_carousel
+                .as_ref()
+                .expect("state")
+                .repair
+                .checkpoint_queued
+        );
+    }
+
     fn test_manifest() -> LosslessSessionManifest {
         LosslessSessionManifest {
             block_size: 16,
