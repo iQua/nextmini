@@ -133,6 +133,9 @@ struct RawTrial {
     flow_count_match_emissions: usize,
     tree_emissions: [usize; 2],
     post_barrier_tail_emissions: usize,
+    positive_round_deficits: usize,
+    round_deficit_sum: usize,
+    maximum_round_deficit: usize,
     application_drops: usize,
     link_drops: usize,
     background_delivered_bytes: usize,
@@ -162,6 +165,9 @@ struct TrialRow {
     tree0_emissions: usize,
     tree1_emissions: usize,
     post_barrier_tail_emissions: usize,
+    positive_round_deficits: usize,
+    round_deficit_sum: usize,
+    maximum_round_deficit: usize,
     application_drops: usize,
     link_drops: usize,
     background_delivered_bytes: usize,
@@ -184,8 +190,13 @@ struct SummaryRow {
     seeds: usize,
     barrier_mean_ns: u64,
     barrier_p95_ns: u64,
+    sender_completion_mean_ns: u64,
+    feedback_completion_lag_mean_ns: u64,
     total_emissions_mean: usize,
     useful_emissions_mean: usize,
+    positive_round_deficits_sum: usize,
+    round_deficit_sum: usize,
+    maximum_round_deficit: usize,
     application_drops_sum: usize,
     link_drops_sum: usize,
     background_delivered_bytes_mean: usize,
@@ -627,6 +638,9 @@ fn raw_trial(
         flow_count_match_emissions: match_emissions,
         tree_emissions: outcome.per_tree_emissions,
         post_barrier_tail_emissions: outcome.post_barrier_tail_emissions,
+        positive_round_deficits: outcome.positive_round_deficits,
+        round_deficit_sum: outcome.round_deficit_sum,
+        maximum_round_deficit: outcome.maximum_round_deficit,
         application_drops: outcome.application_drops,
         link_drops: outcome.link_drops,
         background_delivered_bytes,
@@ -796,6 +810,9 @@ fn trial_rows(raw: &[RawTrial]) -> Vec<TrialRow> {
             tree0_emissions: trial.tree_emissions[0],
             tree1_emissions: trial.tree_emissions[1],
             post_barrier_tail_emissions: trial.post_barrier_tail_emissions,
+            positive_round_deficits: trial.positive_round_deficits,
+            round_deficit_sum: trial.round_deficit_sum,
+            maximum_round_deficit: trial.maximum_round_deficit,
             application_drops: trial.application_drops,
             link_drops: trial.link_drops,
             background_delivered_bytes: trial.background_delivered_bytes,
@@ -902,6 +919,23 @@ fn summarize(rows: &[EffectiveTrial]) -> Vec<SummaryRow> {
                 seeds: group.len(),
                 barrier_mean_ns: mean_u64(&barriers),
                 barrier_p95_ns: percentile95(&barriers),
+                sender_completion_mean_ns: mean_u64(
+                    &group
+                        .iter()
+                        .map(|trial| trial.raw.sender_completion_ns)
+                        .collect::<Vec<_>>(),
+                ),
+                feedback_completion_lag_mean_ns: mean_u64(
+                    &group
+                        .iter()
+                        .map(|trial| {
+                            trial
+                                .raw
+                                .sender_completion_ns
+                                .saturating_sub(trial.raw.barrier_completion_ns)
+                        })
+                        .collect::<Vec<_>>(),
+                ),
                 total_emissions_mean: mean_usize(
                     &group
                         .iter()
@@ -914,6 +948,16 @@ fn summarize(rows: &[EffectiveTrial]) -> Vec<SummaryRow> {
                         .map(|trial| trial.raw.useful_emissions)
                         .collect::<Vec<_>>(),
                 ),
+                positive_round_deficits_sum: group
+                    .iter()
+                    .map(|trial| trial.raw.positive_round_deficits)
+                    .sum(),
+                round_deficit_sum: group.iter().map(|trial| trial.raw.round_deficit_sum).sum(),
+                maximum_round_deficit: group
+                    .iter()
+                    .map(|trial| trial.raw.maximum_round_deficit)
+                    .max()
+                    .unwrap_or(0),
                 application_drops_sum: group.iter().map(|trial| trial.raw.application_drops).sum(),
                 link_drops_sum: group.iter().map(|trial| trial.raw.link_drops).sum(),
                 background_delivered_bytes_mean: mean_usize(
