@@ -1,0 +1,201 @@
+# Generated deterministic WR scenario. DO NOT interpret any value as a measurement.
+# Region names and provider-network facts follow public provider documentation; latency,
+# capacity, queue, jitter, and topology magnitudes are representative public-cloud envelope
+# inputs synthesized from plans/wansim-plan.md, not provider guarantees or reverse engineering.
+# vm_nic_cap_bps: representative VM ceiling; vm_nic_queue_bytes: modeled finite NIC queue.
+# intra_region_rtt_ns/access_one_way_ns/trunk propagation_ns: representative latency inputs.
+# jitter_max_ppm: seeded bounded propagation perturbation; 50_000 means +/-5 percent.
+# background_reference_rate_bps: denominator for the 30/50/70 percent offered-load sweep.
+# trunk capacity_bps/queue_bytes: modeled shared transit service, not physical inventory.
+# relay_regions and rtt_matrix_ns are deterministic generator outputs.
+# Public identity/cap context only (not RTT/topology measurements): AWS regions and EC2 network
+# bandwidth docs; Google Cloud locations, Network Service Tiers, and VM bandwidth docs; and
+# DigitalOcean regional-availability and Droplet-network-limit docs. Exact URLs are recorded in
+# plans/wansim-wr-report.md.
+schema_version = 1
+profile = "aws-like"
+representative_only = true
+vm_nic_cap_bps = 2000000000
+vm_nic_queue_bytes = 4194304
+intra_region_rtt_ns = 1500000
+jitter_max_ppm = 50000
+background_reference_rate_bps = 1200000000
+rtt_matrix_ns = [
+    [
+    1500000,
+    13000000,
+    58000000,
+    78000000,
+    79000000,
+    147000000,
+],
+    [
+    13000000,
+    1500000,
+    59000000,
+    79000000,
+    80000000,
+    148000000,
+],
+    [
+    58000000,
+    59000000,
+    1500000,
+    88000000,
+    89000000,
+    101000000,
+],
+    [
+    78000000,
+    79000000,
+    88000000,
+    1500000,
+    13000000,
+    132000000,
+],
+    [
+    79000000,
+    80000000,
+    89000000,
+    13000000,
+    1500000,
+    133000000,
+],
+    [
+    147000000,
+    148000000,
+    101000000,
+    132000000,
+    133000000,
+    1500000,
+],
+]
+
+[[regions]]
+id = "us-east-1"
+hub = "na-east"
+access_one_way_ns = 3000000
+
+[[regions]]
+id = "us-east-2"
+hub = "na-east"
+access_one_way_ns = 3500000
+
+[[regions]]
+id = "us-west-2"
+hub = "na-west"
+access_one_way_ns = 3000000
+
+[[regions]]
+id = "eu-west-1"
+hub = "eu"
+access_one_way_ns = 3000000
+
+[[regions]]
+id = "eu-central-1"
+hub = "eu"
+access_one_way_ns = 3500000
+
+[[regions]]
+id = "ap-northeast-1"
+hub = "ap"
+access_one_way_ns = 3500000
+
+[[trunks]]
+id = "na-east-to-na-west"
+from_hub = "na-east"
+to_hub = "na-west"
+capacity_bps = 1200000000
+propagation_ns = 22000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "na-west-to-na-east"
+from_hub = "na-west"
+to_hub = "na-east"
+capacity_bps = 1200000000
+propagation_ns = 24000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "na-east-to-eu"
+from_hub = "na-east"
+to_hub = "eu"
+capacity_bps = 1200000000
+propagation_ns = 32000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "eu-to-na-east"
+from_hub = "eu"
+to_hub = "na-east"
+capacity_bps = 1200000000
+propagation_ns = 34000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "na-west-to-ap"
+from_hub = "na-west"
+to_hub = "ap"
+capacity_bps = 1200000000
+propagation_ns = 43000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "ap-to-na-west"
+from_hub = "ap"
+to_hub = "na-west"
+capacity_bps = 1200000000
+propagation_ns = 45000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "eu-to-ap"
+from_hub = "eu"
+to_hub = "ap"
+capacity_bps = 1200000000
+propagation_ns = 58000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "ap-to-eu"
+from_hub = "ap"
+to_hub = "eu"
+capacity_bps = 1200000000
+propagation_ns = 61000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "na-west-to-eu"
+from_hub = "na-west"
+to_hub = "eu"
+capacity_bps = 1200000000
+propagation_ns = 37000000
+queue_bytes = 8388608
+
+[[trunks]]
+id = "eu-to-na-west"
+from_hub = "eu"
+to_hub = "na-west"
+capacity_bps = 1200000000
+propagation_ns = 39000000
+queue_bytes = 8388608
+
+[placement]
+id = "east-origin"
+sender_region = "us-east-1"
+receiver_regions = [
+    "us-west-2",
+    "eu-west-1",
+    "ap-northeast-1",
+]
+relay_regions = [
+    [
+    "us-west-2",
+    "eu-west-1",
+],
+    [
+    "us-east-2",
+    "eu-central-1",
+],
+]

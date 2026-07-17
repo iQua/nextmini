@@ -28,6 +28,7 @@ pub struct Recorder {
     failure: Arc<Mutex<Option<String>>>,
     compact_w2: bool,
     compact_w3: bool,
+    compact_wr: bool,
 }
 
 impl Recorder {
@@ -39,6 +40,7 @@ impl Recorder {
             failure: Arc::default(),
             compact_w2: false,
             compact_w3: false,
+            compact_wr: false,
         }
     }
 
@@ -50,6 +52,7 @@ impl Recorder {
             failure: Arc::default(),
             compact_w2: true,
             compact_w3: false,
+            compact_wr: false,
         }
     }
 
@@ -61,6 +64,19 @@ impl Recorder {
             failure: Arc::default(),
             compact_w2: false,
             compact_w3: true,
+            compact_wr: false,
+        }
+    }
+
+    pub(crate) fn new_compact_wr(scenario: impl Into<Arc<str>>, seed: u64) -> Self {
+        Self {
+            scenario: scenario.into(),
+            seed,
+            records: Arc::default(),
+            failure: Arc::default(),
+            compact_w2: false,
+            compact_w3: false,
+            compact_wr: true,
         }
     }
 
@@ -79,6 +95,9 @@ impl Recorder {
             return;
         }
         if self.compact_w3 && !w3_metric_event(event) {
+            return;
+        }
+        if self.compact_wr && !wr_metric_event(event) {
             return;
         }
         self.records.lock().push(Record {
@@ -134,6 +153,31 @@ impl Recorder {
             .map_err(|error| csv::Error::from(error.into_error()))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
+}
+
+fn wr_metric_event(event: &str) -> bool {
+    matches!(
+        event,
+        "single_worker"
+            | "wr_concurrent_sessions"
+            | "data_frame_emitted"
+            | "flow_count_match_frame_emitted"
+            | "protocol_local_complete"
+            | "protocol_sender_complete"
+            | "data_inbox_drop_after_tcp_ack"
+            | "data_inbox_blocking_wait"
+            | "child_admission_blocked"
+            | "block_ack_received"
+            | "ack_probe_submitted"
+            | "round_deficit_received"
+            | "round_need_generated"
+            | "queue_drop"
+            | "segment_drop"
+            | "wr_resource_sample"
+            | "wr_tree_rate_sample"
+            | "wr_resource_queue_high_water"
+            | "mailbox_high_water"
+    )
 }
 
 fn w3_metric_event(event: &str) -> bool {

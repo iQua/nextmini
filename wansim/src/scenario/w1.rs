@@ -645,6 +645,7 @@ fn build_coupled_fabric(
                     timer_interval_ns: 1_000_000,
                     on_base_ns: 500_000,
                     off_base_ns: 750_000,
+                    application_rate_bps: None,
                     prf: CounterPrf::new(
                         scenario.master_seed,
                         &format!("{}-{component}", scenario.scenario_id),

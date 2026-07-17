@@ -860,6 +860,7 @@ fn build_control_asymmetry_fabric(
                     timer_interval_ns: 1_000_000,
                     on_base_ns: 250_000,
                     off_base_ns: 500_000,
+                    application_rate_bps: None,
                     prf: CounterPrf::new(
                         scenario.master_seed,
                         &format!("{}-control-reverse-bursts", scenario.scenario_id),

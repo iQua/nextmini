@@ -1,0 +1,201 @@
+# Generated deterministic WR scenario. DO NOT interpret any value as a measurement.
+# Region names and provider-network facts follow public provider documentation; latency,
+# capacity, queue, jitter, and topology magnitudes are representative public-cloud envelope
+# inputs synthesized from plans/wansim-plan.md, not provider guarantees or reverse engineering.
+# vm_nic_cap_bps: representative VM ceiling; vm_nic_queue_bytes: modeled finite NIC queue.
+# intra_region_rtt_ns/access_one_way_ns/trunk propagation_ns: representative latency inputs.
+# jitter_max_ppm: seeded bounded propagation perturbation; 50_000 means +/-5 percent.
+# background_reference_rate_bps: denominator for the 30/50/70 percent offered-load sweep.
+# trunk capacity_bps/queue_bytes: modeled shared transit service, not physical inventory.
+# relay_regions and rtt_matrix_ns are deterministic generator outputs.
+# Public identity/cap context only (not RTT/topology measurements): AWS regions and EC2 network
+# bandwidth docs; Google Cloud locations, Network Service Tiers, and VM bandwidth docs; and
+# DigitalOcean regional-availability and Droplet-network-limit docs. Exact URLs are recorded in
+# plans/wansim-wr-report.md.
+schema_version = 1
+profile = "digitalocean-like"
+representative_only = true
+vm_nic_cap_bps = 2000000000
+vm_nic_queue_bytes = 3145728
+intra_region_rtt_ns = 1500000
+jitter_max_ppm = 50000
+background_reference_rate_bps = 800000000
+rtt_matrix_ns = [
+    [
+    1500000,
+    14000000,
+    59000000,
+    84000000,
+    85000000,
+    146000000,
+],
+    [
+    14000000,
+    1500000,
+    61000000,
+    86000000,
+    87000000,
+    148000000,
+],
+    [
+    59000000,
+    61000000,
+    1500000,
+    88000000,
+    89000000,
+    101000000,
+],
+    [
+    84000000,
+    86000000,
+    88000000,
+    1500000,
+    13000000,
+    142000000,
+],
+    [
+    85000000,
+    87000000,
+    89000000,
+    13000000,
+    1500000,
+    143000000,
+],
+    [
+    146000000,
+    148000000,
+    101000000,
+    142000000,
+    143000000,
+    1500000,
+],
+]
+
+[[regions]]
+id = "nyc3"
+hub = "na-east"
+access_one_way_ns = 3000000
+
+[[regions]]
+id = "tor1"
+hub = "na-east"
+access_one_way_ns = 4000000
+
+[[regions]]
+id = "sfo3"
+hub = "na-west"
+access_one_way_ns = 3500000
+
+[[regions]]
+id = "lon1"
+hub = "eu"
+access_one_way_ns = 3000000
+
+[[regions]]
+id = "fra1"
+hub = "eu"
+access_one_way_ns = 3500000
+
+[[regions]]
+id = "sgp1"
+hub = "ap"
+access_one_way_ns = 4500000
+
+[[trunks]]
+id = "na-east-to-na-west"
+from_hub = "na-east"
+to_hub = "na-west"
+capacity_bps = 800000000
+propagation_ns = 22000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "na-west-to-na-east"
+from_hub = "na-west"
+to_hub = "na-east"
+capacity_bps = 800000000
+propagation_ns = 24000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "na-east-to-eu"
+from_hub = "na-east"
+to_hub = "eu"
+capacity_bps = 800000000
+propagation_ns = 35000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "eu-to-na-east"
+from_hub = "eu"
+to_hub = "na-east"
+capacity_bps = 800000000
+propagation_ns = 37000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "na-west-to-ap"
+from_hub = "na-west"
+to_hub = "ap"
+capacity_bps = 800000000
+propagation_ns = 41000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "ap-to-na-west"
+from_hub = "ap"
+to_hub = "na-west"
+capacity_bps = 800000000
+propagation_ns = 44000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "eu-to-ap"
+from_hub = "eu"
+to_hub = "ap"
+capacity_bps = 800000000
+propagation_ns = 62000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "ap-to-eu"
+from_hub = "ap"
+to_hub = "eu"
+capacity_bps = 800000000
+propagation_ns = 65000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "na-west-to-eu"
+from_hub = "na-west"
+to_hub = "eu"
+capacity_bps = 800000000
+propagation_ns = 36000000
+queue_bytes = 6291456
+
+[[trunks]]
+id = "eu-to-na-west"
+from_hub = "eu"
+to_hub = "na-west"
+capacity_bps = 800000000
+propagation_ns = 39000000
+queue_bytes = 6291456
+
+[placement]
+id = "east-origin"
+sender_region = "nyc3"
+receiver_regions = [
+    "sfo3",
+    "lon1",
+    "sgp1",
+]
+relay_regions = [
+    [
+    "sfo3",
+    "lon1",
+],
+    [
+    "tor1",
+    "fra1",
+],
+]

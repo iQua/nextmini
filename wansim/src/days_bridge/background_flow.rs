@@ -28,6 +28,9 @@ pub(crate) struct BackgroundFlowConfig {
     pub(crate) timer_interval_ns: u64,
     pub(crate) on_base_ns: u64,
     pub(crate) off_base_ns: u64,
+    /// Optional application offered-rate ceiling in bits/s. TCP congestion and receive windows
+    /// remain authoritative; this only paces admission into the finite send buffer.
+    pub(crate) application_rate_bps: Option<u64>,
     pub(crate) prf: CounterPrf,
 }
 
@@ -38,6 +41,8 @@ pub(crate) struct BackgroundFlow {
     active: bool,
     transition_at_ns: u64,
     transition_index: u64,
+    rate_credit_bit_ns: u128,
+    last_credit_ns: u64,
     pub(crate) data_output: Output<TrackedPacket>,
     pub(crate) ack_output: Output<TrackedPacket>,
     recorder: Recorder,
@@ -66,6 +71,8 @@ impl BackgroundFlow {
             active,
             transition_at_ns,
             transition_index: 0,
+            rate_credit_bit_ns: 0,
+            last_credit_ns: 0,
             data_output: Output::default(),
             ack_output: Output::default(),
             recorder,
@@ -80,7 +87,7 @@ impl BackgroundFlow {
             match self.sender.receive_ack(&packet, seconds_from_ns(now)) {
                 Ok(mut packets) => {
                     if self.active {
-                        self.refill_sender();
+                        self.refill_sender(now);
                         match self.sender.poll_transmit(seconds_from_ns(now)) {
                             Ok(new_packets) => packets.extend(new_packets),
                             Err(error) => self.recorder.fail(error),
@@ -105,7 +112,7 @@ impl BackgroundFlow {
             Ok(outcome) => self.emit_ack(vec![outcome.acknowledgment]).await,
             Err(error) => self.recorder.fail(error),
         }
-        self.refill_sender();
+        self.refill_sender(now);
         match self.sender.poll_transmit(seconds_from_ns(now)) {
             Ok(packets) => self.emit_data(packets).await,
             Err(error) => self.recorder.fail(error),
@@ -125,7 +132,7 @@ impl BackgroundFlow {
             }
         };
         if self.active {
-            self.refill_sender();
+            self.refill_sender(now);
             match self.sender.poll_transmit(seconds_from_ns(now)) {
                 Ok(new_packets) => packets.extend(new_packets),
                 Err(error) => self.recorder.fail(error),
@@ -172,12 +179,34 @@ impl BackgroundFlow {
         self.emit_ack(acknowledgments).await;
     }
 
-    fn refill_sender(&mut self) {
+    fn refill_sender(&mut self, now: u64) {
         let writable = self.sender.writable_bytes();
         if writable == 0 {
             return;
         }
-        if let Err(error) = self.sender.admit_application_write(writable) {
+        let admitted = if let Some(rate_bps) = self.config.application_rate_bps {
+            let elapsed = now.saturating_sub(self.last_credit_ns);
+            self.last_credit_ns = now;
+            self.rate_credit_bit_ns = self
+                .rate_credit_bit_ns
+                .saturating_add(u128::from(rate_bps).saturating_mul(u128::from(elapsed)));
+            let maximum_credit =
+                (self.sender.send_buffer_capacity() as u128).saturating_mul(8_000_000_000);
+            self.rate_credit_bit_ns = self.rate_credit_bit_ns.min(maximum_credit);
+            let available =
+                usize::try_from(self.rate_credit_bit_ns / 8_000_000_000).unwrap_or(usize::MAX);
+            let admitted = writable.min(available);
+            self.rate_credit_bit_ns = self
+                .rate_credit_bit_ns
+                .saturating_sub((admitted as u128).saturating_mul(8_000_000_000));
+            admitted
+        } else {
+            writable
+        };
+        if admitted == 0 {
+            return;
+        }
+        if let Err(error) = self.sender.admit_application_write(admitted) {
             self.recorder.fail(error);
         }
     }
@@ -220,6 +249,10 @@ impl BackgroundFlow {
                 0,
                 duration as usize,
             );
+        }
+        if !self.active {
+            self.rate_credit_bit_ns = 0;
+            self.last_credit_ns = now;
         }
     }
 
