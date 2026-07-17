@@ -174,6 +174,7 @@ pub struct CriticalPathAttribution {
     pub receiver: usize,
     pub final_tree: usize,
     pub final_frame_id: usize,
+    pub source_generation_ns: u64,
     pub source_to_runtime_ns: u64,
     pub runtime_wait_ns: u64,
     pub decoder_queue_ns: u64,
@@ -1005,6 +1006,7 @@ fn critical_path(
         receiver,
         final_tree: tree,
         final_frame_id: frame_id,
+        source_generation_ns: source_ns,
         source_to_runtime_ns: runtime_ns.saturating_sub(source_ns),
         runtime_wait_ns: inbox_ns.saturating_sub(runtime_ns),
         decoder_queue_ns: completion

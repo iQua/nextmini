@@ -85,6 +85,7 @@ struct RawTrial {
     liveness_pressure_permille: u64,
     maximum_mailbox_high_water: usize,
     critical_receiver: usize,
+    critical_source_generation_ns: u64,
     critical_source_to_runtime_ns: u64,
     critical_runtime_wait_ns: u64,
     critical_decoder_queue_ns: u64,
@@ -127,6 +128,7 @@ struct TrialRow {
     liveness_pressure_permille: u64,
     maximum_mailbox_high_water: usize,
     critical_receiver: usize,
+    critical_source_generation_ns: u64,
     critical_source_to_runtime_ns: u64,
     critical_runtime_wait_ns: u64,
     critical_decoder_queue_ns: u64,
@@ -190,6 +192,7 @@ struct CriticalPathRow {
     child_order: &'static str,
     seed: u64,
     critical_receiver: usize,
+    source_generation_ns: u64,
     source_to_runtime_ns: u64,
     runtime_wait_ns: u64,
     decoder_queue_ns: u64,
@@ -311,12 +314,14 @@ pub fn run_w2_experiment(
             child_order: row.child_order,
             seed: row.seed,
             critical_receiver: row.critical_receiver,
+            source_generation_ns: row.critical_source_generation_ns,
             source_to_runtime_ns: row.critical_source_to_runtime_ns,
             runtime_wait_ns: row.critical_runtime_wait_ns,
             decoder_queue_ns: row.critical_decoder_queue_ns,
             decoder_service_ns: row.critical_decoder_service_ns,
             total_ns: row
-                .critical_source_to_runtime_ns
+                .critical_source_generation_ns
+                .saturating_add(row.critical_source_to_runtime_ns)
                 .saturating_add(row.critical_runtime_wait_ns)
                 .saturating_add(row.critical_decoder_queue_ns)
                 .saturating_add(row.critical_decoder_service_ns),
@@ -483,6 +488,7 @@ fn raw_trial(task: Task, scenario: &W2Scenario, outcome: &W2Outcome) -> RawTrial
             .max()
             .unwrap_or(0),
         critical_receiver,
+        critical_source_generation_ns: critical.source_generation_ns,
         critical_source_to_runtime_ns: critical.source_to_runtime_ns,
         critical_runtime_wait_ns: critical.runtime_wait_ns,
         critical_decoder_queue_ns: critical.decoder_queue_ns,
@@ -581,6 +587,7 @@ fn attach_externalities(raw: &[RawTrial]) -> Result<Vec<TrialRow>, W2ExperimentE
                 liveness_pressure_permille: trial.liveness_pressure_permille,
                 maximum_mailbox_high_water: trial.maximum_mailbox_high_water,
                 critical_receiver: trial.critical_receiver,
+                critical_source_generation_ns: trial.critical_source_generation_ns,
                 critical_source_to_runtime_ns: trial.critical_source_to_runtime_ns,
                 critical_runtime_wait_ns: trial.critical_runtime_wait_ns,
                 critical_decoder_queue_ns: trial.critical_decoder_queue_ns,

@@ -126,6 +126,21 @@ fn w2_is_byte_reproducible() {
 }
 
 #[test]
+fn critical_path_attribution_sums_to_each_receiver_completion() {
+    let outcome =
+        run_w2(&scenario(ReceiverAdmissionPolicy::IsolatedCredit)).expect("critical-path run");
+    for path in &outcome.critical_paths {
+        let attributed = path
+            .source_generation_ns
+            .saturating_add(path.source_to_runtime_ns)
+            .saturating_add(path.runtime_wait_ns)
+            .saturating_add(path.decoder_queue_ns)
+            .saturating_add(path.decoder_service_ns);
+        assert_eq!(attributed, outcome.completion_times_ns[path.receiver]);
+    }
+}
+
+#[test]
 fn w2_mailbox_plumbing_is_nonbinding_at_eight_receivers() {
     let cell = W2Scenario::screening(
         ReceiverAdmissionPolicy::IsolatedCredit,
