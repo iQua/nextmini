@@ -6,8 +6,8 @@ mod striped;
 
 pub use ack::{BlockAck, CompletedRange, PeerBlockCompletion};
 pub use carousel::{
-    CarouselConfigError, CarouselReceiver, CarouselReceiverState, CarouselSender,
-    CarouselSenderState, CarouselTiming, LivenessViolation, OutboundControl,
+    CarouselConfigError, CarouselPeerDiagnostics, CarouselReceiver, CarouselReceiverState,
+    CarouselSender, CarouselSenderState, CarouselTiming, LivenessViolation, OutboundControl,
 };
 pub use control::ControlFrame;
 pub use rounds::{RoundsReceiver, RoundsSender, RoundsSenderState};

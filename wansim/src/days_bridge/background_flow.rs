@@ -81,6 +81,8 @@ impl BackgroundFlow {
     }
 
     pub(crate) async fn network_packet(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_background_network_packet");
         let packet = tracked.arrive(self.config.mailbox);
         let now = now_ns(context);
         if packet.ack.is_some() {
@@ -103,6 +105,7 @@ impl BackgroundFlow {
     }
 
     async fn start(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_background_start");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         let now = now_ns(context);
         match self
@@ -121,6 +124,7 @@ impl BackgroundFlow {
     }
 
     async fn timer(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_background_timer");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         let now = now_ns(context);
         self.advance_on_off(now);

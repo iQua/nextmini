@@ -161,6 +161,7 @@ impl RegionalBackbone {
     }
 
     pub(crate) async fn receive(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_backbone_receive");
         let packet = tracked.arrive(self.config.mailbox);
         let route_key = (packet.flow_id, packet.ack.is_some());
         if !self.config.routes.contains_key(&route_key) {
@@ -183,6 +184,8 @@ impl RegionalBackbone {
     }
 
     async fn service_deadline(&mut self, key: ServiceKey, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_backbone_service_deadline");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         let timestamp = now_ns(context);
         self.pending_finishes
@@ -197,6 +200,8 @@ impl RegionalBackbone {
         completion: PropagationCompletion,
         context: &Context<Self>,
     ) {
+        self.recorder
+            .count_event_class("dispatch_backbone_propagation_complete");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         let timestamp = now_ns(context);
         let route_len = self.config.routes[&completion.routed.route_key].hops.len();
@@ -212,6 +217,8 @@ impl RegionalBackbone {
     }
 
     async fn resolve_timestamp(&mut self, timestamp: u64, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_backbone_resolve_timestamp");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         self.scheduled_resolutions.remove(&timestamp);
         if let Some(mut finishes) = self.pending_finishes.remove(&timestamp) {
@@ -240,6 +247,7 @@ impl RegionalBackbone {
     }
 
     async fn sample(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_backbone_sample");
         self.mailbox_tracker.dequeue(self.config.mailbox);
         let now = now_ns(context);
         for (resource, state) in self.resources.iter_mut().enumerate() {
@@ -333,6 +341,8 @@ impl RegionalBackbone {
             generation: resource.generation,
         };
         resource.in_service = Some(routed);
+        self.recorder
+            .count_event_class("backbone_resource_service_started");
         self.mailbox_tracker.enqueue(self.config.mailbox);
         if let Err(error) = context.schedule_event(
             Duration::from_nanos(duration_ns.saturating_sub(DECISION_DELTA_NS)),
@@ -345,6 +355,8 @@ impl RegionalBackbone {
     }
 
     fn finish_service(&mut self, key: ServiceKey, timestamp: u64, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("backbone_resource_service_finished");
         let resource = &mut self.resources[key.resource];
         if resource.generation != key.generation {
             return;

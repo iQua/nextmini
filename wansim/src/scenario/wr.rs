@@ -208,6 +208,22 @@ pub struct WrOutcome {
     pub maximum_background_trunk_utilization_ppm: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct WrEventClassCount {
+    pub event_class: String,
+    pub count: u64,
+}
+
+#[derive(Clone, Debug)]
+pub struct WrTriageOutcome {
+    pub records: Vec<Record>,
+    pub event_class_counts: Vec<WrEventClassCount>,
+    pub failure: Option<String>,
+    pub stopped_at_ns: u64,
+    pub acknowledgement_progress_units: u64,
+    pub configured_emission_ceiling: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum WrRunError {
     #[error(transparent)]
@@ -249,9 +265,73 @@ struct BackboneGeometry {
     sharing: Vec<WrSharingRow>,
 }
 
+struct WrExecution {
+    records: Vec<Record>,
+    sharing: Vec<WrSharingRow>,
+    mailbox_high_water: BTreeMap<&'static str, usize>,
+    mailbox_capacities: BTreeMap<&'static str, usize>,
+    failure: Option<String>,
+    elapsed_ns: u64,
+    event_class_counts: Vec<WrEventClassCount>,
+}
+
 pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
-    config.validate()?;
     let recorder = Recorder::new_compact_wr(config.scenario_id(), config.seed);
+    let execution = execute_wr(config, recorder)?;
+    if let Some(failure) = execution.failure {
+        return Err(WrRunError::Model(failure));
+    }
+    let timing = carousel_timing(config.ack_cadence_multiplier);
+    let sessions = summarize_sessions(config, &execution.records, timing.peer_stall_timeout_ns)?;
+    let maximum_background_trunk_utilization_ppm = maximum_background_trunk_utilization_ppm(
+        &config.cloud,
+        &execution.records,
+        sessions
+            .iter()
+            .map(|session| session.barrier_completion_ns)
+            .max()
+            .unwrap_or(0),
+    );
+    let link_drops = execution
+        .records
+        .iter()
+        .filter(|record| matches!(record.event, "queue_drop" | "segment_drop"))
+        .count();
+    Ok(WrOutcome {
+        csv: records_to_csv(&execution.records)?,
+        records: execution.records,
+        sessions,
+        sharing: execution.sharing,
+        mailbox_high_water: execution.mailbox_high_water,
+        mailbox_capacities: execution.mailbox_capacities,
+        link_drops,
+        maximum_background_trunk_utilization_ppm,
+    })
+}
+
+pub fn run_wr_triage(config: &WrRunConfig) -> Result<WrTriageOutcome, WrRunError> {
+    let receiver = config.slow_receiver.unwrap_or(0);
+    let recorder = Recorder::new_wr_triage(
+        config.scenario_id(),
+        config.seed,
+        SOURCE_COMPONENTS[0],
+        RECEIVER_COMPONENTS[0][receiver],
+    );
+    let execution = execute_wr(config, recorder)?;
+    Ok(WrTriageOutcome {
+        records: execution.records,
+        event_class_counts: execution.event_class_counts,
+        failure: execution.failure,
+        stopped_at_ns: execution.elapsed_ns,
+        acknowledgement_progress_units: ack_progress_units(config.source_symbols)?,
+        configured_emission_ceiling: maximum_frames_per_tree(config.source_symbols)?
+            .checked_mul(TREE_COUNT)
+            .ok_or(WrRunError::Geometry)?,
+    })
+}
+
+fn execute_wr(config: &WrRunConfig, recorder: Recorder) -> Result<WrExecution, WrRunError> {
+    config.validate()?;
     let tracker = MailboxTracker::default();
     let data_socket = socket_config()?;
     let control_socket = data_socket;
@@ -349,10 +429,11 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
         {
             break;
         }
+        if recorder.failure().is_some() {
+            break;
+        }
     }
-    if let Some(failure) = recorder.failure() {
-        return Err(WrRunError::Model(failure));
-    }
+    let failure = recorder.failure();
     let mailbox_high_water = tracker.high_water_marks();
     let mailbox_capacities = mailbox_high_water
         .keys()
@@ -379,30 +460,37 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
         );
     }
     let records = recorder.records();
-    let sessions = summarize_sessions(config, &records, timing.peer_stall_timeout_ns)?;
-    let maximum_background_trunk_utilization_ppm = maximum_background_trunk_utilization_ppm(
-        &config.cloud,
-        &records,
-        sessions
-            .iter()
-            .map(|session| session.barrier_completion_ns)
-            .max()
-            .unwrap_or(0),
-    );
-    let link_drops = records
-        .iter()
-        .filter(|record| matches!(record.event, "queue_drop" | "segment_drop"))
-        .count();
-    Ok(WrOutcome {
-        csv: recorder.to_csv()?,
+    let event_class_counts = recorder
+        .event_class_counts()
+        .into_iter()
+        .map(|(event_class, count)| WrEventClassCount {
+            event_class: event_class.to_owned(),
+            count,
+        })
+        .collect();
+    Ok(WrExecution {
         records,
-        sessions,
         sharing,
         mailbox_high_water,
         mailbox_capacities,
-        link_drops,
-        maximum_background_trunk_utilization_ppm,
+        failure,
+        elapsed_ns,
+        event_class_counts,
     })
+}
+
+fn records_to_csv(records: &[Record]) -> Result<String, csv::Error> {
+    let mut writer = csv::WriterBuilder::new()
+        .terminator(csv::Terminator::Any(b'\n'))
+        .from_writer(Vec::new());
+    for record in records {
+        writer.serialize(record)?;
+    }
+    writer.flush()?;
+    let bytes = writer
+        .into_inner()
+        .map_err(|error| csv::Error::from(error.into_error()))?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn socket_config() -> Result<SocketPairConfig, WrRunError> {
@@ -467,10 +555,7 @@ fn build_session(
     recorder: &Recorder,
     tracker: &MailboxTracker,
 ) -> Result<SessionSlot, WrRunError> {
-    let maximum_frames = config
-        .source_symbols
-        .checked_mul(8)
-        .ok_or(WrRunError::Geometry)?;
+    let maximum_frames = maximum_frames_per_tree(config.source_symbols)?;
     let streams = [0, 1].map(|tree| {
         FramedStream::new(
             maximum_frames,
@@ -636,6 +721,10 @@ fn build_session(
             .map(|_| Mailbox::with_capacity(MAILBOX_CAPACITY))
             .collect(),
     })
+}
+
+fn maximum_frames_per_tree(source_symbols: usize) -> Result<usize, WrRunError> {
+    source_symbols.checked_mul(8).ok_or(WrRunError::Geometry)
 }
 
 fn ack_progress_units(source_symbols: usize) -> Result<u64, WrRunError> {
@@ -1569,6 +1658,7 @@ mod tests {
     fn wr_progress_geometry_and_one_x_timing_mirror_production_defaults() {
         assert_eq!(ack_progress_units(8_192).expect("units"), 482);
         assert_eq!(ack_progress_units(65_536).expect("units"), 3_856);
+        assert_eq!(maximum_frames_per_tree(8_192).expect("frames"), 65_536);
         assert_eq!(
             carousel_timing(2),
             CarouselTiming {

@@ -4,6 +4,7 @@ mod w1_experiment0;
 mod w2_straggler;
 mod w3_coupling;
 mod wr_realistic;
+mod wr_triage;
 
 pub use w1_experiment0::{
     Experiment0Artifacts, Experiment0Error, Experiment0Screen, run_experiment0,
@@ -15,3 +16,4 @@ pub use wr_realistic::{
     WrArtifacts, WrExperimentError, WrPersistentRun, run_wr_experiment,
     run_wr_experiment_persistent,
 };
+pub use wr_triage::{WrTriageArtifacts, WrTriageError, run_fixed_wr_triage};

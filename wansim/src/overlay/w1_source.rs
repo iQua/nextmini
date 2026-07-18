@@ -12,8 +12,9 @@ use thiserror::Error;
 use crate::determinism::DECISION_DELTA_NS;
 use crate::metrics::{MailboxTracker, Recorder, TrackedPacket};
 use crate::protocol::{
-    CarouselConfigError, CarouselSender, CarouselSenderState, CarouselTiming, ControlFrame,
-    ProtocolKind, RoundsSender, RoundsSenderState, StripeSender, StripeSenderMode,
+    CarouselConfigError, CarouselPeerDiagnostics, CarouselSender, CarouselSenderState,
+    CarouselTiming, ControlFrame, LivenessViolation, ProtocolKind, RoundsSender, RoundsSenderState,
+    StripeSender, StripeSenderMode,
 };
 use crate::transport::{SocketPairConfig, emit_packets, now_ns, seconds_from_ns};
 
@@ -27,6 +28,13 @@ pub(crate) enum W1SourceProtocol {
     Carousel(CarouselSender),
     Rounds(RoundsSender),
     Striped(StripeSender),
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CarouselAckJoin {
+    received_watermark: u64,
+    progressed: bool,
+    peer: CarouselPeerDiagnostics,
 }
 
 impl W1SourceProtocol {
@@ -100,6 +108,26 @@ impl W1SourceProtocol {
                     .map(|control| (control.peer_id, control.frame))
                     .collect(),
                 Err(error) => {
+                    let peer_id = match error {
+                        LivenessViolation::Silent { peer_id }
+                        | LivenessViolation::Stalled { peer_id } => peer_id,
+                    };
+                    if let Some(peer) = sender.peer_diagnostics(peer_id) {
+                        let event = match error {
+                            LivenessViolation::Silent { .. } => "carousel_liveness_silent_abort",
+                            LivenessViolation::Stalled { .. } => "carousel_liveness_stall_abort",
+                        };
+                        recorder.record(
+                            now_ns,
+                            "carousel_sender",
+                            event,
+                            usize_from_u64(peer_id),
+                            0,
+                            usize_from_u64(peer.joined_watermark),
+                            usize_from_u64(now_ns.saturating_sub(peer.last_ack_progress_ns)),
+                        );
+                        record_peer_liveness(recorder, now_ns, peer_id, peer);
+                    }
                     recorder.fail(error);
                     Vec::new()
                 }
@@ -109,20 +137,39 @@ impl W1SourceProtocol {
         }
     }
 
-    fn on_control(&mut self, peer_id: u64, frame: &ControlFrame, now_ns: u64, recorder: &Recorder) {
+    fn on_control(
+        &mut self,
+        peer_id: u64,
+        frame: &ControlFrame,
+        now_ns: u64,
+        recorder: &Recorder,
+    ) -> Option<CarouselAckJoin> {
         match (self, frame) {
             (Self::Carousel(sender), ControlFrame::BlockAck(ack)) => {
-                if let Err(error) = sender.on_block_ack(peer_id, ack, now_ns) {
-                    recorder.fail(error);
-                }
+                let progressed = match sender.on_block_ack(peer_id, ack, now_ns) {
+                    Ok(progressed) => progressed,
+                    Err(error) => {
+                        recorder.fail(error);
+                        return None;
+                    }
+                };
+                sender
+                    .peer_diagnostics(peer_id)
+                    .map(|peer| CarouselAckJoin {
+                        received_watermark: ack.completed_watermark,
+                        progressed,
+                        peer,
+                    })
             }
             (Self::Rounds(sender), ControlFrame::Need { round_id, deficit }) => {
                 sender.on_need(peer_id, *round_id, *deficit);
+                None
             }
             (Self::Striped(sender), ControlFrame::StripeAck { stripe_id }) => {
                 sender.on_ack(peer_id, *stripe_id);
+                None
             }
-            _ => {}
+            _ => None,
         }
     }
 
@@ -337,6 +384,7 @@ impl W1SourceEndpoint {
     }
 
     async fn start(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_source_start");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         for peer_index in 0..self.controls.len() {
@@ -350,6 +398,7 @@ impl W1SourceEndpoint {
     }
 
     async fn timer(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_source_timer");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         for tree in 0..TREE_COUNT {
@@ -369,6 +418,7 @@ impl W1SourceEndpoint {
     }
 
     async fn data_ack(&mut self, tree: usize, tracked: TrackedPacket, context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_source_data_ack");
         let packet = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         match self.data_senders[tree].receive_ack(&packet, seconds_from_ns(now)) {
@@ -384,6 +434,8 @@ impl W1SourceEndpoint {
         tracked: TrackedPacket,
         context: &Context<Self>,
     ) {
+        self.recorder
+            .count_event_class("dispatch_source_control_packet");
         let packet = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         let Some(peer) = self.controls.get_mut(peer_index) else {
@@ -401,9 +453,10 @@ impl W1SourceEndpoint {
                 Ok((acknowledgments, frames)) => {
                     for frame in frames {
                         let (event, value) = match &frame {
-                            ControlFrame::BlockAck(ack) => {
-                                ("block_ack_received", ack.completed_watermark as usize)
-                            }
+                            ControlFrame::BlockAck(ack) => (
+                                "block_ack_received",
+                                usize_from_u64(ack.completed_watermark),
+                            ),
                             ControlFrame::Need { deficit, .. } => {
                                 ("round_deficit_received", *deficit)
                             }
@@ -421,8 +474,25 @@ impl W1SourceEndpoint {
                             frame.payload_bytes() + 4,
                             value,
                         );
-                        self.protocol
-                            .on_control(peer.peer_id, &frame, now, &self.recorder);
+                        if let Some(join) =
+                            self.protocol
+                                .on_control(peer.peer_id, &frame, now, &self.recorder)
+                        {
+                            self.recorder.record(
+                                now,
+                                self.component,
+                                if join.progressed {
+                                    "carousel_ack_join_progress"
+                                } else {
+                                    "carousel_ack_join_noop"
+                                },
+                                packet.flow_id,
+                                peer_index,
+                                usize_from_u64(join.received_watermark),
+                                usize_from_u64(join.peer.joined_watermark),
+                            );
+                            record_peer_liveness(&self.recorder, now, peer.peer_id, join.peer);
+                        }
                     }
                     self.emit_control_forward(peer_index, acknowledgments).await;
                 }
@@ -436,6 +506,7 @@ impl W1SourceEndpoint {
     }
 
     async fn drive_decision(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_source_drive");
         self.mailbox_tracker.dequeue(self.mailbox);
         self.drive_scheduled = false;
         self.drive(now_ns(context)).await;
@@ -652,6 +723,35 @@ impl W1SourceEndpoint {
             self.recorder.fail(error);
         }
     }
+}
+
+fn record_peer_liveness(
+    recorder: &Recorder,
+    now_ns: u64,
+    peer_id: u64,
+    peer: CarouselPeerDiagnostics,
+) {
+    for (event, timestamp) in [
+        ("carousel_liveness_last_ack_seen", peer.last_ack_seen_ns),
+        (
+            "carousel_liveness_last_ack_progress",
+            peer.last_ack_progress_ns,
+        ),
+    ] {
+        recorder.record(
+            now_ns,
+            "carousel_sender",
+            event,
+            usize_from_u64(peer_id),
+            usize::from(peer.complete),
+            usize_from_u64(peer.joined_watermark),
+            usize_from_u64(timestamp),
+        );
+    }
+}
+
+fn usize_from_u64(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 impl Model for W1SourceEndpoint {

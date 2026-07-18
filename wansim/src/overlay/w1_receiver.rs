@@ -131,6 +131,13 @@ impl W1ReceiverProtocol {
             Self::Inactive => None,
         }
     }
+
+    fn carousel_progress(&self) -> Option<(usize, u64)> {
+        match self {
+            Self::Carousel(receiver) => Some((receiver.rank(), receiver.advertised_watermark())),
+            Self::Rounds(_) | Self::Striped(_) | Self::Inactive => None,
+        }
+    }
 }
 
 struct DataIngress {
@@ -316,6 +323,8 @@ impl W1ReceiverEndpoint {
     }
 
     pub(crate) async fn control_packet(&mut self, tracked: TrackedPacket, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_receiver_control_packet");
         let packet = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         let Some(control) = self.control.as_mut() else {
@@ -349,6 +358,7 @@ impl W1ReceiverEndpoint {
     }
 
     async fn start(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_receiver_start");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         let credit = match self
@@ -375,6 +385,7 @@ impl W1ReceiverEndpoint {
     }
 
     async fn timer(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_receiver_timer");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         if let Some(frame) = self.protocol.poll(now) {
@@ -391,6 +402,8 @@ impl W1ReceiverEndpoint {
     }
 
     async fn runtime_service(&mut self, _: (), context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_receiver_runtime_service");
         self.mailbox_tracker.dequeue(self.mailbox);
         self.runtime_busy = false;
         let now = now_ns(context);
@@ -487,6 +500,8 @@ impl W1ReceiverEndpoint {
     }
 
     async fn decoder_finish(&mut self, _: (), context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_receiver_decoder_finish");
         self.mailbox_tracker.dequeue(self.mailbox);
         self.decoder_busy = false;
         let now = now_ns(context);
@@ -505,6 +520,17 @@ impl W1ReceiverEndpoint {
         );
         if let Some(response) = self.protocol.observe_data(item.tree, item.frame_id, now) {
             self.queue_control(response);
+        }
+        if let Some((rank, watermark)) = self.protocol.carousel_progress() {
+            self.recorder.record(
+                now,
+                self.component,
+                "carousel_progress_observed",
+                self.data_ingress[item.tree].flow_id,
+                item.frame_id,
+                usize_from_u64(watermark),
+                rank,
+            );
         }
         if !self.completion_recorded
             && let Some(completion_ns) = self.protocol.local_completion_ns()
@@ -526,6 +552,8 @@ impl W1ReceiverEndpoint {
     }
 
     async fn data_segment(&mut self, tree: usize, tracked: TrackedPacket, context: &Context<Self>) {
+        self.recorder
+            .count_event_class("dispatch_receiver_data_segment");
         let packet = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         match self.data_ingress[tree]
@@ -698,6 +726,17 @@ impl W1ReceiverEndpoint {
                 for submitted in submitted {
                     let frame = submitted.frame;
                     let wire_bytes = submitted.wire_bytes;
+                    if let ControlFrame::BlockAck(ack) = &frame {
+                        self.recorder.record(
+                            now,
+                            self.component,
+                            "block_ack_submitted",
+                            control.uplink.flow_id(),
+                            0,
+                            wire_bytes,
+                            usize_from_u64(ack.completed_watermark),
+                        );
+                    }
                     self.recorder.record(
                         now,
                         self.component,
@@ -748,6 +787,10 @@ impl W1ReceiverEndpoint {
             self.recorder.fail(error);
         }
     }
+}
+
+fn usize_from_u64(value: u64) -> usize {
+    usize::try_from(value).unwrap_or(usize::MAX)
 }
 
 impl Model for W1ReceiverEndpoint {

@@ -79,6 +79,14 @@ pub struct OutboundControl {
     pub frame: ControlFrame,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CarouselPeerDiagnostics {
+    pub joined_watermark: u64,
+    pub last_ack_seen_ns: u64,
+    pub last_ack_progress_ns: u64,
+    pub complete: bool,
+}
+
 #[derive(Clone, Debug)]
 struct SenderPeer {
     completion: PeerBlockCompletion,
@@ -188,6 +196,9 @@ impl CarouselSender {
     }
 
     pub fn poll(&mut self, now_ns: u64) -> Result<Vec<OutboundControl>, LivenessViolation> {
+        if self.state == CarouselSenderState::Aborted {
+            return Ok(Vec::new());
+        }
         if self.state == CarouselSenderState::Finished {
             let mut controls = Vec::new();
             if self.completion_repeats_sent < self.timing.session_complete_repeats
@@ -247,6 +258,17 @@ impl CarouselSender {
         self.peers
             .values()
             .all(|peer| peer.completion.object_complete(self.total_blocks))
+    }
+
+    pub fn peer_diagnostics(&self, peer_id: u64) -> Option<CarouselPeerDiagnostics> {
+        self.peers
+            .get(&peer_id)
+            .map(|peer| CarouselPeerDiagnostics {
+                joined_watermark: peer.completion.snapshot().completed_watermark,
+                last_ack_seen_ns: peer.last_ack_seen_ns,
+                last_ack_progress_ns: peer.last_ack_progress_ns,
+                complete: peer.completion.object_complete(self.total_blocks),
+            })
     }
 }
 
@@ -311,6 +333,10 @@ impl CarouselReceiver {
 
     pub fn local_completion_ns(&self) -> Option<u64> {
         self.local_completion_ns
+    }
+
+    pub fn advertised_watermark(&self) -> u64 {
+        self.snapshot().completed_watermark
     }
 
     pub fn observe_symbol(&mut self, symbol_id: u64, now_ns: u64) -> bool {

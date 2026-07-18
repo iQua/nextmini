@@ -233,6 +233,8 @@ impl FanoutRelayEndpoint {
         tracked: TrackedPacket,
         context: &Context<Self>,
     ) {
+        self.recorder
+            .count_event_class("dispatch_relay_upstream_segment");
         let packet = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         match self
@@ -286,6 +288,7 @@ impl FanoutRelayEndpoint {
         tracked: TrackedPacket,
         context: &Context<Self>,
     ) {
+        self.recorder.count_event_class("dispatch_relay_child_ack");
         let acknowledgment = tracked.arrive(self.mailbox);
         let now = now_ns(context);
         self.recorder.record(
@@ -315,6 +318,7 @@ impl FanoutRelayEndpoint {
     }
 
     async fn start(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_relay_start");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         match self
@@ -332,6 +336,7 @@ impl FanoutRelayEndpoint {
     }
 
     async fn timer(&mut self, _: (), context: &Context<Self>) {
+        self.recorder.count_event_class("dispatch_relay_timer");
         self.mailbox_tracker.dequeue(self.mailbox);
         let now = now_ns(context);
         for child_index in 0..self.children.len() {

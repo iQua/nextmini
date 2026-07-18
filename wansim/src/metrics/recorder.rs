@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -32,6 +33,14 @@ pub struct Recorder {
     compact_w2: bool,
     compact_w3: bool,
     compact_wr: bool,
+    wr_triage: Option<WrTriageFilter>,
+    event_class_counts: Option<Arc<Mutex<BTreeMap<&'static str, u64>>>>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct WrTriageFilter {
+    source_component: &'static str,
+    receiver_component: &'static str,
 }
 
 impl Recorder {
@@ -46,6 +55,8 @@ impl Recorder {
             compact_w2: false,
             compact_w3: false,
             compact_wr: false,
+            wr_triage: None,
+            event_class_counts: None,
         }
     }
 
@@ -60,6 +71,8 @@ impl Recorder {
             compact_w2: true,
             compact_w3: false,
             compact_wr: false,
+            wr_triage: None,
+            event_class_counts: None,
         }
     }
 
@@ -74,6 +87,8 @@ impl Recorder {
             compact_w2: false,
             compact_w3: true,
             compact_wr: false,
+            wr_triage: None,
+            event_class_counts: None,
         }
     }
 
@@ -88,6 +103,32 @@ impl Recorder {
             compact_w2: false,
             compact_w3: false,
             compact_wr: true,
+            wr_triage: None,
+            event_class_counts: None,
+        }
+    }
+
+    pub(crate) fn new_wr_triage(
+        scenario: impl Into<Arc<str>>,
+        seed: u64,
+        source_component: &'static str,
+        receiver_component: &'static str,
+    ) -> Self {
+        Self {
+            scenario: scenario.into(),
+            seed,
+            records: Arc::default(),
+            failure: Arc::default(),
+            local_completion_count: Arc::default(),
+            sender_completion_count: Arc::default(),
+            compact_w2: false,
+            compact_w3: false,
+            compact_wr: false,
+            wr_triage: Some(WrTriageFilter {
+                source_component,
+                receiver_component,
+            }),
+            event_class_counts: Some(Arc::default()),
         }
     }
 
@@ -102,6 +143,7 @@ impl Recorder {
         bytes: usize,
         value: usize,
     ) {
+        self.count_event_class(event);
         if self.compact_w2 && !w2_metric_event(event) {
             return;
         }
@@ -109,6 +151,12 @@ impl Recorder {
             return;
         }
         if self.compact_wr && !wr_metric_event(event) {
+            return;
+        }
+        if self
+            .wr_triage
+            .is_some_and(|filter| !filter.retains(component, event))
+        {
             return;
         }
         match event {
@@ -175,6 +223,21 @@ impl Recorder {
         }
     }
 
+    pub(crate) fn count_event_class(&self, event_class: &'static str) {
+        let Some(counts) = &self.event_class_counts else {
+            return;
+        };
+        let mut counts = counts.lock();
+        let count = counts.entry(event_class).or_default();
+        *count = count.saturating_add(1);
+    }
+
+    pub(crate) fn event_class_counts(&self) -> BTreeMap<&'static str, u64> {
+        self.event_class_counts
+            .as_ref()
+            .map_or_else(BTreeMap::new, |counts| counts.lock().clone())
+    }
+
     pub fn to_csv(&self) -> Result<String, csv::Error> {
         let mut writer = csv::WriterBuilder::new()
             .terminator(csv::Terminator::Any(b'\n'))
@@ -187,6 +250,46 @@ impl Recorder {
             .into_inner()
             .map_err(|error| csv::Error::from(error.into_error()))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+}
+
+impl WrTriageFilter {
+    fn retains(self, component: &str, event: &str) -> bool {
+        matches!(
+            event,
+            "single_worker"
+                | "wr_concurrent_sessions"
+                | "queue_drop"
+                | "segment_drop"
+                | "mailbox_high_water"
+                | "protocol_local_complete"
+                | "protocol_sender_complete"
+                | "carousel_liveness_silent_abort"
+                | "carousel_liveness_stall_abort"
+                | "carousel_liveness_last_ack_seen"
+                | "carousel_liveness_last_ack_progress"
+        ) || (component == self.source_component
+            && matches!(
+                event,
+                "data_frame_emitted"
+                    | "block_ack_received"
+                    | "carousel_ack_join_progress"
+                    | "carousel_ack_join_noop"
+                    | "ack_probe_submitted"
+                    | "session_complete_submitted"
+            ))
+            || (component == self.receiver_component
+                && matches!(
+                    event,
+                    "runtime_command_enqueue_data"
+                        | "data_inbox_enqueue"
+                        | "data_inbox_drop_after_tcp_ack"
+                        | "decoder_sink_complete"
+                        | "carousel_progress_observed"
+                        | "block_ack_submitted"
+                        | "ack_probe_runtime_dispatch"
+                        | "protocol_local_complete"
+                ))
     }
 }
 
