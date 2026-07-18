@@ -1,3 +1,0 @@
-schema_version,simulator_version,evidence_class,question,variant,seeds,barrier_mean_ns,barrier_p5_ns,barrier_p95_ns,sender_mean_ns,healthy_receiver_mean_ns,emissions_mean,drops_mean,blocking_waits_mean,stall_consumption_p95_ppm
-1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,concurrent-sessions,1-session,16,6134824476,5866910321,6423979097,6190236227,6134824476,39987,0,0,4974
-1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,concurrent-sessions,2-session,16,6134799627,5866922894,6424004852,6190366683,6134799627,39987,0,0,5187

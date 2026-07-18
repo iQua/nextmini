@@ -1135,8 +1135,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(straggler.len(), 16);
         assert!(straggler.iter().all(|task| {
-            task.admission == ReceiverAdmissionPolicy::HybridDrop
-                && task.slow_receiver == Some(0)
+            task.admission == ReceiverAdmissionPolicy::HybridDrop && task.slow_receiver == Some(0)
         }));
         assert_eq!(
             tasks
@@ -1146,9 +1145,11 @@ mod tests {
             3 * 16
         );
         assert!(tasks.iter().all(|task| task.sessions == 1));
-        assert!(tasks.iter().all(|task| {
-            !matches!(task.slice, Slice::Concurrent | Slice::Scaling)
-        }));
+        assert!(
+            tasks
+                .iter()
+                .all(|task| { !matches!(task.slice, Slice::Concurrent | Slice::Scaling) })
+        );
     }
 
     #[test]

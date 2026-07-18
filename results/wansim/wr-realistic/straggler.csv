@@ -1,3 +1,2 @@
-schema_version,simulator_version,evidence_class,question,variant,seeds,barrier_mean_ns,barrier_p5_ns,barrier_p95_ns,sender_mean_ns,healthy_receiver_mean_ns,emissions_mean,drops_mean,blocking_waits_mean,stall_consumption_p95_ppm
-1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,hybrid-vs-blocking,hybrid-drop,16,8500685192,8454824209,8534333352,8532972687,6134851378,49970,25357,0,4698
-1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,hybrid-vs-blocking,naive-blocking,16,8500685192,8454824209,8534333352,8532972784,6134850766,49969,0,24563,4698
+schema_version,simulator_version,evidence_class,question,variant,seeds,barrier_mean_ns,barrier_p5_ns,barrier_p95_ns,sender_mean_ns,healthy_receiver_mean_ns,emissions_mean,drops_mean,blocking_waits_mean,background_trunk_utilization_mean_ppm,stall_consumption_p95_ppm
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,hybrid-straggler,hybrid-drop,16,8918048534,8409168532,10242162383,8955529036,1719512507,327175,377498,0,412126,12838

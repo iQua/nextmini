@@ -1,300 +1,306 @@
-# INTERIM — wansim WR realistic public-cloud envelope
+# Wansim WR Tier-1 realistic-cloud decision slice
 
-Date: 2026-07-17
+Date: 2026-07-18
 
 Branch: `perfect-fec-runtime`
 
-Baseline: `704e111` (WR plan); implementation evidence revision: `8b3d710`
+Evidence revision: `f937f62` (emission semantics) plus `8e6d525` (the frozen Tier-1 task set)
 
-Scope: WR only; W4 calibration was not started
+Evidence class: **model-level evidence from an ideal-DoF discrete-event model, not a WAN
+measurement and not a reproduction of DigitalOcean**.
 
-Evidence class: **model-level realistic-envelope evidence, not a WAN measurement or a reproduction
-of AWS, Google Cloud, or DigitalOcean**
+## Executive verdict
 
-> **INTERIM / NO PERFORMANCE CONCLUSIONS.** The final-model evidence run at revision `8b3d710`
-> failed closed after 4:38:21. It produced no CSVs because the original harness persisted only
-> after every cell succeeded. The CSVs currently committed under
-> `results/wansim/wr-realistic/` predate the final temporal-jitter model and were already rejected
-> by the calibration audit described below. They are retained only as forensic input for the WR
-> triage and MUST NOT be quoted as WR evidence.
+The reduced Tier-1 run completed **224/224 cells successfully with zero protocol or harness
+failures**. The toy-world mechanism story survives, but only in a qualified form:
 
-## Interim run outcome
+1. Carousel did not materially change the healthy receiver barrier relative to pooled rounds, but
+   it learned sender completion 354--429 ms sooner by avoiding rounds feedback barriers.
+2. Pooled FEC saved 27.2--29.8 ms over per-stripe FEC. Path diversity saved a further
+   112.8--115.4 ms and accounted for 79--81% of the total two-tree advantage.
+3. Cap-free hybrid stragglers completed in every seed with at least 98.716% liveness-budget margin,
+   including the formerly failing seed 15. The cost was severe: mean source emissions were
+   39.94 times K and P95 was 65.30 times K in the unpaced model.
+4. A4 is not defensible as an exogenous-independent-rate assumption in this placement. Within-run
+   tree-rate correlation was strongly positive at 30% offered load and negative at 70%; even its
+   sign is regime-dependent.
+5. The production 1x BlockAck cadence was safe but not fastest here. The 0.5x arm learned sender
+   completion 3.97 ms sooner, while all three arms had indistinguishable receiver barriers and
+   emission counts. W3's 1x optimum under reverse incast does not generalize to this slice.
+6. No liveness abort occurred. The smallest margin was 84.609% in pooled rounds; carousel retained
+   at least 98.716% margin, including the straggler slice.
 
-The attempted 16-seed, 20-worker run on `xindan@boston.csl.toronto.edu` failed at task 2,895:
+These are **selected-slice verdicts**, not holds-across-cloud-envelope verdicts. The explicit user
+simplification canceled other providers, placements, 50% load, jitter-off, K=65,536, concurrent
+sessions, blocking admission, pacing, Tier 2, and W4. The wansim effort closes with this report.
 
-```text
-slice=straggler
-profile=digitalocean-like
-placement=west-origin
-utilization=70
-jitter=true
-protocol=carousel
-K=8192
-seed=15
-admission=hybrid-drop
-slow_receiver=0
-failure=peer 1 remained alive without completion progress
-```
+## Scope and method
 
-The process exited with status 1 after 4:38:21 wall time, 309,986.69 user CPU seconds, and a
-12,254,812 KiB peak RSS. This is a triage input, not yet a production-protocol finding: the
-follow-up must determine whether rank advanced behind a block-quantized watermark, rank itself
-stalled, the acknowledgement path stalled, or the simulator mis-modeled an event.
+The authoritative task set was:
 
-No rounds-versus-carousel, pooling-versus-path-diversity, A4, cadence, straggler-cost, scaling, or
-liveness-margin verdict can be drawn from this interim state.
+| Slice | Cells |
+|---|---:|
+| Main: utilization {30%, 70%} x five executable protocol arms x 16 seeds | 160 |
+| Hybrid-drop straggler at 70% x 16 seeds | 16 |
+| BlockAck cadence {0.5x, 1x, 2x} at 70% x 16 seeds | 48 |
+| **Total** | **224** |
 
-## What the envelope models
+The five main arms are carousel, pooled rounds, per-stripe FEC, and both candidate single trees.
+The reported `best-single` value selects the faster candidate on each coupled seed, so it is an
+oracle-strong baseline. Every arm uses the same seed for background transitions, propagation
+jitter, payload identity, and tie resolution; TCP paths then evolve endogenously from each
+protocol's queue occupancy.
 
-WR re-runs the mechanism questions from W1–W3 in six deterministic, representative public-cloud
-scenarios. The profiles use public region identities and public descriptions of VM networking as
-context, then synthesize all latency, queue, capacity, jitter, topology, placement, and traffic
-parameters inside the envelope declared by [`wansim-plan.md`](wansim-plan.md#stage-wr--realistic-cloud-envelope-added-2026-07-17-user-directive).
-No number in a scenario TOML is a provider measurement, guarantee, inferred internal topology, or
-claim about a named cloud.
+All cells use the representative `digitalocean-like/west-origin` scenario: sender `sfo3`, receivers
+`nyc3`, `fra1`, and `sgp1`, and distinct relay regions where placement permits. The synthesized
+inputs include 2 Gbit/s VM NIC caps, directed 800 Mbit/s trunks, finite 3 MiB NIC and 6 MiB trunk
+queues, asymmetric inter-region propagation, seeded +/-5% temporal jitter in 100 ms epochs, and
+explicit bulk plus bounded heavy-tailed TCP background flows. The shared NA-west/NA-east trunks
+each carry 12 modeled flow directions: four foreground and eight background. Sharing emerges from
+routing; no overlap percentage is an input.
 
-The committed inputs are under [`wansim/scenarios/wr`](../wansim/scenarios/wr). Every file begins
-with the same representative-only warning and round-trips through the checked scenario parser.
+These values are representative model inputs, not measurements, guarantees, or inferred provider
+topology. Public sources establish only region identities and broad networking context:
 
-### Public source notes and synthesized parameters
+- [DigitalOcean regional availability](https://docs.digitalocean.com/platform/regional-availability/)
+- [DigitalOcean Droplet network limits](https://docs.digitalocean.com/products/droplets/details/limits/)
+- [AWS regions](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html)
+  and [EC2 network bandwidth](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-network-bandwidth.html)
+- [Google Cloud locations](https://cloud.google.com/about/locations),
+  [VM bandwidth](https://docs.cloud.google.com/compute/docs/network-bandwidth), and
+  [Network Service Tiers](https://docs.cloud.google.com/network-tiers/docs/overview)
 
-The public sources establish only region availability and the broad existence/range of VM network
-limits and provider backbones:
+The transport is the vendored days-derived window-scaled Reno model with persistent independent
+TCP state per overlay hop, finite socket buffers, advertised windows, retransmission, relay frame
+assembly, and sequential child admission. Data uses 508-byte symbols plus the four-byte logical
+length prefix and modeled TCP/IP serialization overhead. Control uses independent TCP connections
+over the same physical resources. The protocol endpoints independently implement the normative
+[section-P state machines](perfect-fec-runtime.md#p-protocol-assumptions-and-state-machines-normative-precedes-all-stages).
+The codec is deliberately abstract: rank is `min(K, distinct innovative deliveries)` at K=8,192.
 
-- AWS: [Regions and Availability Zones](https://docs.aws.amazon.com/global-infrastructure/latest/regions/aws-regions.html)
-  and [EC2 instance network bandwidth](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/ec2-instance-network-bandwidth.html).
-- Google Cloud: [global locations](https://cloud.google.com/about/locations),
-  [Compute Engine bandwidth](https://docs.cloud.google.com/compute/docs/network-bandwidth), and
-  [Network Service Tiers](https://docs.cloud.google.com/network-tiers/docs/overview).
-- DigitalOcean: [regional availability](https://docs.digitalocean.com/platform/regional-availability/)
-  and [Droplet network limits](https://docs.digitalocean.com/products/droplets/details/limits/).
+Each simulation uses one nexosim worker; 20 host workers run independent cells. The authoritative
+Boston execution began at 02:06:56 EDT and was observed complete by 03:03:47 EDT, about 56 minutes
+51 seconds. Observed aggregate RSS peaked near 15.2 GiB while many straggler cells overlapped; it
+fell as their retained event records were reduced and released.
 
-The following values are **our representative model inputs**, not values taken from those pages:
+## 1. Pooled rounds versus carousel
 
-| Profile label | Regions | Modeled VM NIC cap / queue | Directed trunk cap / queue | Background reference rate |
-|---|---:|---:|---:|---:|
-| aws-like | 6 | 2.0 Gbit/s / 4 MiB | 1.2 Gbit/s / 8 MiB | 1.2 Gbit/s |
-| gcp-like | 6 | 3.0 Gbit/s / 6 MiB | 1.6 Gbit/s / 10 MiB | 1.6 Gbit/s |
-| digitalocean-like | 6 | 2.0 Gbit/s / 3 MiB | 0.8 Gbit/s / 6 MiB | 0.8 Gbit/s |
+Positive time gaps mean rounds finished later. All values below are paired over 16 seeds.
 
-All profiles use a 1.5 ms intra-region RTT, 2.5–4.5 ms one-way regional access delays, directed
-same-continent and intercontinental transit values that produce the plan's 10–60 ms,
-70–90 ms, and 100–150 ms RTT regimes, and optional seeded bounded propagation jitter of ±5%.
-Small one-millisecond edge effects in an asymmetric direction are part of the synthesized matrix,
-not measurement precision.
+| Offered load | Receiver barrier gap, mean [P5, P95] | Sender gap, mean [P5, P95] | Carousel emissions | Rounds emissions | Positive rounds deficits |
+|---:|---:|---:|---:|---:|---:|
+| 30% | -0.009 ms [-0.011, -0.005] | +353.591 ms [159.129, 468.220] | 139,335 | 57,671 | 208 |
+| 70% | -0.026 ms [-0.311, +0.001] | +428.878 ms [178.165, 546.167] | 91,438 | 57,332 | 202 |
 
-Each profile has two placements:
+Rounds was microscopically earlier at the receiver barrier, which is operationally a tie beside
+the 1.706 s mean barrier. Carousel finished at the sender in 1.767 s; rounds took 2.121 s at 30%
+and 2.196 s at 70%. This is the section-P mechanism: rounds waits for deficit feedback barriers,
+while cumulative BlockAck lets carousel finish as soon as every frozen peer's joined progress is
+complete.
 
-| Profile | Placement | Sender | Receivers | Tree 0 relays | Tree 1 relays |
-|---|---|---|---|---|---|
-| aws-like | east-origin | us-east-1 | us-west-2, eu-west-1, ap-northeast-1 | us-west-2, eu-west-1 | us-east-2, eu-central-1 |
-| aws-like | west-origin | us-west-2 | us-east-1, eu-central-1, ap-northeast-1 | us-east-1, eu-central-1 | us-east-2, eu-west-1 |
-| gcp-like | east-origin | us-east4 | us-west1, europe-west1, asia-northeast1 | us-west1, europe-west1 | us-central1, europe-west3 |
-| gcp-like | west-origin | us-west1 | us-east4, europe-west3, asia-northeast1 | us-east4, europe-west3 | us-central1, europe-west1 |
-| digitalocean-like | east-origin | nyc3 | sfo3, lon1, sgp1 | sfo3, lon1 | tor1, fra1 |
-| digitalocean-like | west-origin | sfo3 | nyc3, fra1, sgp1 | nyc3, fra1 | tor1, lon1 |
+The latency result is not free. `carousel_tail_emissions_mean`, defined as emissions minus K, was
+131,143 at 30% and 83,246 at 70%. No receiver application drops occurred in these healthy cells;
+the extra work is predominantly unpaced work-conserving departure and feedback flight. Therefore
+the selected slice supports the sender-completion mechanism, not a claim that carousel minimizes
+bytes. It also shows why a future production study must qualify the optional pacer's rate and
+burst before treating these emission counts as a deployment prediction.
 
-The generator scores relay pairs over the directed backbone and chooses distinct relay pairs where
-possible. It does not accept an overlap percentage. Foreground and background flow counts on NICs
-and trunks are derived after routing and committed in `sharing-structure.csv`; physical sharing
-therefore emerges from placement.
+**Verdict:** the rounds-to-carousel sender benefit holds at both selected loads; receiver-barrier
+benefit does not. The size of the gain and its bandwidth price are regime-dependent.
 
-### Event model and transport
+## 2. Pooling advantage versus path-diversity advantage
 
-The provider backbone is a graph of four transit hubs (North America east, North America west,
-Europe, and Asia-Pacific) connected by ten directed trunks. Each region contributes a shared VM
-NIC service resource. Deterministic shortest-path routing maps every direction of every TCP flow
-onto an ordered list of NIC and trunk resources. Each resource has a finite byte queue, an integer
-bit rate, and timestamped serialization service. Propagation is directional. When jitter is
-enabled, the counter-based, domain-separated PRF chooses one bounded offset per physical resource,
-seed, and 100 ms epoch. A per-resource propagation frontier preserves FIFO arrival order across
-epoch changes. This gives time-varying RTT without creating nonphysical reordering from independent
-per-packet delay draws.
-
-Every overlay edge is a separate persistent days-derived Reno connection with its own congestion
-window, advertised receive window, finite send/receive buffers, cumulative ACKs, retransmission,
-and zero-window persist behavior. WR opts those sockets into the fork's window-scaled Reno
-constructor: its congestion-window ceiling and initial slow-start threshold follow the negotiated
-receive buffer instead of days' legacy 65,535-byte ceiling. W0--W3 retain legacy Reno. Relays
-reassemble each complete length-prefixed logical frame before configured-order sequential
-admission to independent child TCP connections. A foreground data frame carries 508 symbol bytes
-plus a four-byte length prefix; serialization additionally charges the fork's 40-byte TCP/IPv4
-overhead per segment. Control frames use independent per-peer TCP connections but share the same
-physical regional resources in their forward and reverse directions.
-
-Eight explicit background TCP applications run in every scenario: a paced bulk flow and a seeded
-bounded heavy-tailed on/off flow in each direction along each tree's root region pair. The on/off
-base durations are 100/150 ms with a geometric power-of-two multiplier capped at 64. Background
-applications admit bytes every 10 ms and use a 256 KiB TCP serialization quantum; this batching is
-an explicit runtime optimization for synthetic cross-traffic, not a claim about cloud MSS or
-offload. Foreground and control traffic retain their real frame sizes. Each root-pair bundle is
-scaled from the profile reference to request 30%, 50%, or 70% load. If placement merges both
-bundles, their competition emerges naturally. Congestion windows, finite queues, and competition
-remain authoritative, so the label is offered load; every CSV separately reports realized maximum
-background trunk utilization.
-
-Background flows start one simulated second before the experiment clock. All source, relay,
-receiver, and control endpoints start together at the end of that warm-up, avoiding both a
-foreground contribution to warm-up and a half-open socket ordering artifact. One second is roughly
-7--100 RTTs over the declared matrix. Completion times, liveness gaps, correlations, and utilization
-windows are all rebased to the foreground start.
-
-### Protocol and codec abstraction
-
-WR calls the independent wansim endpoints implemented in W1, never a production actor. Carousel
-uses cumulative join-semilattice BlockAck, debounce and heartbeat, targeted AckProbe, repeated
-best-effort SessionComplete, dual per-peer liveness clocks, work-conserving emission, and a final
-completion recheck before submission. The 1x timing now mirrors the production defaults:
-8 ms debounce, 300 ms heartbeat, 250 ms probe interval, 3 s silence timeout, 15 s no-progress
-timeout, 17 s passive receiver window, and three SessionComplete frames 20 ms apart. Only debounce
-and heartbeat scale in the 0.5x/1x/2x cadence slice.
-
-The codec remains the declared ideal DoF abstraction: rank is `min(K, distinct innovative
-deliveries)`. WR does not model METTLE/RaptorQ algebra or decoder CPU. For feedback geometry,
-K=8,192 maps to 482 cumulative progress units and K=65,536 to 3,856, using the production default
-8,500-byte block ceiling and 508-byte symbol payload. This prevents the whole object from looking
-like one silent BlockAck block while retaining a codec-independent receiver.
-
-The baselines are:
-
-- pooled rounds: K source departures, SourceDone, receiver deficit reports over real control
-  paths, and max-deficit repair rounds;
-- per-stripe FEC: the strongest ownership baseline, with rate-proportional global quotas and an
-  independent DoF bucket per tree;
-- best single tree: both single-tree candidates are run on each coupled seed and the faster is
-  selected, while the idle foreground connection sends matched non-useful traffic so flow count
-  is not gifted to the baseline.
-
-## Matrix and deterministic discipline
-
-The main matrix is:
+The additive identity is the W3 definition:
 
 ```text
-3 profiles × 2 placements × 3 offered background utilizations
-× jitter {off,on} × 5 protocols × 16 seeds
-= 2,880 executions at K=8,192
+pooling advantage        = B(per-stripe FEC) - B(carousel)
+path-diversity advantage = B(best single tree) - B(per-stripe FEC)
+total advantage          = B(best single tree) - B(carousel)
 ```
 
-Additional slices add 32 hybrid/blocking straggler executions, 48 cadence executions, 32
-one-versus-two-session executions, and 48 K=65,536 scaling executions, for **3,040 simulator
-executions**. The slow-receiver and control slices use the digitalocean-like west-origin placement,
-70% offered background load, and jitter. The scaling slice is one carousel cell per profile at
-east-origin, 50%, and jitter, with the same 16-seed budget as every other reported cell. Every
-nexosim simulation has one worker; host parallelism only runs independent indexed tasks. Rows are
-reduced in canonical task order.
+It held exactly for every paired seed.
 
-The two-session slice places two complete carousel sessions, with independent overlay TCP state,
-onto the same NICs and trunks. Its metric is the tagged first session under one versus two
-concurrent sessions; it is not an aggregate of both sessions.
+| Offered load | Carousel | Per-stripe | Best single | Pooling, mean [P5, P95] | Path diversity, mean [P5, P95] | Share of total: pooling / diversity |
+|---:|---:|---:|---:|---:|---:|---:|
+| 30% | 1,706.375 ms | 1,733.561 ms | 1,848.946 ms | 27.186 ms [20.160, 31.503] | 115.385 ms [111.475, 118.757] | 19.1% / 80.9% |
+| 70% | 1,706.711 ms | 1,736.542 ms | 1,849.319 ms | 29.830 ms [27.104, 32.864] | 112.778 ms [105.754, 117.217] | 20.9% / 79.1% |
 
-All seeds drive background transitions, propagation jitter, payload identity, and local tie
-resolution through counter-based domain-separated PRFs. The same seed supplies coupled stochastic
-inputs across protocol variants. Because the WAN model is endogenous, the resulting TCP delivery
-trace is allowed to diverge after a protocol changes queue occupancy; coupling means common random
-inputs, not an impossible replay of exogenous opportunities.
+Pooling reduces the carousel baseline by 1.59--1.75%; path diversity contributes another
+6.61--6.76%. The total best-single gap is 142.6 ms, or 8.36% of carousel completion. This is larger
+pooling share than W3's healthy toy topology, but the ordering is the same: most two-tree benefit
+comes from path diversity, and combining both mechanisms into one “FEC speedup” number would be
+misleading.
 
-### Fail-closed development checks
+**Verdict:** the decomposition survives the selected cloud-like placement. Pooling is real and
+secondary; path diversity remains dominant.
 
-The first Boston full run at revision `bf00e25` stopped at the K=65,536 carousel spot because WR
-had represented the whole object as one BlockAck progress unit. That exposed an eightfold-scaling
-harness defect rather than generating partial evidence. Revision `0ba7420` added production-shaped
-progress geometry and production timing. A targeted aws-like K=65,536 carousel run then completed
-at a 35.392311694 s receiver barrier and 35.472238249 s sender completion.
+## 3. Hybrid straggler and the removed emission ceiling
 
-A later full run at `0ba7420` completed 3,020 tasks and then failed closed on the digitalocean-like
-K=65,536 `best-single-tree1` spot at the artificial 60 s simulation horizon. Revision `17b6015`
-made the large-K horizon 180 s without changing a protocol timeout; the simulator still exits as
-soon as all endpoints finish. The exact failed cell then completed on Boston at a
-74.968993229 s receiver barrier and 75.044322431 s sender completion. Neither failed run wrote a
-CSV, and neither contributes to the committed statistics.
+All 16 hybrid-drop straggler cells completed. There were no blocking waits and no liveness aborts.
 
-An initial 3,022-task run at `17b6015` did finish, but a post-run calibration audit rejected all of
-its CSVs before commit. Days' legacy Reno ceiling compressed long-RTT flows to a few Mbit/s, making
-the 30/50/70 axis largely inert, while independent per-packet jitter created artificial reordering.
-After opting WR alone into window-scaled Reno and initially making jitter constant per resource and
-seed, a second audit found an ACK-clock micro-packet storm in the paced background application: it
-admitted a few new bytes at every ACK and immediately sent them under `TCP_NODELAY`. Revision
-`13d8303` makes paced application admission timer-only, pins it with a regression, starts every
-foreground endpoint after a common warm-up, and records realized load. Revision `a066a40` replaced
-the two-seed scaling fragments with three full 16-seed cells. A final requirement audit rejected
-static per-run offset as insufficient for the requested temporal jitter axis; revision `8b3d710`
-introduced the seeded 100 ms jitter process and FIFO propagation frontier. The rejected CSVs are
-committed in this interim checkpoint solely so the failed-run provenance is not lost. They remain
-explicitly non-evidence and are not quoted below; this is a fail-closed calibration history, not
-result selection.
+| Metric | Mean | P5 | P95 |
+|---|---:|---:|---:|
+| Receiver barrier | 8.918 s | 8.409 s | 10.242 s |
+| Sender completion | 8.956 s | 8.449 s | 10.285 s |
+| Source emissions | 327,176 | 101,450 | 534,926 |
+| Emissions / K | 39.94x | 12.38x | 65.30x |
+| Aggregate application drops | 377,498 | 97,563 | 645,208 |
+| Stall-budget consumption | 0.707% mean | 0.471% | 1.284% |
 
-## Performance verdicts
+Healthy siblings completed only 12.801 ms later on average than their coupled all-healthy cells;
+hybrid drop continued to isolate receiver service pressure. The slow receiver, however, converted
+that isolation into wire work: mean emissions were 3.58 times the already-unpaced healthy-carousel
+mean and almost 40 times K. Aggregate drops can exceed source emissions because the same logical
+departure can be delivered and dropped at more than one receiver boundary.
 
-**Pending.** The failed run provides no complete or admissible performance matrix.
+Fourteen of 16 seeds exceeded the old 65,536-frame limit on at least one tree, and 11 exceeded its
+old two-tree total. The formerly fatal seed 15 completed at an 8.431 s barrier and 8.468 s sender
+time after 521,629 emissions; its busiest tree emitted 449,139 frames. Its stall consumption was
+only 0.518%. This directly confirms the triage: the old K*8 per-tree stop manufactured the prior
+no-progress failure. Across the slice, the maximum single-tree count was 450,558, and the maximum
+total was 534,926.
 
-## Reproduction
+The cap-free behavior is protocol-correct for an unpaced work-conserving carousel but economically
+harsh. It is replacement traffic plus queued/feedback-flight work, not a small “ACK tail.” The
+user explicitly canceled the paced arm, so this report does not estimate how production pacing
+would change the result and does not recommend a new pacer default.
 
-The attempted evidence execution was performed on `xindan@boston.csl.toronto.edu`; the local
-workstation was used only for source editing and result synchronization. The remote checkout
-recorded `source_commit=8b3d710`, used rustc/cargo 1.96.0, and built the lockfile offline after
-dependency preparation. The repeat command below was planned but **was not run** after the first
-execution failed.
+The reduced scope also canceled the naive-blocking arm. Consequently WR does not independently
+re-estimate W2's hybrid-versus-blocking delta; W2's finding that blocking creates healthy-receiver
+externality remains the available evidence.
 
-```bash
-ssh xindan@boston.csl.toronto.edu
-cd ~/wansim-wr-ed31c2a
-PATH="$HOME/.cargo/bin:$PATH" CARGO_INCREMENTAL=0 \
-  cargo build --locked --offline --release --bin wr_probe --bin wr_realistic
+**Verdict:** hybrid carousel completes and stays live in this harsh slice, including the original
+failure seed, but its unpaced emission cost is a first-order limitation rather than a footnote.
 
-/usr/bin/time -v target/release/wr_realistic \
-  16 20 /home/xindan/wr-run-8b3d710/evidence
+## 4. A4 delivered-rate correlation
 
-# NOT RUN: the evidence execution failed before a repeat was justified.
-# /usr/bin/time -v target/release/wr_realistic \
-#   16 20 /home/xindan/wr-run-8b3d710/repeat
+| Offered load | Cross-seed total-rate correlation | Within-trace mean | P5 | P95 |
+|---:|---:|---:|---:|---:|
+| 30% | 0.000 | +0.587 | +0.252 | +0.755 |
+| 70% | -0.179 | -0.239 | -0.342 | -0.088 |
 
-(cd /home/xindan/wr-run-8b3d710/evidence && sha256sum *.csv | sort -k2 > SHA256SUMS)
-(cd /home/xindan/wr-run-8b3d710/repeat && sha256sum *.csv | sort -k2 > SHA256SUMS)
-diff -u \
-  /home/xindan/wr-run-8b3d710/evidence/SHA256SUMS \
-  /home/xindan/wr-run-8b3d710/repeat/SHA256SUMS
+At 30%, both trees tend to move together through shared resources. At 70%, competition makes their
+short-window rates anti-correlated. A zero cross-seed statistic at 30% is not evidence of
+independence: the within-run time series is strongly correlated, and the physical routes share
+explicit finite queues and TCP flows. The sign reversal is the useful result: coupling is
+endogenous and load-dependent, so a single fixed correlation correction cannot rescue A4.
+
+**Verdict:** A4's exogenous-independent-rate form fails in this placement. A weaker sample-path
+claim remains the appropriate theory interface.
+
+## 5. BlockAck cadence
+
+| Cadence | Receiver barrier | Sender completion | Emissions | Stall P95 / margin |
+|---:|---:|---:|---:|---:|
+| 0.5x | 1,706.712 ms | 1,763.453 ms | 91,438 | 0.920% / 99.080% |
+| 1x | 1,706.711 ms | 1,767.420 ms | 91,438 | 0.969% / 99.031% |
+| 2x | 1,706.712 ms | 1,775.469 ms | 91,439 | 0.989% / 99.011% |
+
+Receiver completion differs by less than one microsecond. Relative to 1x, 0.5x learns sender
+completion 3.967 ms sooner and 2x learns it 8.049 ms later. Unlike W3's reverse-incast-plus-burst
+slice, this three-receiver placement does not make faster feedback self-congest enough for 1x to
+win. WR does not export reverse control-byte counts, so this latency table alone cannot justify
+changing the production default.
+
+**Verdict:** all cadences are safe; the “1x is optimal” claim is regime-dependent. Keep the current
+default absent a deployment-calibrated control-cost study.
+
+## 6. Liveness margins
+
+Every cell terminated normally; `failures.csv` is empty.
+
+| Slice/protocol | Maximum stall-budget consumption | Minimum margin |
+|---|---:|---:|
+| Main carousel | 0.969% | 99.031% |
+| Hybrid straggler carousel | 1.284% | 98.716% |
+| Cadence sweep | 0.989% | 99.011% |
+| Main per-stripe FEC | 12.088% | 87.912% |
+| Main pooled rounds | 15.391% | 84.609% |
+
+No selected cell approached either a liveness abort or the 60 s observation horizon. The former
+seed-15 failure was entirely the deleted simulator ceiling, not BlockAck quantization, ACK-path
+silence, or a sender join defect.
+
+**Verdict:** section-P liveness defaults have ample margin in this Tier-1 slice. This does not
+bound outages, provider pauses, or placements omitted by the simplification order.
+
+## Does the toy-world story survive realism?
+
+**Mostly, with two important corrections.** The independent mechanism claims survive: carousel
+removes sender feedback barriers; pooling beats ownership; path diversity supplies most of the
+two-tree advantage; hybrid drop keeps healthy siblings isolated; and shared bottlenecks invalidate
+exogenous tree rates. But W3's particular 1x cadence optimum is not universal, and an unpaced
+work-conserving source can spend 40--65 times K under a slow receiver. The latter is both a modeled
+network cost and the source of a highly skewed host runtime in exact segment-level DES.
+
+The production reading is therefore narrow: keep cumulative BlockAck, carousel semantics, and
+hybrid drop; do not fold path diversity into an FEC-only claim; do not assume A4 on shared routes;
+and do not interpret unpaced WR emission totals as production overhead. No new production change
+is authorized by this stage.
+
+## Artifacts, determinism, and reproduction
+
+Committed results live in [`results/wansim/wr-realistic/`](../results/wansim/wr-realistic/):
+
+- `trials.csv`: 224 canonical trial rows;
+- `summaries.csv`: 14 grouped rows;
+- `advantage-decomposition.csv`, `rounds-vs-carousel.csv`, `a4-correlation.csv`,
+  `straggler.csv`, and `cadence.csv`: the six decision views;
+- `sharing-structure.csv`: 16 emergent resource-sharing rows;
+- `failures.csv`: empty, because all cells succeeded;
+- `wr-cells/`: 224 durable per-cell shards plus the checked manifest;
+- `CELL-SHA256SUMS`: 673 per-cell file digests; and
+- `SHA256SUMS`: the nine result CSVs plus the cell-digest manifest.
+
+Both digest manifests verify completely. A second full sweep and the proposed optimization digest
+matrix were explicitly canceled by the simplification order. Determinism remains structurally
+covered by the byte-identical repeat and registration-order gates in the W0--W3 suite; this report
+does not mislabel a single-run hash as independent reproduction.
+
+Exact authoritative command on Boston:
+
+```sh
+cd /home/xindan/wansim-wr-ed31c2a
+CARGO_INCREMENTAL=0 PYO3_PYTHON=/usr/bin/python3 \
+  target/release/wr_realistic 16 20 /home/xindan/wr-tier1-f937f62
 ```
 
-The committed scenarios can be regenerated independently:
+Resume command, which schedules only missing cells:
 
-```bash
-cd wansim
-CARGO_INCREMENTAL=0 cargo run --locked --release --bin wr_scenarios -- scenarios/wr
+```sh
+target/release/wr_realistic \
+  16 20 /home/xindan/wr-tier1-f937f62 --resume
 ```
-
-## Limits and interpretation boundary
-
-- The cloud labels are mnemonic envelope families. The topology, capacities, queues, RTTs,
-  asymmetry, jitter, and traffic are synthesized representative values. No named cloud is claimed
-  to be reproduced, ranked, or measured. W4 calibration remains the separate step that would
-  locate a real deployment inside or outside this envelope.
-- The receiver is an ideal innovative-DoF bucket. Real FEC rank dependence, decoder construction,
-  decode CPU, cache effects, and sink I/O are absent except for the configured receiver service
-  center. WR can test transport/protocol mechanisms, not codec throughput.
-- Transport uses the validated days-derived Reno abstraction, not a provider's kernel build,
-  CUBIC/BBR policy, TLS stack, NIC offload, hypervisor scheduling, or per-tenant policer. All of
-  those could move a calibrated result.
-- Four transit hubs, six regions, two placements, and three receivers cover several latency and
-  sharing regimes but not arbitrary geography, route changes, failures, multi-provider transit,
-  or provider traffic engineering.
-- Background applications are explicit TCP flows, but their bulk and bounded heavy-tail processes
-  are synthetic rather than fitted to packet traces. Their 10 ms admission cadence and 256 KiB
-  serialization quantum batch background work and cannot support packet-scale burst claims. The
-  30/50/70 labels are offered load, and observed utilization is an output of congestion control,
-  placement, and finite foreground duration.
-- Sixteen seeds give spread, not tail-SLA confidence. The K=65,536 cells are scaling checks only;
-  they must not be read as a failure-probability estimate.
-- Physical queue loss is recovered by TCP. The model has no independent corruption or provider
-  outage process. Receiver application drops remain distinct post-transport events.
-- The faster of two single-tree runs is selected per coupled seed. This deliberately oracle-strong
-  baseline makes the reported path-diversity benefit conservative relative to choosing one fixed
-  tree before observing the run.
-- Critical-path counters preserve the W0–W3 event boundaries, but WR does not claim a unique
-  decomposition of overlapping TCP, resource-queue, relay, and mailbox waits.
-
-No production code, wire format, manifest surface, or W4 calibration artifact changed in WR.
 
 ## Gates
 
-**Pending.** This interim checkpoint records the failed run before harness-resilience and causal
-triage work. It is not a completed WR gate.
+| Gate | Result |
+|---|---|
+| Tier-1 durable execution | 224 success, 0 failure |
+| Result digests | 10/10 top-level and 673/673 cell files verified |
+| Wansim `cargo fmt --check` | Green |
+| Wansim `cargo clippy --all-targets -- -D warnings` | Green |
+| Wansim `cargo nextest run` | 114 passed, 1 existing manual probe skipped |
+| Root `cargo nextest run` spot check on Boston/Linux | 826 passed, 0 failed, 17 existing skips |
+
+The historical 828-test spot-check count in W0--W3 was recorded on macOS. The synchronized
+Boston source tree enumerates 826 tests on Linux because the dataplane has target-gated local-I/O
+modules (for example, non-Linux `local/writer.rs` versus Linux `writer_tso.rs`). The source and
+test-file inventories were checked before the run; this is a platform-specific inventory count,
+not two failed or silently skipped tests. The authoritative Boston gate above is fully green.
+
+## Commits and closure
+
+| Commit | Concern |
+|---|---|
+| `f937f62` | Remove the silent K*8 emission ceiling; make explicit guard exhaustion loud |
+| `8e6d525` | Freeze the 224-cell Tier-1 queue and persist the first 30 shards |
+| `65d3725` | Persist the next shard batch |
+| `b249958` | Checkpoint the main-matrix tail |
+| `6190ad0` | Persist early straggler and cadence shards |
+| `532683b` | Persist the late Tier-1 tail |
+| final report commit | Final shards, aggregate CSVs, digests, gate results, and this report |
+
+No Tier 2, W4, simulator optimization, digest-equivalence matrix, or production change was
+started. The planned wansim effort is closed after this report unless a future user directive
+explicitly reopens it.
