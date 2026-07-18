@@ -13,7 +13,8 @@ use crate::determinism::CounterPrf;
 use crate::metrics::{MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder};
 use crate::overlay::{
     ControlStream, FanoutRelayEndpoint, FramedStream, ReceiverControlGeometry, RelayChildSpec,
-    W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint, W1SourceProtocol,
+    SourceEmissionLimit, W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint,
+    W1SourceProtocol,
 };
 use crate::protocol::{CarouselTiming, ProtocolKind, equal_quotas, proportional_quotas};
 use crate::scenario::{
@@ -324,7 +325,8 @@ pub fn run_wr_triage(config: &WrRunConfig) -> Result<WrTriageOutcome, WrRunError
         failure: execution.failure,
         stopped_at_ns: execution.elapsed_ns,
         acknowledgement_progress_units: ack_progress_units(config.source_symbols)?,
-        configured_emission_ceiling: maximum_frames_per_tree(config.source_symbols)?
+        configured_emission_ceiling: FramedStream::checked_namespace_frame_count(508)
+            .map_err(|error| WrRunError::Construction(error.to_string()))?
             .checked_mul(TREE_COUNT)
             .ok_or(WrRunError::Geometry)?,
     })
@@ -333,7 +335,7 @@ pub fn run_wr_triage(config: &WrRunConfig) -> Result<WrTriageOutcome, WrRunError
 fn execute_wr(config: &WrRunConfig, recorder: Recorder) -> Result<WrExecution, WrRunError> {
     config.validate()?;
     let tracker = MailboxTracker::default();
-    let data_socket = socket_config()?;
+    let data_socket = socket_config(config.source_symbols)?;
     let control_socket = data_socket;
     let background_socket = background_socket_config()?;
     let timing = carousel_timing(config.ack_cadence_multiplier);
@@ -493,11 +495,20 @@ fn records_to_csv(records: &[Record]) -> Result<String, csv::Error> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-fn socket_config() -> Result<SocketPairConfig, WrRunError> {
+fn socket_config(source_symbols: usize) -> Result<SocketPairConfig, WrRunError> {
+    // WR evidence cells (K >= 8,192) retain the representative 4 MiB socket
+    // geometry. Small semantic-screening cells cap their in-flight working
+    // set so removing the lifetime emission guard does not turn a K=64 unit
+    // test into a 4 MiB pre-completion burst.
+    let screening_working_set = source_symbols
+        .checked_mul(FRAME_PAYLOAD_BYTES + 4)
+        .and_then(|bytes| bytes.checked_mul(2))
+        .ok_or(WrRunError::Geometry)?;
+    let socket_buffer_bytes = screening_working_set.clamp(64 * 1024, 4 * 1024 * 1024);
     SocketPairConfig::new(
         512,
-        4 * 1024 * 1024,
-        4 * 1024 * 1024,
+        socket_buffer_bytes,
+        socket_buffer_bytes,
         1_000_000_000,
         20_000_000,
     )
@@ -555,10 +566,9 @@ fn build_session(
     recorder: &Recorder,
     tracker: &MailboxTracker,
 ) -> Result<SessionSlot, WrRunError> {
-    let maximum_frames = maximum_frames_per_tree(config.source_symbols)?;
+    let buffer_capacity_frames_per_tree = maximum_frames_per_tree(config.source_symbols)?;
     let streams = [0, 1].map(|tree| {
-        FramedStream::new(
-            maximum_frames,
+        FramedStream::new_checked_namespace(
             508,
             CounterPrf::new(config.seed, &format!("wr-session{session}-tree{tree}")),
         )
@@ -590,7 +600,9 @@ fn build_session(
         [BACKBONE_MAILBOX; TREE_COUNT],
         data_socket,
         512,
-        maximum_frames,
+        SourceEmissionLimit::CheckedNamespace {
+            frames_per_tree: streams[0].frame_count(),
+        },
         protocol,
         &peer_ids,
         &control_flows,
@@ -653,7 +665,9 @@ fn build_session(
         }
     }
 
-    let runtime_capacity = maximum_frames.checked_mul(2).ok_or(WrRunError::Geometry)?;
+    let runtime_capacity = buffer_capacity_frames_per_tree
+        .checked_mul(2)
+        .ok_or(WrRunError::Geometry)?;
     let inbox_capacity = if config.slow_receiver.is_some() {
         128
     } else {
@@ -685,7 +699,11 @@ fn build_session(
             runtime_capacity,
             inbox_capacity,
             config.receiver_admission,
-            runtime_capacity,
+            // Read credit is transport flow control, not lifetime geometry.
+            // Keep it strictly below the shared runtime mailbox capacity so
+            // control commands and multi-frame deliveries cannot make the
+            // plumbing queue become the modeled bottleneck.
+            runtime_capacity / (TREE_COUNT * 2),
             5_000,
             if config.slow_receiver == Some(receiver) {
                 1_000_000
@@ -1675,6 +1693,56 @@ mod tests {
         let mut scaling = config();
         scaling.source_symbols = 65_536;
         assert_eq!(simulation_end_ns(&scaling), 181_000_000_000);
+    }
+
+    #[test]
+    fn hybrid_drop_crosses_the_legacy_eight_k_per_tree_without_silent_stall() {
+        let mut cell = config();
+        cell.cloud =
+            CloudScenario::built_in(CloudProfileKind::DigitaloceanLike, 1).expect("cloud scenario");
+        cell.background_utilization_percent = 70;
+        cell.source_symbols = 64;
+        cell.seed = 15;
+        cell.slow_receiver = Some(0);
+
+        let outcome = run_wr_triage(&cell).expect("diagnostic cell");
+        let legacy_limit = cell.source_symbols.checked_mul(8).expect("legacy limit");
+        let per_tree = [0, 1].map(|tree| {
+            outcome
+                .records
+                .iter()
+                .filter(|record| {
+                    record.event == "data_frame_emitted"
+                        && record.flow_id == data_flow_id(0, tree, 0)
+                })
+                .count()
+        });
+        assert!(
+            per_tree
+                .into_iter()
+                .all(|emissions| emissions > legacy_limit),
+            "cap-free carousel should cross the old {legacy_limit}-frame per-tree guard: {per_tree:?}"
+        );
+        assert!(
+            !outcome
+                .records
+                .iter()
+                .any(|record| record.event == "emission_guard_exhausted")
+        );
+        let completed = outcome
+            .records
+            .iter()
+            .any(|record| record.event == "protocol_sender_complete");
+        let loud_failure = outcome.failure.as_deref().is_some_and(|failure| {
+            failure.contains("remained alive without completion progress")
+                || failure.contains("remained silent")
+                || failure.contains("emission namespace exhausted")
+        });
+        assert!(
+            completed || loud_failure,
+            "sender must complete or produce an explicit terminal outcome: {:?}",
+            outcome.failure
+        );
     }
 
     #[test]

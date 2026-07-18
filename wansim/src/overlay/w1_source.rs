@@ -30,6 +30,37 @@ pub(crate) enum W1SourceProtocol {
     Striped(StripeSender),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceEmissionLimit {
+    CheckedNamespace { frames_per_tree: usize },
+    ExplicitGuard { frames_per_tree: usize },
+}
+
+impl SourceEmissionLimit {
+    fn frames_per_tree(self) -> usize {
+        match self {
+            Self::CheckedNamespace { frames_per_tree }
+            | Self::ExplicitGuard { frames_per_tree } => frames_per_tree,
+        }
+    }
+
+    fn exhaustion(self, emitted: usize) -> Option<(&'static str, &'static str)> {
+        if emitted < self.frames_per_tree() {
+            return None;
+        }
+        Some(match self {
+            Self::CheckedNamespace { .. } => (
+                "emission_namespace_exhausted",
+                "checked emission namespace exhausted",
+            ),
+            Self::ExplicitGuard { .. } => (
+                "emission_guard_exhausted",
+                "emission_guard_exhausted: explicit per-tree frame guard reached",
+            ),
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct CarouselAckJoin {
     received_watermark: u64,
@@ -199,7 +230,7 @@ pub(crate) struct W1SourceEndpoint {
     data_flow_ids: [usize; TREE_COUNT],
     data_forward_mailboxes: [&'static str; TREE_COUNT],
     data_frame_wire_bytes: usize,
-    maximum_frames_per_tree: usize,
+    emission_limit: SourceEmissionLimit,
     emitted_per_tree: [usize; TREE_COUNT],
     total_emissions: usize,
     completion_recorded: bool,
@@ -231,7 +262,7 @@ impl W1SourceEndpoint {
         data_forward_mailboxes: [&'static str; TREE_COUNT],
         data_socket: SocketPairConfig,
         data_frame_wire_bytes: usize,
-        maximum_frames_per_tree: usize,
+        emission_limit: SourceEmissionLimit,
         protocol: W1SourceProtocol,
         peer_ids: &[u64],
         control_flow_ids: &[(usize, usize)],
@@ -278,7 +309,7 @@ impl W1SourceEndpoint {
             data_flow_ids,
             data_forward_mailboxes,
             data_frame_wire_bytes,
-            maximum_frames_per_tree,
+            emission_limit,
             emitted_per_tree: [0; TREE_COUNT],
             total_emissions: 0,
             completion_recorded: false,
@@ -565,7 +596,6 @@ impl W1SourceEndpoint {
             let writable: BTreeSet<_> = (0..TREE_COUNT)
                 .filter(|tree| {
                     self.data_senders[*tree].writable_bytes() >= self.data_frame_wire_bytes
-                        && self.emitted_per_tree[*tree] < self.maximum_frames_per_tree
                 })
                 .collect();
             if writable.is_empty() {
@@ -597,6 +627,22 @@ impl W1SourceEndpoint {
                 };
                 (tree, false)
             };
+
+            if let Some((event, reason)) =
+                self.emission_limit.exhaustion(self.emitted_per_tree[tree])
+            {
+                self.recorder.record(
+                    now,
+                    self.component,
+                    event,
+                    self.data_flow_ids[tree],
+                    tree,
+                    self.data_frame_wire_bytes,
+                    self.emitted_per_tree[tree],
+                );
+                self.recorder.fail(reason);
+                break;
+            }
 
             let admission =
                 match self.data_senders[tree].admit_application_write(self.data_frame_wire_bytes) {
@@ -789,4 +835,22 @@ pub(crate) enum W1SourceBuildError {
     Carousel(#[from] CarouselConfigError),
     #[error("W1 source peer/control geometry is inconsistent")]
     PeerGeometry,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_emission_guard_has_a_loud_named_terminal_failure() {
+        let guard = SourceEmissionLimit::ExplicitGuard { frames_per_tree: 8 };
+        assert_eq!(guard.exhaustion(7), None);
+        assert_eq!(
+            guard.exhaustion(8),
+            Some((
+                "emission_guard_exhausted",
+                "emission_guard_exhausted: explicit per-tree frame guard reached"
+            ))
+        );
+    }
 }

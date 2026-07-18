@@ -13,7 +13,8 @@ use crate::determinism::CounterPrf;
 use crate::metrics::{MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder};
 use crate::overlay::{
     ControlStream, FanoutRelayEndpoint, FramedStream, ReceiverControlGeometry, RelayChildSpec,
-    W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint, W1SourceProtocol,
+    SourceEmissionLimit, W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint,
+    W1SourceProtocol,
 };
 use crate::protocol::ProtocolKind;
 use crate::scenario::{
@@ -343,7 +344,9 @@ pub fn run_w2(scenario: &W2Scenario) -> Result<W2Outcome, W2RunError> {
         [DATA_FORWARD_LINKS[0][0], DATA_FORWARD_LINKS[1][0]],
         socket,
         frame_wire_bytes,
-        maximum_frames,
+        SourceEmissionLimit::ExplicitGuard {
+            frames_per_tree: maximum_frames,
+        },
         source_protocol,
         &peer_ids,
         &active_control_flow_ids,

@@ -22,4 +22,4 @@ pub(crate) use tree_receiver::TreeReceiverEndpoint;
 pub(crate) use tree_relay::{FanoutRelayEndpoint, RelayChildSpec};
 pub(crate) use tree_source::TreeSourceEndpoint;
 pub(crate) use w1_receiver::{ReceiverControlGeometry, W1ReceiverEndpoint, W1ReceiverProtocol};
-pub(crate) use w1_source::{W1SourceEndpoint, W1SourceProtocol};
+pub(crate) use w1_source::{SourceEmissionLimit, W1SourceEndpoint, W1SourceProtocol};
