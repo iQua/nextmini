@@ -1,0 +1,16 @@
+schema_version,simulator_version,evidence_class,question,variant,seeds,barrier_mean_ns,barrier_p5_ns,barrier_p95_ns,sender_mean_ns,healthy_receiver_mean_ns,emissions_mean,drops_mean,blocking_waits_mean,stall_consumption_p95_ppm
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,aws-like-best-single-tree0,2,69009806723,68820843443,69198770004,69085480993,69009806723,277453,0,0,4618320
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,aws-like-best-single-tree1,2,69789402486,69722492326,69856312646,69865076756,69789402486,278270,0,0,4662156
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,aws-like-carousel,2,35514684329,35392311694,35637056965,35593187326,35514684329,181960,0,0,4396
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,aws-like-per-stripe-fec,2,39208027132,39145178018,39270876247,39283701419,39208027132,179701,0,0,2623127
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,aws-like-rounds,2,35514485809,35390322037,35638649582,35650831365,35514485809,181044,0,0,2384403
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,digitalocean-like-best-single-tree0,2,74254896826,74020989126,74488804527,74330585809,74254896826,277141,0,0,4970990
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,digitalocean-like-best-single-tree1,2,75085617483,74968993229,75202241738,75161306466,75085617483,278264,0,0,5018552
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,digitalocean-like-carousel,2,38218849576,38053267908,38384431245,38301368444,38218849576,185887,0,0,4462
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,digitalocean-like-per-stripe-fec,2,41466349585,41351050371,41581648800,41542038568,41466349585,183679,0,0,2777179
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,digitalocean-like-rounds,2,38217360856,38056815715,38377905998,38298899017,38217360856,185057,0,0,2564191
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,gcp-like-best-single-tree0,2,64220180793,63999295439,64441066147,64294852847,64220180793,267716,0,0,4301072
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,gcp-like-best-single-tree1,2,65085656673,65024467850,65146845496,65160324597,65085656673,274013,0,0,4348124
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,gcp-like-carousel,2,33046850594,32911694914,33182006275,33125494699,33046850594,179263,0,0,4197
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,gcp-like-per-stripe-fec,2,36864091811,36816551672,36911631951,36938760446,36864091811,176879,0,0,2465777
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,k-scaling-spot,gcp-like-rounds,2,33047231421,32911614833,33182848009,33242238230,33047231421,178411,0,0,2224968

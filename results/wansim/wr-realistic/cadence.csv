@@ -1,0 +1,4 @@
+schema_version,simulator_version,evidence_class,question,variant,seeds,barrier_mean_ns,barrier_p5_ns,barrier_p95_ns,sender_mean_ns,healthy_receiver_mean_ns,emissions_mean,drops_mean,blocking_waits_mean,stall_consumption_p95_ppm
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,blockack-cadence,0.5x,16,6134850879,5866909200,6423977619,6189606839,6134850879,39978,0,0,4844
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,blockack-cadence,1x,16,6134824476,5866910321,6423979097,6190236227,6134824476,39987,0,0,4974
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,blockack-cadence,2x,16,6134850166,5866909200,6423980160,6196308350,6134850166,40014,0,0,5459
