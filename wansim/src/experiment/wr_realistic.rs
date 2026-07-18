@@ -13,6 +13,8 @@ use crate::scenario::{
 };
 use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
+mod persistence;
+
 const EVIDENCE_CLASS: &str = "model-level realistic-envelope evidence; not a WAN measurement";
 const UTILIZATIONS: [u8; 3] = [30, 50, 70];
 const JITTER_OPTIONS: [bool; 2] = [false, true];
@@ -38,6 +40,16 @@ pub struct WrArtifacts {
     pub sharing_csv: String,
 }
 
+#[derive(Clone, Debug)]
+pub struct WrPersistentRun {
+    pub artifacts: Option<WrArtifacts>,
+    pub failures_csv: String,
+    pub total_cells: usize,
+    pub successful_cells: usize,
+    pub failed_cells: usize,
+    pub skipped_cells: usize,
+}
+
 #[derive(Debug, Error)]
 pub enum WrExperimentError {
     #[error("WR requires at least 16 stochastic seeds per main cell")]
@@ -52,6 +64,8 @@ pub enum WrExperimentError {
     MissingPair(String),
     #[error("WR nexosim mailbox became binding: {0}/{MAILBOX_CAPACITY}")]
     BindingMailbox(usize),
+    #[error("WR persistence failed: {0}")]
+    Persistence(String),
     #[error(transparent)]
     Run(#[from] WrRunError),
     #[error(transparent)]
@@ -122,7 +136,7 @@ struct RawTrial {
 
 #[derive(Clone, Debug, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 struct SharingRow {
-    profile: &'static str,
+    profile: String,
     placement: String,
     resource: String,
     total_flow_directions: usize,
@@ -290,15 +304,35 @@ pub fn run_wr_experiment(seeds: u64, workers: usize) -> Result<WrArtifacts, WrEx
     }
     let tasks = build_tasks(seeds);
     let trials = run_tasks(tasks, workers)?;
+    artifacts_from_trials(&trials)
+}
+
+pub fn run_wr_experiment_persistent(
+    seeds: u64,
+    workers: usize,
+    output: &std::path::Path,
+    resume: bool,
+) -> Result<WrPersistentRun, WrExperimentError> {
+    if seeds < 16 {
+        return Err(WrExperimentError::TooFewSeeds);
+    }
+    if workers == 0 {
+        return Err(WrExperimentError::ZeroWorkers);
+    }
+    persistence::run(seeds, workers, output, resume)
+        .map_err(|error| WrExperimentError::Persistence(error.to_string()))
+}
+
+fn artifacts_from_trials(trials: &[RawTrial]) -> Result<WrArtifacts, WrExperimentError> {
     let trial_rows = trials.iter().map(trial_row).collect::<Vec<_>>();
-    let summaries = summarize(&trials);
-    let advantages = advantages(&trials)?;
-    let rounds = rounds_gaps(&trials)?;
-    let a4 = a4_rows(&trials);
-    let straggler = pair_rows(&trials, Slice::Straggler, "hybrid-vs-blocking");
-    let cadence = pair_rows(&trials, Slice::Cadence, "blockack-cadence");
-    let concurrent = pair_rows(&trials, Slice::Concurrent, "concurrent-sessions");
-    let scaling = pair_rows(&trials, Slice::Scaling, "k-scaling-spot");
+    let summaries = summarize(trials);
+    let advantages = advantages(trials)?;
+    let rounds = rounds_gaps(trials)?;
+    let a4 = a4_rows(trials);
+    let straggler = pair_rows(trials, Slice::Straggler, "hybrid-vs-blocking");
+    let cadence = pair_rows(trials, Slice::Cadence, "blockack-cadence");
+    let concurrent = pair_rows(trials, Slice::Concurrent, "concurrent-sessions");
+    let scaling = pair_rows(trials, Slice::Scaling, "k-scaling-spot");
     let mut sharing = trials
         .iter()
         .filter(|trial| {
@@ -525,7 +559,7 @@ fn raw_trial(
         .sharing
         .iter()
         .map(|row| SharingRow {
-            profile: profile_name,
+            profile: profile_name.to_owned(),
             placement: placement_id.clone(),
             resource: row.resource.clone(),
             total_flow_directions: row.total_flow_directions,
