@@ -1,0 +1,17 @@
+profile,placement,resource,total_flow_directions,foreground_flow_directions,background_flow_directions
+digitalocean-like,west-origin,nic:nyc3,20,12,8
+digitalocean-like,west-origin,nic:tor1,14,6,8
+digitalocean-like,west-origin,nic:sfo3,32,16,16
+digitalocean-like,west-origin,nic:lon1,6,6,0
+digitalocean-like,west-origin,nic:fra1,12,12,0
+digitalocean-like,west-origin,nic:sgp1,8,8,0
+digitalocean-like,west-origin,trunk:na-east-to-na-west,12,4,8
+digitalocean-like,west-origin,trunk:na-west-to-na-east,12,4,8
+digitalocean-like,west-origin,trunk:na-east-to-eu,2,2,0
+digitalocean-like,west-origin,trunk:eu-to-na-east,2,2,0
+digitalocean-like,west-origin,trunk:na-west-to-ap,2,2,0
+digitalocean-like,west-origin,trunk:ap-to-na-west,2,2,0
+digitalocean-like,west-origin,trunk:eu-to-ap,2,2,0
+digitalocean-like,west-origin,trunk:ap-to-eu,2,2,0
+digitalocean-like,west-origin,trunk:na-west-to-eu,2,2,0
+digitalocean-like,west-origin,trunk:eu-to-na-west,2,2,0

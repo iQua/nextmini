@@ -16,8 +16,6 @@ use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 mod persistence;
 
 const EVIDENCE_CLASS: &str = "model-level realistic-envelope evidence; not a WAN measurement";
-const UTILIZATIONS: [u8; 3] = [30, 50, 70];
-const JITTER_OPTIONS: [bool; 2] = [false, true];
 const MAIN_PROTOCOLS: [WrProtocol; 5] = [
     WrProtocol::Carousel,
     WrProtocol::Rounds,
@@ -329,7 +327,7 @@ fn artifacts_from_trials(trials: &[RawTrial]) -> Result<WrArtifacts, WrExperimen
     let advantages = advantages(trials)?;
     let rounds = rounds_gaps(trials)?;
     let a4 = a4_rows(trials);
-    let straggler = pair_rows(trials, Slice::Straggler, "hybrid-vs-blocking");
+    let straggler = pair_rows(trials, Slice::Straggler, "hybrid-straggler");
     let cadence = pair_rows(trials, Slice::Cadence, "blockack-cadence");
     let concurrent = pair_rows(trials, Slice::Concurrent, "concurrent-sessions");
     let scaling = pair_rows(trials, Slice::Scaling, "k-scaling-spot");
@@ -358,53 +356,44 @@ fn artifacts_from_trials(trials: &[RawTrial]) -> Result<WrArtifacts, WrExperimen
 
 fn build_tasks(seeds: u64) -> Vec<Task> {
     let mut tasks = Vec::new();
-    for profile in CloudProfileKind::ALL {
-        for placement in 0..2 {
-            for utilization in UTILIZATIONS {
-                for jitter in JITTER_OPTIONS {
-                    for protocol in MAIN_PROTOCOLS {
-                        for seed in 0..seeds {
-                            tasks.push(Task {
-                                slice: Slice::Main,
-                                profile,
-                                placement,
-                                utilization,
-                                jitter,
-                                protocol,
-                                k: 8_192,
-                                seed,
-                                cadence: 2,
-                                admission: ReceiverAdmissionPolicy::HybridDrop,
-                                slow_receiver: None,
-                                sessions: 1,
-                            });
-                        }
-                    }
-                }
+    let profile = CloudProfileKind::DigitaloceanLike;
+    let placement = 1;
+    for utilization in [30, 70] {
+        for protocol in MAIN_PROTOCOLS {
+            for seed in 0..seeds {
+                tasks.push(Task {
+                    slice: Slice::Main,
+                    profile,
+                    placement,
+                    utilization,
+                    jitter: true,
+                    protocol,
+                    k: 8_192,
+                    seed,
+                    cadence: 2,
+                    admission: ReceiverAdmissionPolicy::HybridDrop,
+                    slow_receiver: None,
+                    sessions: 1,
+                });
             }
         }
     }
-    let harsh = (CloudProfileKind::DigitaloceanLike, 1, 70, true);
-    for admission in [
-        ReceiverAdmissionPolicy::HybridDrop,
-        ReceiverAdmissionPolicy::NaiveBlocking,
-    ] {
-        for seed in 0..seeds {
-            tasks.push(Task {
-                slice: Slice::Straggler,
-                profile: harsh.0,
-                placement: harsh.1,
-                utilization: harsh.2,
-                jitter: harsh.3,
-                protocol: WrProtocol::Carousel,
-                k: 8_192,
-                seed,
-                cadence: 2,
-                admission,
-                slow_receiver: Some(0),
-                sessions: 1,
-            });
-        }
+    let harsh = (profile, placement, 70, true);
+    for seed in 0..seeds {
+        tasks.push(Task {
+            slice: Slice::Straggler,
+            profile: harsh.0,
+            placement: harsh.1,
+            utilization: harsh.2,
+            jitter: harsh.3,
+            protocol: WrProtocol::Carousel,
+            k: 8_192,
+            seed,
+            cadence: 2,
+            admission: ReceiverAdmissionPolicy::HybridDrop,
+            slow_receiver: Some(0),
+            sessions: 1,
+        });
     }
     for cadence in [1, 2, 4] {
         for seed in 0..seeds {
@@ -418,44 +407,6 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                 k: 8_192,
                 seed,
                 cadence,
-                admission: ReceiverAdmissionPolicy::HybridDrop,
-                slow_receiver: None,
-                sessions: 1,
-            });
-        }
-    }
-    for sessions in [1, 2] {
-        for seed in 0..seeds {
-            tasks.push(Task {
-                slice: Slice::Concurrent,
-                profile: harsh.0,
-                placement: harsh.1,
-                utilization: harsh.2,
-                jitter: harsh.3,
-                protocol: WrProtocol::Carousel,
-                k: 8_192,
-                seed,
-                cadence: 2,
-                admission: ReceiverAdmissionPolicy::HybridDrop,
-                slow_receiver: None,
-                sessions,
-            });
-        }
-    }
-    // K=65,536 is intentionally a small scaling spot: one carousel cell per profile, retaining
-    // the same stochastic seed budget as every other reported cell.
-    for profile in CloudProfileKind::ALL {
-        for seed in 0..seeds {
-            tasks.push(Task {
-                slice: Slice::Scaling,
-                profile,
-                placement: 0,
-                utilization: 50,
-                jitter: true,
-                protocol: WrProtocol::Carousel,
-                k: 65_536,
-                seed,
-                cadence: 2,
                 admission: ReceiverAdmissionPolicy::HybridDrop,
                 slow_receiver: None,
                 sessions: 1,
@@ -1163,24 +1114,41 @@ mod tests {
     }
 
     #[test]
-    fn main_matrix_has_every_required_cloud_axis_and_minimum_seed_budget() {
+    fn tier_one_matrix_is_the_closed_decision_subset() {
         let tasks = build_tasks(16);
-        assert_eq!(tasks.len(), 3_040);
+        assert_eq!(tasks.len(), 224);
         let main = tasks
             .iter()
             .filter(|task| task.slice == Slice::Main)
             .collect::<Vec<_>>();
-        assert_eq!(main.len(), 3 * 2 * 3 * 2 * 5 * 16);
-        assert!(main.iter().all(|task| task.k == 8_192));
-        let scaling = tasks
-            .iter()
-            .filter(|task| task.slice == Slice::Scaling)
-            .collect::<Vec<_>>();
-        assert_eq!(scaling.len(), 3 * 16);
-        assert!(scaling.iter().all(|task| {
-            task.k == 65_536 && task.protocol == WrProtocol::Carousel && task.seed < 16
+        assert_eq!(main.len(), 2 * 5 * 16);
+        assert!(main.iter().all(|task| {
+            task.profile == CloudProfileKind::DigitaloceanLike
+                && task.placement == 1
+                && [30, 70].contains(&task.utilization)
+                && task.jitter
+                && task.k == 8_192
         }));
-        assert!(tasks.iter().any(|task| task.sessions == 2));
+        let straggler = tasks
+            .iter()
+            .filter(|task| task.slice == Slice::Straggler)
+            .collect::<Vec<_>>();
+        assert_eq!(straggler.len(), 16);
+        assert!(straggler.iter().all(|task| {
+            task.admission == ReceiverAdmissionPolicy::HybridDrop
+                && task.slow_receiver == Some(0)
+        }));
+        assert_eq!(
+            tasks
+                .iter()
+                .filter(|task| task.slice == Slice::Cadence)
+                .count(),
+            3 * 16
+        );
+        assert!(tasks.iter().all(|task| task.sessions == 1));
+        assert!(tasks.iter().all(|task| {
+            !matches!(task.slice, Slice::Concurrent | Slice::Scaling)
+        }));
     }
 
     #[test]

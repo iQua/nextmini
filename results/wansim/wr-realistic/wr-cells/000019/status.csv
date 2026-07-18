@@ -1,0 +1,2 @@
+cell_format_version,scenario_schema_version,simulator_version,experiment_seeds,task_index,task_key,slice,profile,placement_index,utilization_percent,jitter,protocol,source_symbols,seed,cadence,admission,slow_receiver,sessions,status,error
+1,1,0.1.0,16,19,slice=main;profile=digitalocean-like;placement=1;utilization=30;jitter=true;protocol=rounds;K=8192;seed=3;cadence=1x;admission=hybrid-drop;slow=none;sessions=1,main,digitalocean-like,1,30,true,rounds,8192,3,1x,hybrid-drop,-1,1,success,
