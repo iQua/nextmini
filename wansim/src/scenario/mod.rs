@@ -1,4 +1,5 @@
 mod chain;
+mod cloud_cost;
 mod cloudcast_policy;
 mod config;
 mod tree;
@@ -11,6 +12,7 @@ mod wr;
 mod wr_config;
 
 pub use chain::{ChainOutcome, ChainRunError, run_chain};
+pub use cloud_cost::representative_egress_prices;
 pub use cloudcast_policy::{
     CloudcastEgressPrices, CloudcastPolicyError, CloudcastPolicyPlan, CloudcastPolicyRequest,
     plan_cloudcast_policy,

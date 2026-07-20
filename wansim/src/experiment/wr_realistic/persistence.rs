@@ -17,6 +17,7 @@ use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
 const CELL_FORMAT_VERSION: u32 = 1;
 const CELL_DIRECTORY: &str = "wr-cells";
+const WR_EXPERIMENT: &str = "wr-realistic-v1";
 const MANIFEST_FILE: &str = "manifest.toml";
 const STATUS_FILE: &str = "status.csv";
 const TRIAL_FILE: &str = "trial.csv";
@@ -67,18 +68,25 @@ struct CellManifest {
     simulator_version: String,
     seeds: u64,
     total_cells: usize,
+    #[serde(default = "default_experiment")]
+    experiment: String,
 }
 
 impl CellManifest {
-    fn expected(seeds: u64, total_cells: usize) -> Self {
+    fn expected(experiment: &str, seeds: u64, total_cells: usize) -> Self {
         Self {
             cell_format_version: CELL_FORMAT_VERSION,
             scenario_schema_version: SCENARIO_SCHEMA_VERSION,
             simulator_version: SIMULATOR_VERSION.to_owned(),
             seeds,
             total_cells,
+            experiment: experiment.to_owned(),
         }
     }
+}
+
+fn default_experiment() -> String {
+    WR_EXPERIMENT.to_owned()
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -101,6 +109,12 @@ struct CellStatusRow {
     admission: String,
     slow_receiver: i8,
     sessions: usize,
+    #[serde(default)]
+    price_egress: bool,
+    #[serde(default)]
+    anchor_background: bool,
+    #[serde(default = "default_true")]
+    flow_count_match_single_tree: bool,
     status: String,
     error: String,
 }
@@ -125,7 +139,7 @@ impl CellStatusRow {
             placement_index: task.placement,
             utilization_percent: task.utilization,
             jitter: task.jitter,
-            protocol: task.protocol.name().to_owned(),
+            protocol: task.protocol.evidence_name().to_owned(),
             source_symbols: task.k,
             seed: task.seed,
             cadence: cadence_name(task.cadence).to_owned(),
@@ -134,6 +148,9 @@ impl CellStatusRow {
                 i8::try_from(receiver).expect("WR receiver index fits in i8")
             }),
             sessions: task.sessions,
+            price_egress: task.price_egress,
+            anchor_background: task.anchor_background,
+            flow_count_match_single_tree: task.flow_count_match_single_tree,
             status: status.to_owned(),
             error,
         }
@@ -209,6 +226,21 @@ impl CellStatusRow {
                 self.sessions.to_string(),
                 expected.sessions.to_string(),
             ),
+            (
+                "price_egress",
+                self.price_egress.to_string(),
+                expected.price_egress.to_string(),
+            ),
+            (
+                "anchor_background",
+                self.anchor_background.to_string(),
+                expected.anchor_background.to_string(),
+            ),
+            (
+                "flow_count_match_single_tree",
+                self.flow_count_match_single_tree.to_string(),
+                expected.flow_count_match_single_tree.to_string(),
+            ),
         ] {
             if actual != wanted {
                 return Err(format!("{field} is {actual:?}, expected {wanted:?}"));
@@ -222,6 +254,10 @@ impl CellStatusRow {
             other => Err(format!("unknown cell status {other:?}")),
         }
     }
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -250,6 +286,10 @@ struct PersistedTrialRow {
     tree0_bytes: u64,
     tree1_bytes: u64,
     maximum_mailbox_high_water: usize,
+    #[serde(default)]
+    foreground_egress_wire_bytes: u64,
+    #[serde(default)]
+    modeled_egress_nano_usd: u64,
 }
 
 impl PersistedTrialRow {
@@ -279,6 +319,8 @@ impl PersistedTrialRow {
             tree0_bytes: trial.tree_bytes[0],
             tree1_bytes: trial.tree_bytes[1],
             maximum_mailbox_high_water: trial.maximum_mailbox_high_water,
+            foreground_egress_wire_bytes: trial.foreground_egress_wire_bytes,
+            modeled_egress_nano_usd: trial.modeled_egress_nano_usd,
         }
     }
 
@@ -329,6 +371,8 @@ impl PersistedTrialRow {
             a4_trace_correlation_ppm: self.a4_trace_correlation_ppm,
             tree_bytes: [self.tree0_bytes, self.tree1_bytes],
             maximum_mailbox_high_water: self.maximum_mailbox_high_water,
+            foreground_egress_wire_bytes: self.foreground_egress_wire_bytes,
+            modeled_egress_nano_usd: self.modeled_egress_nano_usd,
             sharing,
         })
     }
@@ -393,12 +437,14 @@ struct CellStore {
 impl CellStore {
     fn open(
         output: &Path,
+        experiment: &str,
+        cell_directory: &str,
         seeds: u64,
         total_cells: usize,
         resume: bool,
     ) -> Result<Self, PersistenceError> {
-        let expected = CellManifest::expected(seeds, total_cells);
-        let cells = output.join(CELL_DIRECTORY);
+        let expected = CellManifest::expected(experiment, seeds, total_cells);
+        let cells = output.join(cell_directory);
         let manifest_path = cells.join(MANIFEST_FILE);
         if manifest_path.exists() {
             if !resume {
@@ -568,7 +614,59 @@ pub(super) fn run(
     resume: bool,
 ) -> Result<WrPersistentRun, PersistenceError> {
     let tasks = build_tasks(seeds);
-    let store = Arc::new(CellStore::open(output, seeds, tasks.len(), resume)?);
+    let loaded = run_cells(
+        WR_EXPERIMENT,
+        CELL_DIRECTORY,
+        seeds,
+        workers,
+        output,
+        resume,
+        tasks,
+    )?;
+    let artifacts = if loaded.failed_cells == 0 {
+        Some(
+            artifacts_from_trials(&loaded.successful)
+                .map_err(|error| PersistenceError::Aggregation(error.to_string()))?,
+        )
+    } else {
+        None
+    };
+    Ok(WrPersistentRun {
+        artifacts,
+        failures_csv: loaded.failures_csv,
+        total_cells: loaded.total_cells,
+        successful_cells: loaded.successful.len(),
+        failed_cells: loaded.failed_cells,
+        skipped_cells: loaded.skipped_cells,
+    })
+}
+
+pub(super) struct PersistedTrials {
+    pub(super) successful: Vec<RawTrial>,
+    pub(super) failures_csv: String,
+    pub(super) total_cells: usize,
+    pub(super) failed_cells: usize,
+    pub(super) skipped_cells: usize,
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn run_cells(
+    experiment: &str,
+    cell_directory: &str,
+    seeds: u64,
+    workers: usize,
+    output: &Path,
+    resume: bool,
+    tasks: Vec<Task>,
+) -> Result<PersistedTrials, PersistenceError> {
+    let store = Arc::new(CellStore::open(
+        output,
+        experiment,
+        cell_directory,
+        seeds,
+        tasks.len(),
+        resume,
+    )?);
     let initial = load_cells(&store, &tasks)?;
     let skipped_cells = initial.skipped;
     let pending = Arc::new(initial.pending);
@@ -627,20 +725,12 @@ pub(super) fn run(
         return Err(PersistenceError::MissingCell(*task_index));
     }
     let failures_csv = to_csv(&loaded.failures)?;
-    let artifacts = if loaded.failures.is_empty() {
-        Some(
-            artifacts_from_trials(&loaded.successful)
-                .map_err(|error| PersistenceError::Aggregation(error.to_string()))?,
-        )
-    } else {
-        None
-    };
-    Ok(WrPersistentRun {
-        artifacts,
+    let failed_cells = loaded.failures.len();
+    Ok(PersistedTrials {
+        successful: loaded.successful,
         failures_csv,
         total_cells: tasks.len(),
-        successful_cells: loaded.successful.len(),
-        failed_cells: loaded.failures.len(),
+        failed_cells,
         skipped_cells,
     })
 }
@@ -673,7 +763,7 @@ fn task_key(task: &Task) -> String {
         task.placement,
         task.utilization,
         task.jitter,
-        task.protocol.name(),
+        task.protocol.evidence_name(),
         task.k,
         task.seed,
         cadence_name(task.cadence),
@@ -827,7 +917,8 @@ mod tests {
         child.wait().expect("reap killed fixture");
 
         let tasks = build_tasks(16).into_iter().take(2).collect::<Vec<_>>();
-        let store = CellStore::open(&root, 16, tasks.len(), true).expect("resume cell store");
+        let store = CellStore::open(&root, WR_EXPERIMENT, CELL_DIRECTORY, 16, tasks.len(), true)
+            .expect("resume cell store");
         let loaded = load_cells(&store, &tasks).expect("load after kill");
         assert_eq!(loaded.successful.len(), 1);
         assert!(loaded.failures.is_empty());
@@ -848,7 +939,8 @@ mod tests {
         store
             .persist_success(1, &tasks[1], &second)
             .expect("persist resumed cell");
-        let reopened = CellStore::open(&root, 16, tasks.len(), true).expect("reopen resumed store");
+        let reopened = CellStore::open(&root, WR_EXPERIMENT, CELL_DIRECTORY, 16, tasks.len(), true)
+            .expect("reopen resumed store");
         let complete = load_cells(&reopened, &tasks).expect("load completed resume");
         assert_eq!(complete.successful.len(), 2);
         assert!(complete.pending.is_empty());
@@ -862,7 +954,8 @@ mod tests {
     fn failed_cell_is_durable_without_replacing_prior_success() {
         let root = unique_test_directory();
         let tasks = build_tasks(16).into_iter().take(2).collect::<Vec<_>>();
-        let store = CellStore::open(&root, 16, tasks.len(), false).expect("create cell store");
+        let store = CellStore::open(&root, WR_EXPERIMENT, CELL_DIRECTORY, 16, tasks.len(), false)
+            .expect("create cell store");
         store
             .persist_success(0, &tasks[0], &fake_trial(tasks[0].clone(), 1))
             .expect("persist successful cell");
@@ -870,7 +963,8 @@ mod tests {
             .persist_failure(1, &tasks[1], "injected cell failure".to_owned())
             .expect("persist failed cell");
 
-        let resumed = CellStore::open(&root, 16, tasks.len(), true).expect("resume cell store");
+        let resumed = CellStore::open(&root, WR_EXPERIMENT, CELL_DIRECTORY, 16, tasks.len(), true)
+            .expect("resume cell store");
         let loaded = load_cells(&resumed, &tasks).expect("load terminal cells");
         assert_eq!(loaded.successful.len(), 1);
         assert_eq!(loaded.failures.len(), 1);
@@ -888,7 +982,8 @@ mod tests {
         let root = PathBuf::from(std::env::var_os(ROOT_ENV).expect("kill fixture root"));
         let ready = root.with_extension("ready");
         let tasks = build_tasks(16).into_iter().take(2).collect::<Vec<_>>();
-        let store = CellStore::open(&root, 16, tasks.len(), false).expect("create fixture store");
+        let store = CellStore::open(&root, WR_EXPERIMENT, CELL_DIRECTORY, 16, tasks.len(), false)
+            .expect("create fixture store");
         let first = fake_trial(tasks[0].clone(), 1);
         store
             .persist_success(0, &tasks[0], &first)
@@ -924,6 +1019,8 @@ mod tests {
             a4_trace_correlation_ppm: 0,
             tree_bytes: [ordinal, ordinal],
             maximum_mailbox_high_water: 1,
+            foreground_egress_wire_bytes: 0,
+            modeled_egress_nano_usd: 0,
             sharing: Vec::new(),
         }
     }

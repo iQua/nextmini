@@ -10,7 +10,9 @@ use crate::days_bridge::{
     BackgroundFlowConfig, BackgroundTrafficKind, RegionalBackbone, RegionalBackboneConfig,
 };
 use crate::determinism::CounterPrf;
-use crate::metrics::{MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder};
+use crate::metrics::{
+    EgressLedger, MAILBOX_CAPACITY, MailboxTracker, OwnershipLedger, Record, Recorder,
+};
 use crate::overlay::{
     ControlStream, FanoutRelayEndpoint, FramedStream, ReceiverControlGeometry, RelayChildSpec,
     SourceEmissionLimit, W1ReceiverEndpoint, W1ReceiverProtocol, W1SourceEndpoint,
@@ -18,7 +20,7 @@ use crate::overlay::{
 };
 use crate::protocol::{CarouselTiming, ProtocolKind, equal_quotas, proportional_quotas};
 use crate::scenario::{
-    CloudScenario, CloudScenarioError, CloudcastPolicyPlan, FanoutAdmission,
+    CloudScenario, CloudScenarioError, CloudcastEgressPrices, CloudcastPolicyPlan, FanoutAdmission,
     ReceiverAdmissionPolicy, RegistrationOrder,
 };
 use crate::transport::{SocketPairConfig, TcpCongestionControl};
@@ -121,6 +123,13 @@ impl WrProtocol {
         }
     }
 
+    pub const fn evidence_name(self) -> &'static str {
+        match self {
+            Self::CloudcastPolicy => "Cloudcast POLICY on wansim transport",
+            _ => self.name(),
+        }
+    }
+
     fn endpoint_kind(self) -> ProtocolKind {
         match self {
             Self::CloudcastPolicy => ProtocolKind::RateProportionalStriping,
@@ -138,6 +147,11 @@ pub struct WrRunConfig {
     pub cloud: CloudScenario,
     pub protocol: WrProtocol,
     pub cloudcast_plan: Option<CloudcastPolicyPlan>,
+    pub egress_prices: Option<CloudcastEgressPrices>,
+    /// Optional fixed roots for background flows so policy-selected relays do not move the load.
+    pub background_anchor_regions: Option<[String; TREE_COUNT]>,
+    /// Preserve the W3 flow-count-matched single-tree baseline when requested by legacy runs.
+    pub flow_count_match_single_tree: bool,
     pub source_symbols: usize,
     pub background_utilization_percent: u8,
     pub jitter_enabled: bool,
@@ -184,6 +198,11 @@ impl WrRunConfig {
             }
             (_, None) => {}
         }
+        if let Some(anchors) = &self.background_anchor_regions {
+            for anchor in anchors {
+                self.cloud.region_index(anchor)?;
+            }
+        }
         Ok(())
     }
 }
@@ -221,6 +240,8 @@ pub struct WrOutcome {
     pub mailbox_capacities: BTreeMap<&'static str, usize>,
     pub link_drops: usize,
     pub maximum_background_trunk_utilization_ppm: u64,
+    pub foreground_egress_wire_bytes: u64,
+    pub modeled_egress_nano_usd: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -278,6 +299,7 @@ struct BackgroundSlot {
 struct BackboneGeometry {
     config: RegionalBackboneConfig,
     sharing: Vec<WrSharingRow>,
+    egress_ledger: EgressLedger,
 }
 
 struct WrExecution {
@@ -288,6 +310,8 @@ struct WrExecution {
     failure: Option<String>,
     elapsed_ns: u64,
     event_class_counts: Vec<WrEventClassCount>,
+    foreground_egress_wire_bytes: u64,
+    modeled_egress_nano_usd: u64,
 }
 
 pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
@@ -321,6 +345,8 @@ pub fn run_wr(config: &WrRunConfig) -> Result<WrOutcome, WrRunError> {
         mailbox_capacities: execution.mailbox_capacities,
         link_drops,
         maximum_background_trunk_utilization_ppm,
+        foreground_egress_wire_bytes: execution.foreground_egress_wire_bytes,
+        modeled_egress_nano_usd: execution.modeled_egress_nano_usd,
     })
 }
 
@@ -368,6 +394,7 @@ fn execute_wr(config: &WrRunConfig, recorder: Recorder) -> Result<WrExecution, W
     let mut background = build_background(config, background_socket, &recorder, &tracker)?;
     let geometry = build_backbone_geometry(config)?;
     let sharing = geometry.sharing;
+    let egress_ledger = geometry.egress_ledger;
     let mut backbone = RegionalBackbone::new(geometry.config, recorder.clone(), tracker.clone())
         .map_err(|error| WrRunError::Construction(error.to_string()))?;
     let backbone_mailbox = Mailbox::with_capacity(BACKBONE_MAILBOX_CAPACITY);
@@ -484,6 +511,7 @@ fn execute_wr(config: &WrRunConfig, recorder: Recorder) -> Result<WrExecution, W
             count,
         })
         .collect();
+    let egress = egress_ledger.snapshot();
     Ok(WrExecution {
         records,
         sharing,
@@ -492,6 +520,8 @@ fn execute_wr(config: &WrRunConfig, recorder: Recorder) -> Result<WrExecution, W
         failure,
         elapsed_ns,
         event_class_counts,
+        foreground_egress_wire_bytes: egress.wire_bytes,
+        modeled_egress_nano_usd: egress.modeled_nano_usd,
     })
 }
 
@@ -629,7 +659,9 @@ fn build_session(
         tracker.clone(),
     )
     .map_err(|error| WrRunError::Construction(error.to_string()))?;
-    if let Some(tree) = single_tree(config.protocol) {
+    if config.flow_count_match_single_tree
+        && let Some(tree) = single_tree(config.protocol)
+    {
         source.enable_flow_count_match(1 - tree);
     }
     source.set_start_delay_ns(WR_FOREGROUND_START_NS);
@@ -952,6 +984,7 @@ struct RegionRoute {
 
 fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrRunError> {
     let cloud = &config.cloud;
+    let egress_ledger = EgressLedger::default();
     let mut resources = cloud
         .regions
         .iter()
@@ -975,7 +1008,7 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
         for tree in 0..TREE_COUNT {
             for (hop, (from_node, to_node)) in overlay_edges(tree).into_iter().enumerate() {
                 insert_tcp_route(
-                    cloud,
+                    config,
                     &mut routes,
                     &mut foreground_counts,
                     data_flow_id(session, tree, hop),
@@ -991,7 +1024,7 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
             let receiver_region = nodes[receiver_node(receiver)];
             let (downlink, uplink) = control_flow_ids(session, receiver);
             insert_tcp_route(
-                cloud,
+                config,
                 &mut routes,
                 &mut foreground_counts,
                 downlink,
@@ -1001,7 +1034,7 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
                 SOURCE_MAILBOXES[session],
             )?;
             insert_tcp_route(
-                cloud,
+                config,
                 &mut routes,
                 &mut foreground_counts,
                 uplink,
@@ -1012,10 +1045,10 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
             )?;
         }
     }
-    let background_pairs = background_region_pairs(cloud)?;
+    let background_pairs = background_region_pairs(config)?;
     for (index, &(from, to)) in background_pairs.iter().enumerate() {
         insert_tcp_route(
-            cloud,
+            config,
             &mut routes,
             &mut background_counts,
             background_flow_id(index),
@@ -1047,6 +1080,7 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
             routes,
             background_flow_ids,
             tree_probe_flow_ids,
+            egress_ledger: egress_ledger.clone(),
             jitter_enabled: config.jitter_enabled,
             jitter_max_ppm: cloud.jitter_max_ppm,
             jitter_epoch_ns: cloud.jitter_epoch_ns,
@@ -1055,12 +1089,13 @@ fn build_backbone_geometry(config: &WrRunConfig) -> Result<BackboneGeometry, WrR
             prf: CounterPrf::new(config.seed, "wr-regional-backbone"),
         },
         sharing,
+        egress_ledger,
     })
 }
 
 #[allow(clippy::too_many_arguments)]
 fn insert_tcp_route(
-    cloud: &CloudScenario,
+    config: &WrRunConfig,
     routes: &mut BTreeMap<(usize, bool), BackboneRouteConfig>,
     counts: &mut [usize],
     flow_id: usize,
@@ -1069,6 +1104,7 @@ fn insert_tcp_route(
     forward_mailbox: &'static str,
     reverse_mailbox: &'static str,
 ) -> Result<(), WrRunError> {
+    let cloud = &config.cloud;
     let forward = region_route(cloud, from, to)?;
     let reverse = region_route(cloud, to, from)?;
     for resource in &forward.resource_indexes {
@@ -1083,6 +1119,11 @@ fn insert_tcp_route(
             BackboneRouteConfig {
                 hops: forward.hops,
                 downstream_mailbox: forward_mailbox,
+                egress_nano_usd_per_gb: config
+                    .egress_prices
+                    .as_ref()
+                    .and_then(|prices| prices.rate(from, to))
+                    .unwrap_or(0),
             },
         )
         .is_some()
@@ -1092,6 +1133,11 @@ fn insert_tcp_route(
                 BackboneRouteConfig {
                     hops: reverse.hops,
                     downstream_mailbox: reverse_mailbox,
+                    egress_nano_usd_per_gb: config
+                        .egress_prices
+                        .as_ref()
+                        .and_then(|prices| prices.rate(to, from))
+                        .unwrap_or(0),
                 },
             )
             .is_some()
@@ -1166,12 +1212,19 @@ fn overlay_edges(tree: usize) -> [(usize, usize); HOPS_PER_TREE] {
 }
 
 fn background_region_pairs(
-    cloud: &CloudScenario,
+    config: &WrRunConfig,
 ) -> Result<[(usize, usize); BACKGROUND_COUNT], WrRunError> {
+    let cloud = &config.cloud;
     let nodes = overlay_node_regions(cloud)?;
     let sender = nodes[0];
-    let tree0_relay = nodes[1];
-    let tree1_relay = nodes[6];
+    let [tree0_relay, tree1_relay] = if let Some(anchors) = &config.background_anchor_regions {
+        [
+            cloud.region_index(&anchors[0])?,
+            cloud.region_index(&anchors[1])?,
+        ]
+    } else {
+        [nodes[1], nodes[6]]
+    };
     Ok([
         (sender, tree0_relay),
         (sender, tree0_relay),
@@ -1661,6 +1714,9 @@ mod tests {
             cloud: CloudScenario::built_in(CloudProfileKind::AwsLike, 0).expect("cloud scenario"),
             protocol: WrProtocol::Carousel,
             cloudcast_plan: None,
+            egress_prices: None,
+            background_anchor_regions: None,
+            flow_count_match_single_tree: true,
             source_symbols: 64,
             background_utilization_percent: 30,
             jitter_enabled: true,
@@ -1852,10 +1908,18 @@ mod tests {
         plan.apply_to(&mut cell.cloud).expect("apply plan");
         cell.protocol = WrProtocol::CloudcastPolicy;
         cell.cloudcast_plan = Some(plan);
+        cell.egress_prices = Some(prices);
+        cell.flow_count_match_single_tree = false;
 
         let outcome = run_wr(&cell).expect("Cloudcast policy cell");
         assert_eq!(outcome.sessions[0].total_emissions, cell.source_symbols);
         assert_eq!(outcome.sessions[0].application_drops, 0);
+        assert!(
+            outcome.foreground_egress_wire_bytes
+                > u64::try_from(cell.source_symbols * FRAME_PAYLOAD_BYTES)
+                    .expect("payload bytes fit")
+        );
+        assert!(outcome.modeled_egress_nano_usd > 0);
     }
 
     #[test]

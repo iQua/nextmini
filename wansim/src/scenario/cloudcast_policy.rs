@@ -16,34 +16,34 @@ const RECEIVER_COUNT: usize = 3;
 const TREE_EDGE_COUNT: usize = 5;
 const NANOS_PER_SECOND: u128 = 1_000_000_000;
 const BITS_PER_BYTE: u128 = 8;
-const GIB_BYTES: u128 = 1_u128 << 30;
+const GB_BYTES: u128 = 1_000_000_000;
 
 /// A deterministic region-to-region egress-price matrix.
 ///
-/// Rates use nano-USD/GiB so planner comparisons remain exact integers. The matrix order must
+/// Rates use nano-USD/GB so planner comparisons remain exact integers. The matrix order must
 /// match `CloudScenario::regions`; same-region entries must be zero.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CloudcastEgressPrices {
-    nano_usd_per_gib: Vec<Vec<u64>>,
+    nano_usd_per_gb: Vec<Vec<u64>>,
 }
 
 impl CloudcastEgressPrices {
     pub fn new(
         scenario: &CloudScenario,
-        nano_usd_per_gib: Vec<Vec<u64>>,
+        nano_usd_per_gb: Vec<Vec<u64>>,
     ) -> Result<Self, CloudcastPolicyError> {
         let region_count = scenario.regions.len();
-        if nano_usd_per_gib.len() != region_count
-            || nano_usd_per_gib.iter().any(|row| row.len() != region_count)
-            || (0..region_count).any(|region| nano_usd_per_gib[region][region] != 0)
+        if nano_usd_per_gb.len() != region_count
+            || nano_usd_per_gb.iter().any(|row| row.len() != region_count)
+            || (0..region_count).any(|region| nano_usd_per_gb[region][region] != 0)
         {
             return Err(CloudcastPolicyError::PriceMatrix);
         }
-        Ok(Self { nano_usd_per_gib })
+        Ok(Self { nano_usd_per_gb })
     }
 
     pub fn rate(&self, from: usize, to: usize) -> Option<u64> {
-        self.nano_usd_per_gib
+        self.nano_usd_per_gb
             .get(from)
             .and_then(|row| row.get(to))
             .copied()
@@ -145,7 +145,7 @@ struct CandidateTree {
     relay_b: usize,
     resource_multiplicity: Vec<u8>,
     critical_propagation_ns: u64,
-    egress_rate_sum_nano_usd_per_gib: u64,
+    egress_rate_sum_nano_usd_per_gb: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -237,7 +237,7 @@ pub fn plan_cloudcast_policy(
     Ok(CloudcastPolicyPlan {
         completion_budget_ns: request.completion_budget_ns,
         estimated_completion_ns: best.estimated_completion_ns,
-        estimated_egress_nano_usd: u64::try_from(best.cost_numerator / GIB_BYTES)
+        estimated_egress_nano_usd: u64::try_from(best.cost_numerator / GB_BYTES)
             .map_err(|_| CloudcastPolicyError::Overflow)?,
         stripe_count: request.stripe_count,
         stripe_tree_ids,
@@ -257,7 +257,7 @@ fn validate_request(request: CloudcastPolicyRequest<'_>) -> Result<(), Cloudcast
         || request.stripe_count == 0
         || request.completion_budget_ns == 0
         || request.background_utilization_percent >= 100
-        || request.egress_prices.nano_usd_per_gib.len() != region_count
+        || request.egress_prices.nano_usd_per_gb.len() != region_count
     {
         return Err(CloudcastPolicyError::Geometry);
     }
@@ -325,7 +325,7 @@ fn candidate_trees(
                 relay_b,
                 resource_multiplicity,
                 critical_propagation_ns,
-                egress_rate_sum_nano_usd_per_gib: egress_rate_sum,
+                egress_rate_sum_nano_usd_per_gb: egress_rate_sum,
             });
         }
     }
@@ -447,7 +447,7 @@ fn estimate_cost_numerator(
                 .checked_mul(request.symbol_payload_bytes as u128)
                 .ok_or(CloudcastPolicyError::Overflow)?;
             let charge = bytes
-                .checked_mul(u128::from(tree.egress_rate_sum_nano_usd_per_gib))
+                .checked_mul(u128::from(tree.egress_rate_sum_nano_usd_per_gb))
                 .ok_or(CloudcastPolicyError::Overflow)?;
             total
                 .checked_add(charge)

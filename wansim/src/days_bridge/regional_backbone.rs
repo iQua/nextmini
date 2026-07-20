@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 use crate::determinism::{CounterPrf, DECISION_DELTA_NS};
-use crate::metrics::{MailboxTracker, Recorder, TrackedPacket};
+use crate::metrics::{EgressLedger, MailboxTracker, Recorder, TrackedPacket};
 use crate::transport::{now_ns, seconds_from_ns};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,6 +30,7 @@ pub(crate) struct BackboneRouteHop {
 pub(crate) struct BackboneRouteConfig {
     pub(crate) hops: Vec<BackboneRouteHop>,
     pub(crate) downstream_mailbox: &'static str,
+    pub(crate) egress_nano_usd_per_gb: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +42,7 @@ pub(crate) struct RegionalBackboneConfig {
     pub(crate) routes: BTreeMap<(usize, bool), BackboneRouteConfig>,
     pub(crate) background_flow_ids: BTreeSet<usize>,
     pub(crate) tree_probe_flow_ids: BTreeSet<usize>,
+    pub(crate) egress_ledger: EgressLedger,
     pub(crate) jitter_enabled: bool,
     pub(crate) jitter_max_ppm: u32,
     pub(crate) jitter_epoch_ns: u64,
@@ -379,7 +381,21 @@ impl RegionalBackbone {
                 .sampled_background_bytes
                 .saturating_add(routed.packet.size);
         }
-        let hop = &self.config.routes[&routed.route_key].hops[routed.position];
+        let route = &self.config.routes[&routed.route_key];
+        if routed.position == 0
+            && !self
+                .config
+                .background_flow_ids
+                .contains(&routed.packet.flow_id)
+            && self
+                .config
+                .egress_ledger
+                .charge(routed.packet.size, route.egress_nano_usd_per_gb)
+                .is_err()
+        {
+            self.recorder.fail("foreground egress ledger overflow");
+        }
+        let hop = &route.hops[routed.position];
         debug_assert_eq!(hop.resource, key.resource);
         let propagation_ns =
             self.jittered_propagation_ns(hop.propagation_ns, key.resource, timestamp);
@@ -530,6 +546,7 @@ mod tests {
                             propagation_ns: 1_000_000,
                         }],
                         downstream_mailbox: "receiver",
+                        egress_nano_usd_per_gb: 10_000_000,
                     },
                 ),
                 (
@@ -540,11 +557,13 @@ mod tests {
                             propagation_ns: 1_000_000,
                         }],
                         downstream_mailbox: "sender",
+                        egress_nano_usd_per_gb: 10_000_000,
                     },
                 ),
             ]),
             background_flow_ids: BTreeSet::new(),
             tree_probe_flow_ids: BTreeSet::from([1]),
+            egress_ledger: EgressLedger::default(),
             jitter_enabled: true,
             jitter_max_ppm: 50_000,
             jitter_epoch_ns: 100_000_000,

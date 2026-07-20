@@ -46,6 +46,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         cloud: CloudScenario::built_in(profile, args[1].parse()?)?,
         protocol,
         cloudcast_plan: None,
+        egress_prices: None,
+        background_anchor_regions: None,
+        flow_count_match_single_tree: true,
         source_symbols: args[5].parse()?,
         background_utilization_percent: args[2].parse()?,
         jitter_enabled: match args[3].as_str() {

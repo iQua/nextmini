@@ -8,14 +8,24 @@ use thiserror::Error;
 
 use crate::metrics::{MAILBOX_CAPACITY, Record};
 use crate::scenario::{
-    CloudProfileKind, CloudScenario, ReceiverAdmissionPolicy, RegistrationOrder, WrOutcome,
-    WrProtocol, WrRunConfig, WrRunError, run_wr,
+    CloudProfileKind, CloudScenario, CloudcastPolicyError, CloudcastPolicyRequest,
+    ReceiverAdmissionPolicy, RegistrationOrder, WrOutcome, WrProtocol, WrRunConfig, WrRunError,
+    plan_cloudcast_policy, representative_egress_prices, run_wr,
 };
 use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
+mod cloudcast_comparison;
 mod persistence;
 
+pub use cloudcast_comparison::{
+    CloudcastComparisonArtifacts, CloudcastComparisonError, CloudcastComparisonRun,
+    run_cloudcast_comparison_persistent,
+};
+
 const EVIDENCE_CLASS: &str = "model-level realistic-envelope evidence; not a WAN measurement";
+const CLOUDCAST_STRIPE_COUNT: usize = 8;
+const CLOUDCAST_COMPLETION_BUDGET_NS: u64 = 1_000_000_000;
+const WR_SYMBOL_PAYLOAD_BYTES: usize = 508;
 const MAIN_PROTOCOLS: [WrProtocol; 5] = [
     WrProtocol::Carousel,
     WrProtocol::Rounds,
@@ -67,6 +77,8 @@ pub enum WrExperimentError {
     #[error(transparent)]
     Run(#[from] WrRunError),
     #[error(transparent)]
+    CloudcastPolicy(#[from] CloudcastPolicyError),
+    #[error(transparent)]
     Csv(#[from] csv::Error),
 }
 
@@ -106,6 +118,9 @@ struct Task {
     admission: ReceiverAdmissionPolicy,
     slow_receiver: Option<usize>,
     sessions: usize,
+    price_egress: bool,
+    anchor_background: bool,
+    flow_count_match_single_tree: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -129,6 +144,8 @@ struct RawTrial {
     a4_trace_correlation_ppm: i64,
     tree_bytes: [u64; 2],
     maximum_mailbox_high_water: usize,
+    foreground_egress_wire_bytes: u64,
+    modeled_egress_nano_usd: u64,
     sharing: Vec<SharingRow>,
 }
 
@@ -179,6 +196,8 @@ struct TrialRow {
     tree0_delivered_bytes: u64,
     tree1_delivered_bytes: u64,
     maximum_mailbox_high_water: usize,
+    foreground_egress_wire_bytes: u64,
+    modeled_egress_nano_usd: u64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -374,6 +393,9 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                     admission: ReceiverAdmissionPolicy::HybridDrop,
                     slow_receiver: None,
                     sessions: 1,
+                    price_egress: false,
+                    anchor_background: false,
+                    flow_count_match_single_tree: true,
                 });
             }
         }
@@ -393,6 +415,9 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
             admission: ReceiverAdmissionPolicy::HybridDrop,
             slow_receiver: Some(0),
             sessions: 1,
+            price_egress: false,
+            anchor_background: false,
+            flow_count_match_single_tree: true,
         });
     }
     for cadence in [1, 2, 4] {
@@ -410,6 +435,9 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                 admission: ReceiverAdmissionPolicy::HybridDrop,
                 slow_receiver: None,
                 sessions: 1,
+                price_egress: false,
+                anchor_background: false,
+                flow_count_match_single_tree: true,
             });
         }
     }
@@ -463,13 +491,45 @@ fn run_tasks(tasks: Vec<Task>, workers: usize) -> Result<Vec<RawTrial>, WrExperi
 }
 
 fn run_task(task: Task) -> Result<RawTrial, WrExperimentError> {
-    let cloud = CloudScenario::built_in(task.profile, task.placement).map_err(WrRunError::from)?;
+    let mut cloud =
+        CloudScenario::built_in(task.profile, task.placement).map_err(WrRunError::from)?;
     let profile_name = task.profile.name();
     let placement_id = cloud.placement.id.clone();
+    let background_anchor_regions = task.anchor_background.then(|| {
+        [
+            cloud.placement.relay_regions[0][0].clone(),
+            cloud.placement.relay_regions[1][0].clone(),
+        ]
+    });
+    let egress_prices = task
+        .price_egress
+        .then(|| representative_egress_prices(&cloud))
+        .transpose()?;
+    let cloudcast_plan = if task.protocol == WrProtocol::CloudcastPolicy {
+        let prices = egress_prices.as_ref().ok_or(WrExperimentError::Worker(
+            "Cloudcast policy task lacks an egress-price model".to_owned(),
+        ))?;
+        let plan = plan_cloudcast_policy(CloudcastPolicyRequest {
+            scenario: &cloud,
+            egress_prices: prices,
+            source_symbols: task.k,
+            symbol_payload_bytes: WR_SYMBOL_PAYLOAD_BYTES,
+            stripe_count: CLOUDCAST_STRIPE_COUNT,
+            completion_budget_ns: CLOUDCAST_COMPLETION_BUDGET_NS,
+            background_utilization_percent: task.utilization,
+        })?;
+        plan.apply_to(&mut cloud)?;
+        Some(plan)
+    } else {
+        None
+    };
     let config = WrRunConfig {
         cloud,
         protocol: task.protocol,
-        cloudcast_plan: None,
+        cloudcast_plan,
+        egress_prices,
+        background_anchor_regions,
+        flow_count_match_single_tree: task.flow_count_match_single_tree,
         source_symbols: task.k,
         background_utilization_percent: task.utilization,
         jitter_enabled: task.jitter,
@@ -544,6 +604,8 @@ fn raw_trial(
             .copied()
             .max()
             .unwrap_or(0),
+        foreground_egress_wire_bytes: outcome.foreground_egress_wire_bytes,
+        modeled_egress_nano_usd: outcome.modeled_egress_nano_usd,
         sharing,
     })
 }
@@ -585,6 +647,8 @@ fn trial_row(trial: &RawTrial) -> TrialRow {
         tree0_delivered_bytes: trial.tree_bytes[0],
         tree1_delivered_bytes: trial.tree_bytes[1],
         maximum_mailbox_high_water: trial.maximum_mailbox_high_water,
+        foreground_egress_wire_bytes: trial.foreground_egress_wire_bytes,
+        modeled_egress_nano_usd: trial.modeled_egress_nano_usd,
     }
 }
 
