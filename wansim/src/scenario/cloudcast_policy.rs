@@ -158,10 +158,23 @@ struct CandidatePlan {
 }
 
 impl CandidatePlan {
-    fn ordering_key(&self) -> (u128, u64, usize, [usize; 2], [usize; 2]) {
+    fn cost_ordering_key(&self) -> (u128, u64, usize, [usize; 2], [usize; 2]) {
         (
             self.cost_numerator,
             self.estimated_completion_ns,
+            self.tree_stripe_counts
+                .iter()
+                .filter(|count| **count != 0)
+                .count(),
+            self.tree_indexes,
+            self.tree_stripe_counts,
+        )
+    }
+
+    fn completion_ordering_key(&self) -> (u64, u128, usize, [usize; 2], [usize; 2]) {
+        (
+            self.estimated_completion_ns,
+            self.cost_numerator,
             self.tree_stripe_counts
                 .iter()
                 .filter(|count| **count != 0)
@@ -177,7 +190,64 @@ pub fn plan_cloudcast_policy(
 ) -> Result<CloudcastPolicyPlan, CloudcastPolicyError> {
     validate_request(request)?;
     let candidates = candidate_trees(request.scenario, request.egress_prices)?;
-    let mut best: Option<CandidatePlan> = None;
+    let (plans, evaluated_assignment_count) = candidate_plans(request, &candidates)?;
+    let best = plans
+        .into_iter()
+        .min_by_key(CandidatePlan::cost_ordering_key)
+        .ok_or(CloudcastPolicyError::NoFeasiblePlan {
+            completion_budget_ns: request.completion_budget_ns,
+        })?;
+    materialize_plan(
+        request,
+        &candidates,
+        best,
+        request.completion_budget_ns,
+        evaluated_assignment_count,
+    )
+}
+
+/// Returns the exact cost-under-deadline frontier for the executable tree family.
+///
+/// Points are ordered from the minimum feasible completion budget to progressively looser
+/// budgets. The first point is therefore the fastest plan available under the fixed scenario
+/// resources. A later point is retained only when its larger budget permits a strictly cheaper
+/// plan. Each point's `completion_budget_ns` is the first budget at which that plan is feasible.
+pub fn cloudcast_policy_budget_frontier(
+    request: CloudcastPolicyRequest<'_>,
+) -> Result<Vec<CloudcastPolicyPlan>, CloudcastPolicyError> {
+    validate_request(request)?;
+    let candidates = candidate_trees(request.scenario, request.egress_prices)?;
+    let (mut plans, evaluated_assignment_count) = candidate_plans(request, &candidates)?;
+    if plans.is_empty() {
+        return Err(CloudcastPolicyError::NoFeasiblePlan {
+            completion_budget_ns: request.completion_budget_ns,
+        });
+    }
+    plans.sort_by_key(CandidatePlan::completion_ordering_key);
+    let mut best_cost = None;
+    let mut frontier = Vec::new();
+    for plan in plans {
+        if best_cost.is_some_and(|cost| plan.cost_numerator >= cost) {
+            continue;
+        }
+        best_cost = Some(plan.cost_numerator);
+        let first_feasible_budget_ns = plan.estimated_completion_ns;
+        frontier.push(materialize_plan(
+            request,
+            &candidates,
+            plan,
+            first_feasible_budget_ns,
+            evaluated_assignment_count,
+        )?);
+    }
+    Ok(frontier)
+}
+
+fn candidate_plans(
+    request: CloudcastPolicyRequest<'_>,
+    candidates: &[CandidateTree],
+) -> Result<(Vec<CandidatePlan>, usize), CloudcastPolicyError> {
+    let mut plans = Vec::new();
     let mut evaluated_assignment_count = 0usize;
     for first in 0..candidates.len() {
         for second in 0..candidates.len() {
@@ -210,18 +280,20 @@ pub fn plan_cloudcast_policy(
                     tree_stripe_counts: stripe_counts,
                     tree_symbol_quotas,
                 };
-                if best
-                    .as_ref()
-                    .is_none_or(|current| candidate.ordering_key() < current.ordering_key())
-                {
-                    best = Some(candidate);
-                }
+                plans.push(candidate);
             }
         }
     }
-    let best = best.ok_or(CloudcastPolicyError::NoFeasiblePlan {
-        completion_budget_ns: request.completion_budget_ns,
-    })?;
+    Ok((plans, evaluated_assignment_count))
+}
+
+fn materialize_plan(
+    request: CloudcastPolicyRequest<'_>,
+    candidates: &[CandidateTree],
+    best: CandidatePlan,
+    completion_budget_ns: u64,
+    evaluated_assignment_count: usize,
+) -> Result<CloudcastPolicyPlan, CloudcastPolicyError> {
     let selected = best.tree_indexes.map(|index| &candidates[index]);
     let relay_regions = selected.map(|tree| {
         [
@@ -235,7 +307,7 @@ pub fn plan_cloudcast_policy(
         stripe_tree_ids.extend(std::iter::repeat_n(tree, count));
     }
     Ok(CloudcastPolicyPlan {
-        completion_budget_ns: request.completion_budget_ns,
+        completion_budget_ns,
         estimated_completion_ns: best.estimated_completion_ns,
         estimated_egress_nano_usd: u64::try_from(best.cost_numerator / GB_BYTES)
             .map_err(|_| CloudcastPolicyError::Overflow)?,
@@ -458,7 +530,7 @@ fn estimate_cost_numerator(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::CloudProfileKind;
+    use crate::scenario::{CloudProfileKind, representative_egress_prices};
 
     fn uniform_prices(scenario: &CloudScenario, rate: u64) -> CloudcastEgressPrices {
         let mut matrix = vec![vec![rate; scenario.regions.len()]; scenario.regions.len()];
@@ -518,6 +590,50 @@ mod tests {
                 completion_budget_ns: 1,
             })
         );
+    }
+
+    #[test]
+    fn fastest_frontier_point_stripes_and_pins_the_infeasible_boundary() {
+        let scenario =
+            CloudScenario::built_in(CloudProfileKind::DigitaloceanLike, 1).expect("cloud scenario");
+        let prices = representative_egress_prices(&scenario).expect("representative prices");
+        for utilization in [30, 70] {
+            let request = CloudcastPolicyRequest {
+                scenario: &scenario,
+                egress_prices: &prices,
+                source_symbols: 8_192,
+                symbol_payload_bytes: 508,
+                stripe_count: 8,
+                completion_budget_ns: 1_000_000_000,
+                background_utilization_percent: utilization,
+            };
+            let frontier = cloudcast_policy_budget_frontier(request).expect("feasible frontier");
+            let fastest = frontier.first().expect("frontier has a fastest point");
+            assert!(
+                fastest
+                    .tree_stripe_counts()
+                    .into_iter()
+                    .all(|count| count > 0)
+            );
+            assert_eq!(
+                fastest.completion_budget_ns(),
+                fastest.estimated_completion_ns()
+            );
+            let tighter = fastest.completion_budget_ns() - 1;
+            assert_eq!(
+                plan_cloudcast_policy(CloudcastPolicyRequest {
+                    completion_budget_ns: tighter,
+                    ..request
+                }),
+                Err(CloudcastPolicyError::NoFeasiblePlan {
+                    completion_budget_ns: tighter,
+                })
+            );
+            assert!(frontier.windows(2).all(|window| {
+                window[0].completion_budget_ns() < window[1].completion_budget_ns()
+                    && window[0].estimated_egress_nano_usd() > window[1].estimated_egress_nano_usd()
+            }));
+        }
     }
 
     #[test]

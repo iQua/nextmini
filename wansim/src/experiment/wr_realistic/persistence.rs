@@ -115,6 +115,8 @@ struct CellStatusRow {
     anchor_background: bool,
     #[serde(default = "default_true")]
     flow_count_match_single_tree: bool,
+    #[serde(default)]
+    cloudcast_shared_topology: bool,
     status: String,
     error: String,
 }
@@ -151,6 +153,7 @@ impl CellStatusRow {
             price_egress: task.price_egress,
             anchor_background: task.anchor_background,
             flow_count_match_single_tree: task.flow_count_match_single_tree,
+            cloudcast_shared_topology: task.cloudcast_shared_topology,
             status: status.to_owned(),
             error,
         }
@@ -240,6 +243,11 @@ impl CellStatusRow {
                 "flow_count_match_single_tree",
                 self.flow_count_match_single_tree.to_string(),
                 expected.flow_count_match_single_tree.to_string(),
+            ),
+            (
+                "cloudcast_shared_topology",
+                self.cloudcast_shared_topology.to_string(),
+                expected.cloudcast_shared_topology.to_string(),
             ),
         ] {
             if actual != wanted {
@@ -757,7 +765,7 @@ fn load_cells(store: &CellStore, tasks: &[Task]) -> Result<LoadedCells, Persiste
 
 fn task_key(task: &Task) -> String {
     format!(
-        "slice={};profile={};placement={};utilization={};jitter={};protocol={};K={};seed={};cadence={};admission={};slow={};sessions={}",
+        "slice={};profile={};placement={};utilization={};jitter={};protocol={};K={};seed={};cadence={};admission={};slow={};sessions={};cloudcast-shared-topology={}",
         task.slice.name(),
         task.profile.name(),
         task.placement,
@@ -771,6 +779,7 @@ fn task_key(task: &Task) -> String {
         task.slow_receiver
             .map_or_else(|| "none".to_owned(), |receiver| receiver.to_string()),
         task.sessions,
+        task.cloudcast_shared_topology,
     )
 }
 

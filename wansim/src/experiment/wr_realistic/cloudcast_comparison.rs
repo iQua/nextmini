@@ -11,12 +11,13 @@ use super::{
 };
 use crate::scenario::{
     CloudProfileKind, CloudScenario, CloudcastPolicyError, CloudcastPolicyRequest,
-    ReceiverAdmissionPolicy, WrProtocol, plan_cloudcast_policy, representative_egress_prices,
+    ReceiverAdmissionPolicy, WrProtocol, cloudcast_policy_budget_frontier, plan_cloudcast_policy,
+    representative_egress_prices,
 };
 use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
-const EXPERIMENT: &str = "cloudcast-comparison-v1";
-const CELL_DIRECTORY: &str = "comparison-cells";
+const EXPERIMENT: &str = "cloudcast-comparison-v2-throughput";
+const CELL_DIRECTORY: &str = "comparison-v2-cells";
 const REQUIRED_SEEDS: u64 = 16;
 const PROFILE: CloudProfileKind = CloudProfileKind::DigitaloceanLike;
 const PLACEMENT: usize = 1;
@@ -38,7 +39,7 @@ const BEST_SINGLE_LABEL: &str = "best-single tree on wansim transport";
 pub struct CloudcastComparisonArtifacts {
     pub trials_csv: String,
     pub summaries_csv: String,
-    pub policy_plans_csv: String,
+    pub policy_frontier_csv: String,
     pub sharing_csv: String,
 }
 
@@ -67,6 +68,15 @@ pub enum CloudcastComparisonError {
         utilization: u8,
         seed: u64,
         arm: &'static str,
+    },
+    #[error("Cloudcast throughput frontier is empty at utilization {utilization}")]
+    MissingFrontier { utilization: u8 },
+    #[error(
+        "Cloudcast throughput frontier at utilization {utilization} remains feasible below its claimed minimum budget {minimum_budget_ns}"
+    )]
+    NonMinimalFrontier {
+        utilization: u8,
+        minimum_budget_ns: u64,
     },
     #[error(transparent)]
     CloudcastPolicy(#[from] CloudcastPolicyError),
@@ -160,6 +170,8 @@ struct PolicyPlanRow {
     placement: String,
     utilization_percent: u8,
     source_symbols: usize,
+    frontier_index: usize,
+    selected_for_comparison: bool,
     stripe_count: usize,
     completion_budget_ns: u64,
     estimated_completion_ns: u64,
@@ -250,6 +262,7 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                     price_egress: true,
                     anchor_background: true,
                     flow_count_match_single_tree: false,
+                    cloudcast_shared_topology: true,
                 });
             }
         }
@@ -288,7 +301,7 @@ fn artifacts(
     Ok(CloudcastComparisonArtifacts {
         trials_csv: to_csv(&trial_rows)?,
         summaries_csv: to_csv(&summary_rows(&reported))?,
-        policy_plans_csv: to_csv(&policy_plan_rows()?)?,
+        policy_frontier_csv: to_csv(&policy_frontier_rows()?)?,
         sharing_csv: to_csv(&sharing_rows(trials))?,
     })
 }
@@ -334,8 +347,8 @@ fn reported_trials<'a>(
                 WrProtocol::BestSingleTree1,
                 BEST_SINGLE_LABEL,
             )?;
-            let selected = if (tree0.barrier_ns, tree0.modeled_egress_nano_usd)
-                <= (tree1.barrier_ns, tree1.modeled_egress_nano_usd)
+            let selected = if (tree0.barrier_ns, tree0.sender_ns, tree0.task.protocol)
+                <= (tree1.barrier_ns, tree1.sender_ns, tree1.task.protocol)
             {
                 tree0
             } else {
@@ -418,26 +431,27 @@ fn values(group: &[&ReportedTrial<'_>], project: impl Fn(&RawTrial) -> u64) -> V
     group.iter().map(|trial| project(trial.trial)).collect()
 }
 
-fn policy_plan_rows() -> Result<Vec<PolicyPlanRow>, CloudcastComparisonError> {
+fn policy_frontier_rows() -> Result<Vec<PolicyPlanRow>, CloudcastComparisonError> {
     let scenario =
         CloudScenario::built_in(PROFILE, PLACEMENT).map_err(CloudcastPolicyError::Scenario)?;
     let prices = representative_egress_prices(&scenario)?;
-    UTILIZATIONS
-        .into_iter()
-        .map(|utilization| {
-            let plan = plan_cloudcast_policy(CloudcastPolicyRequest {
-                scenario: &scenario,
-                egress_prices: &prices,
-                source_symbols: 8_192,
-                symbol_payload_bytes: WR_SYMBOL_PAYLOAD_BYTES,
-                stripe_count: CLOUDCAST_STRIPE_COUNT,
-                completion_budget_ns: CLOUDCAST_COMPLETION_BUDGET_NS,
-                background_utilization_percent: utilization,
-            })?;
+    let mut rows = Vec::new();
+    for utilization in UTILIZATIONS {
+        let request = CloudcastPolicyRequest {
+            scenario: &scenario,
+            egress_prices: &prices,
+            source_symbols: 8_192,
+            symbol_payload_bytes: WR_SYMBOL_PAYLOAD_BYTES,
+            stripe_count: CLOUDCAST_STRIPE_COUNT,
+            completion_budget_ns: CLOUDCAST_COMPLETION_BUDGET_NS,
+            background_utilization_percent: utilization,
+        };
+        let frontier = cloudcast_policy_budget_frontier(request)?;
+        for (frontier_index, plan) in frontier.into_iter().enumerate() {
             let relays = plan.relay_regions();
             let stripes = plan.tree_stripe_counts();
             let quotas = plan.tree_symbol_quotas();
-            Ok(PolicyPlanRow {
+            rows.push(PolicyPlanRow {
                 schema_version: SCENARIO_SCHEMA_VERSION,
                 simulator_version: SIMULATOR_VERSION,
                 evidence_class: EVIDENCE_CLASS,
@@ -446,6 +460,8 @@ fn policy_plan_rows() -> Result<Vec<PolicyPlanRow>, CloudcastComparisonError> {
                 placement: scenario.placement.id.clone(),
                 utilization_percent: utilization,
                 source_symbols: 8_192,
+                frontier_index,
+                selected_for_comparison: frontier_index == 0,
                 stripe_count: plan.stripe_count(),
                 completion_budget_ns: plan.completion_budget_ns(),
                 estimated_completion_ns: plan.estimated_completion_ns(),
@@ -466,9 +482,29 @@ fn policy_plan_rows() -> Result<Vec<PolicyPlanRow>, CloudcastComparisonError> {
                     .map(u8::to_string)
                     .collect::<Vec<_>>()
                     .join(";"),
-            })
-        })
-        .collect()
+            });
+        }
+        let selected = rows
+            .iter()
+            .find(|row| row.utilization_percent == utilization && row.selected_for_comparison)
+            .ok_or(CloudcastComparisonError::MissingFrontier { utilization })?;
+        let tighter = selected.completion_budget_ns - 1;
+        if !matches!(
+            plan_cloudcast_policy(CloudcastPolicyRequest {
+                completion_budget_ns: tighter,
+                ..request
+            }),
+            Err(CloudcastPolicyError::NoFeasiblePlan {
+                completion_budget_ns
+            }) if completion_budget_ns == tighter
+        ) {
+            return Err(CloudcastComparisonError::NonMinimalFrontier {
+                utilization,
+                minimum_budget_ns: selected.completion_budget_ns,
+            });
+        }
+    }
+    Ok(rows)
 }
 
 fn sharing_rows(trials: &[RawTrial]) -> Vec<SharingRow> {
@@ -511,20 +547,35 @@ mod tests {
                 && task.price_egress
                 && task.anchor_background
                 && !task.flow_count_match_single_tree
+                && task.cloudcast_shared_topology
                 && task.slow_receiver.is_none()
                 && task.sessions == 1
         }));
     }
 
     #[test]
-    fn exact_policy_has_a_feasible_plan_at_both_requested_loads() {
-        let plans = policy_plan_rows().expect("two feasible Cloudcast policy plans");
-        assert_eq!(plans.len(), 2);
+    fn exact_policy_frontier_selects_two_trees_at_both_requested_loads() {
+        let plans = policy_frontier_rows().expect("two feasible Cloudcast policy frontiers");
+        assert!(plans.len() >= 2);
         assert!(plans.iter().all(|plan| {
             plan.arm == CLOUDCAST_LABEL
                 && plan.stripe_count == 8
                 && plan.tree0_source_symbols + plan.tree1_source_symbols == 8_192
                 && plan.estimated_completion_ns <= plan.completion_budget_ns
         }));
+        for utilization in UTILIZATIONS {
+            let selected = plans
+                .iter()
+                .find(|plan| {
+                    plan.utilization_percent == utilization && plan.selected_for_comparison
+                })
+                .expect("selected fastest point");
+            assert!(selected.tree0_stripes > 0);
+            assert!(selected.tree1_stripes > 0);
+            assert_eq!(
+                selected.completion_budget_ns,
+                selected.estimated_completion_ns
+            );
+        }
     }
 }

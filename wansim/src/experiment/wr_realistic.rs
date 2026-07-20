@@ -10,7 +10,7 @@ use crate::metrics::{MAILBOX_CAPACITY, Record};
 use crate::scenario::{
     CloudProfileKind, CloudScenario, CloudcastPolicyError, CloudcastPolicyRequest,
     ReceiverAdmissionPolicy, RegistrationOrder, WrOutcome, WrProtocol, WrRunConfig, WrRunError,
-    plan_cloudcast_policy, representative_egress_prices, run_wr,
+    cloudcast_policy_budget_frontier, plan_cloudcast_policy, representative_egress_prices, run_wr,
 };
 use crate::{SCENARIO_SCHEMA_VERSION, SIMULATOR_VERSION};
 
@@ -121,6 +121,7 @@ struct Task {
     price_egress: bool,
     anchor_background: bool,
     flow_count_match_single_tree: bool,
+    cloudcast_shared_topology: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -396,6 +397,7 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                     price_egress: false,
                     anchor_background: false,
                     flow_count_match_single_tree: true,
+                    cloudcast_shared_topology: false,
                 });
             }
         }
@@ -418,6 +420,7 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
             price_egress: false,
             anchor_background: false,
             flow_count_match_single_tree: true,
+            cloudcast_shared_topology: false,
         });
     }
     for cadence in [1, 2, 4] {
@@ -438,6 +441,7 @@ fn build_tasks(seeds: u64) -> Vec<Task> {
                 price_egress: false,
                 anchor_background: false,
                 flow_count_match_single_tree: true,
+                cloudcast_shared_topology: false,
             });
         }
     }
@@ -495,21 +499,16 @@ fn run_task(task: Task) -> Result<RawTrial, WrExperimentError> {
         CloudScenario::built_in(task.profile, task.placement).map_err(WrRunError::from)?;
     let profile_name = task.profile.name();
     let placement_id = cloud.placement.id.clone();
-    let background_anchor_regions = task.anchor_background.then(|| {
-        [
-            cloud.placement.relay_regions[0][0].clone(),
-            cloud.placement.relay_regions[1][0].clone(),
-        ]
-    });
-    let egress_prices = task
-        .price_egress
+    let needs_cloudcast_planner =
+        task.protocol == WrProtocol::CloudcastPolicy || task.cloudcast_shared_topology;
+    let egress_prices = (task.price_egress || needs_cloudcast_planner)
         .then(|| representative_egress_prices(&cloud))
         .transpose()?;
-    let cloudcast_plan = if task.protocol == WrProtocol::CloudcastPolicy {
+    let shared_plan = if task.cloudcast_shared_topology {
         let prices = egress_prices.as_ref().ok_or(WrExperimentError::Worker(
-            "Cloudcast policy task lacks an egress-price model".to_owned(),
+            "Cloudcast shared-topology task lacks a planner price model".to_owned(),
         ))?;
-        let plan = plan_cloudcast_policy(CloudcastPolicyRequest {
+        let plan = cloudcast_policy_budget_frontier(CloudcastPolicyRequest {
             scenario: &cloud,
             egress_prices: prices,
             source_symbols: task.k,
@@ -517,9 +516,42 @@ fn run_task(task: Task) -> Result<RawTrial, WrExperimentError> {
             stripe_count: CLOUDCAST_STRIPE_COUNT,
             completion_budget_ns: CLOUDCAST_COMPLETION_BUDGET_NS,
             background_utilization_percent: task.utilization,
+        })?
+        .into_iter()
+        .next()
+        .ok_or_else(|| {
+            WrExperimentError::Worker("Cloudcast throughput frontier is empty".to_owned())
         })?;
         plan.apply_to(&mut cloud)?;
         Some(plan)
+    } else {
+        None
+    };
+    let background_anchor_regions = task.anchor_background.then(|| {
+        [
+            cloud.placement.relay_regions[0][0].clone(),
+            cloud.placement.relay_regions[1][0].clone(),
+        ]
+    });
+    let cloudcast_plan = if task.protocol == WrProtocol::CloudcastPolicy {
+        if let Some(plan) = shared_plan {
+            Some(plan)
+        } else {
+            let prices = egress_prices.as_ref().ok_or(WrExperimentError::Worker(
+                "Cloudcast policy task lacks a planner price model".to_owned(),
+            ))?;
+            let plan = plan_cloudcast_policy(CloudcastPolicyRequest {
+                scenario: &cloud,
+                egress_prices: prices,
+                source_symbols: task.k,
+                symbol_payload_bytes: WR_SYMBOL_PAYLOAD_BYTES,
+                stripe_count: CLOUDCAST_STRIPE_COUNT,
+                completion_budget_ns: CLOUDCAST_COMPLETION_BUDGET_NS,
+                background_utilization_percent: task.utilization,
+            })?;
+            plan.apply_to(&mut cloud)?;
+            Some(plan)
+        }
     } else {
         None
     };

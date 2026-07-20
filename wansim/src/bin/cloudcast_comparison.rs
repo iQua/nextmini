@@ -56,8 +56,8 @@ fn write_artifacts(
         ("trials.csv", artifacts.trials_csv.as_str()),
         ("summaries.csv", artifacts.summaries_csv.as_str()),
         (
-            "cloudcast-policy-plans.csv",
-            artifacts.policy_plans_csv.as_str(),
+            "cloudcast-policy-frontier.csv",
+            artifacts.policy_frontier_csv.as_str(),
         ),
         ("sharing-structure.csv", artifacts.sharing_csv.as_str()),
     ] {

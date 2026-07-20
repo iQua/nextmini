@@ -15,7 +15,7 @@ pub use chain::{ChainOutcome, ChainRunError, run_chain};
 pub use cloud_cost::representative_egress_prices;
 pub use cloudcast_policy::{
     CloudcastEgressPrices, CloudcastPolicyError, CloudcastPolicyPlan, CloudcastPolicyRequest,
-    plan_cloudcast_policy,
+    cloudcast_policy_budget_frontier, plan_cloudcast_policy,
 };
 pub use config::{ChainScenario, RegistrationOrder, ScenarioError};
 pub use tree::{TreeOutcome, TreeRunError, run_tree};
