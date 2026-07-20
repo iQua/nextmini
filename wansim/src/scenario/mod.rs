@@ -1,4 +1,5 @@
 mod chain;
+mod cloudcast_policy;
 mod config;
 mod tree;
 mod tree_config;
@@ -10,6 +11,10 @@ mod wr;
 mod wr_config;
 
 pub use chain::{ChainOutcome, ChainRunError, run_chain};
+pub use cloudcast_policy::{
+    CloudcastEgressPrices, CloudcastPolicyError, CloudcastPolicyPlan, CloudcastPolicyRequest,
+    plan_cloudcast_policy,
+};
 pub use config::{ChainScenario, RegistrationOrder, ScenarioError};
 pub use tree::{TreeOutcome, TreeRunError, run_tree};
 pub use tree_config::{

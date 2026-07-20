@@ -18,7 +18,8 @@ use crate::overlay::{
 };
 use crate::protocol::{CarouselTiming, ProtocolKind, equal_quotas, proportional_quotas};
 use crate::scenario::{
-    CloudScenario, CloudScenarioError, FanoutAdmission, ReceiverAdmissionPolicy, RegistrationOrder,
+    CloudScenario, CloudScenarioError, CloudcastPolicyPlan, FanoutAdmission,
+    ReceiverAdmissionPolicy, RegistrationOrder,
 };
 use crate::transport::{SocketPairConfig, TcpCongestionControl};
 
@@ -100,6 +101,7 @@ const OWNER_CHILD_RECEIVE: [[[&str; 2]; 2]; TREE_COUNT] = [
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum WrProtocol {
+    CloudcastPolicy,
     Carousel,
     Rounds,
     PerStripeFec,
@@ -110,6 +112,7 @@ pub enum WrProtocol {
 impl WrProtocol {
     pub const fn name(self) -> &'static str {
         match self {
+            Self::CloudcastPolicy => "cloudcast-policy",
             Self::Carousel => "carousel",
             Self::Rounds => "rounds",
             Self::PerStripeFec => "per-stripe-fec",
@@ -120,6 +123,7 @@ impl WrProtocol {
 
     fn endpoint_kind(self) -> ProtocolKind {
         match self {
+            Self::CloudcastPolicy => ProtocolKind::RateProportionalStriping,
             Self::Carousel => ProtocolKind::PooledCarousel,
             Self::Rounds => ProtocolKind::PooledRounds,
             Self::PerStripeFec | Self::BestSingleTree0 | Self::BestSingleTree1 => {
@@ -133,6 +137,7 @@ impl WrProtocol {
 pub struct WrRunConfig {
     pub cloud: CloudScenario,
     pub protocol: WrProtocol,
+    pub cloudcast_plan: Option<CloudcastPolicyPlan>,
     pub source_symbols: usize,
     pub background_utilization_percent: u8,
     pub jitter_enabled: bool,
@@ -169,6 +174,15 @@ impl WrRunConfig {
                 .is_some_and(|receiver| receiver >= RECEIVER_COUNT)
         {
             return Err(WrRunError::Geometry);
+        }
+        match (self.protocol, &self.cloudcast_plan) {
+            (WrProtocol::CloudcastPolicy, Some(plan))
+                if plan.tree_symbol_quotas().iter().sum::<usize>() == self.source_symbols
+                    && plan.relay_regions() == &self.cloud.placement.relay_regions => {}
+            (WrProtocol::CloudcastPolicy, _) | (_, Some(_)) => {
+                return Err(WrRunError::Geometry);
+            }
+            (_, None) => {}
         }
         Ok(())
     }
@@ -752,6 +766,9 @@ fn ack_progress_units(source_symbols: usize) -> Result<u64, WrRunError> {
 }
 
 fn quotas(config: &WrRunConfig) -> Result<Vec<usize>, WrRunError> {
+    if let Some(plan) = &config.cloudcast_plan {
+        return Ok(plan.tree_symbol_quotas().to_vec());
+    }
     if let Some(tree) = single_tree(config.protocol) {
         let mut quotas = vec![0, 0];
         quotas[tree] = config.source_symbols;
@@ -1635,12 +1652,15 @@ fn reverse_component(session: usize, tree: usize, hop: usize) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::scenario::CloudProfileKind;
+    use crate::scenario::{
+        CloudProfileKind, CloudcastEgressPrices, CloudcastPolicyRequest, plan_cloudcast_policy,
+    };
 
     fn config() -> WrRunConfig {
         WrRunConfig {
             cloud: CloudScenario::built_in(CloudProfileKind::AwsLike, 0).expect("cloud scenario"),
             protocol: WrProtocol::Carousel,
+            cloudcast_plan: None,
             source_symbols: 64,
             background_utilization_percent: 30,
             jitter_enabled: true,
@@ -1806,6 +1826,36 @@ mod tests {
         concurrent.concurrent_sessions = 2;
         let outcome = run_wr(&concurrent).expect("concurrent sessions");
         assert_eq!(outcome.sessions.len(), 2);
+    }
+
+    #[test]
+    fn cloudcast_policy_uses_finite_pure_replication_stripes() {
+        let mut cell = config();
+        cell.cloud =
+            CloudScenario::built_in(CloudProfileKind::DigitaloceanLike, 1).expect("cloud scenario");
+        cell.source_symbols = 128;
+        let mut matrix = vec![vec![10_000_000; cell.cloud.regions.len()]; cell.cloud.regions.len()];
+        for (region, row) in matrix.iter_mut().enumerate() {
+            row[region] = 0;
+        }
+        let prices = CloudcastEgressPrices::new(&cell.cloud, matrix).expect("price matrix");
+        let plan = plan_cloudcast_policy(CloudcastPolicyRequest {
+            scenario: &cell.cloud,
+            egress_prices: &prices,
+            source_symbols: cell.source_symbols,
+            symbol_payload_bytes: FRAME_PAYLOAD_BYTES,
+            stripe_count: 8,
+            completion_budget_ns: 2_000_000_000,
+            background_utilization_percent: cell.background_utilization_percent,
+        })
+        .expect("Cloudcast policy plan");
+        plan.apply_to(&mut cell.cloud).expect("apply plan");
+        cell.protocol = WrProtocol::CloudcastPolicy;
+        cell.cloudcast_plan = Some(plan);
+
+        let outcome = run_wr(&cell).expect("Cloudcast policy cell");
+        assert_eq!(outcome.sessions[0].total_emissions, cell.source_symbols);
+        assert_eq!(outcome.sessions[0].application_drops, 0);
     }
 
     #[test]

@@ -45,6 +45,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let config = WrRunConfig {
         cloud: CloudScenario::built_in(profile, args[1].parse()?)?,
         protocol,
+        cloudcast_plan: None,
         source_symbols: args[5].parse()?,
         background_utilization_percent: args[2].parse()?,
         jitter_enabled: match args[3].as_str() {

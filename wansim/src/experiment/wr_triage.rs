@@ -145,6 +145,7 @@ pub fn run_fixed_wr_triage() -> Result<WrTriageArtifacts, WrTriageError> {
         cloud: CloudScenario::built_in(CloudProfileKind::DigitaloceanLike, 1)
             .map_err(WrRunError::from)?,
         protocol: WrProtocol::Carousel,
+        cloudcast_plan: None,
         source_symbols: SOURCE_SYMBOLS,
         background_utilization_percent: 70,
         jitter_enabled: true,

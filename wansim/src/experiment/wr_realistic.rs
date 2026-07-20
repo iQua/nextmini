@@ -469,6 +469,7 @@ fn run_task(task: Task) -> Result<RawTrial, WrExperimentError> {
     let config = WrRunConfig {
         cloud,
         protocol: task.protocol,
+        cloudcast_plan: None,
         source_symbols: task.k,
         background_utilization_percent: task.utilization,
         jitter_enabled: task.jitter,
