@@ -1,0 +1,161 @@
+schema_version,simulator_version,evidence_class,utilization_percent,execution_variant,resource,total_flow_directions,foreground_flow_directions,background_flow_directions
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,Cloudcast POLICY on wansim transport,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree0,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,best-single-tree1,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,carousel,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,30,per-stripe-fec,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,Cloudcast POLICY on wansim transport,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree0,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,best-single-tree1,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,carousel,trunk:na-west-to-na-east,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:fra1,12,12,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:lon1,14,6,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:nyc3,20,12,8
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:sfo3,32,16,16
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:sgp1,8,8,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,nic:tor1,6,6,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:ap-to-eu,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:ap-to-na-west,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:eu-to-ap,1,1,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:eu-to-na-east,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:eu-to-na-west,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:na-east-to-eu,2,2,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:na-east-to-na-west,8,4,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:na-west-to-ap,3,3,0
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:na-west-to-eu,7,3,4
+1,0.1.0,model-level realistic-envelope evidence; not a WAN measurement,70,per-stripe-fec,trunk:na-west-to-na-east,8,4,4
