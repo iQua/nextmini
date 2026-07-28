@@ -96,6 +96,8 @@ pub(super) struct SenderShared {
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
     pub(super) payload_emitted: bool,
+    pub(super) control_bytes_sent: u64,
+    pub(super) control_bytes_received: u64,
 }
 
 /// Concrete sender mode selected from the manifest.
@@ -228,6 +230,8 @@ impl SessionSender {
                 topology_ready: cfg.topology_ready,
                 pacer,
                 payload_emitted: false,
+                control_bytes_sent: 0,
+                control_bytes_received: 0,
             },
             mode,
         })
@@ -466,6 +470,9 @@ impl SenderShared {
         let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
             return;
         };
+        self.control_bytes_received = self
+            .control_bytes_received
+            .saturating_add(u64::try_from(frame.bytes.len()).unwrap_or(u64::MAX));
 
         match control {
             LosslessSessionControl::Manifest { .. } | LosslessSessionControl::SourceDone { .. } => {
@@ -539,7 +546,7 @@ impl SenderShared {
             fec = self.manifest.mode.is_fec(),
             "Lossless sender emitted manifest"
         );
-        control::send_control(
+        let control_payload_bytes = control::send_control_counted(
             &self.processors,
             control::FrameRoute {
                 session_id: self.session.session_id,
@@ -554,6 +561,9 @@ impl SenderShared {
             },
         )
         .await;
+        self.control_bytes_sent = self
+            .control_bytes_sent
+            .saturating_add(u64::try_from(control_payload_bytes).unwrap_or(u64::MAX));
     }
 
     /// Emit the burst-boundary marker for the current sender round.
@@ -562,7 +572,7 @@ impl SenderShared {
             session_id = self.session.session_id,
             round_id, "Lossless sender emitted SourceDone"
         );
-        control::send_control(
+        let control_payload_bytes = control::send_control_counted(
             &self.processors,
             control::FrameRoute {
                 session_id: self.session.session_id,
@@ -575,6 +585,9 @@ impl SenderShared {
             &LosslessSessionControl::SourceDone { round_id },
         )
         .await;
+        self.control_bytes_sent = self
+            .control_bytes_sent
+            .saturating_add(u64::try_from(control_payload_bytes).unwrap_or(u64::MAX));
     }
 
     /// Apply optional pacing before sending `bytes` bytes of payload.
@@ -627,6 +640,27 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![22]
         );
+    }
+
+    #[tokio::test]
+    async fn control_payload_bytes_are_counted_in_both_directions() {
+        let mut shared = test_sender_shared();
+        let ready = lossless_session::encode_control(7, &LosslessSessionControl::Ready);
+        shared.handle_control(
+            InboundFrame {
+                bytes: ready.clone(),
+                peer_id: Some(22),
+            },
+            &mut NoopMode,
+        );
+        shared.send_source_done(3).await;
+        let source_done = lossless_session::encode_control(
+            7,
+            &LosslessSessionControl::SourceDone { round_id: 3 },
+        );
+
+        assert_eq!(shared.control_bytes_received, ready.len() as u64);
+        assert_eq!(shared.control_bytes_sent, source_done.len() as u64);
     }
 
     #[tokio::test]
@@ -979,6 +1013,8 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            control_bytes_sent: 0,
+            control_bytes_received: 0,
         }
     }
 

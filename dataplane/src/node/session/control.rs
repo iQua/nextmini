@@ -73,8 +73,19 @@ pub async fn send_control(
     route: FrameRoute,
     control: &LosslessSessionControl,
 ) {
+    send_control_counted(processors, route, control).await;
+}
+
+/// Encode and emit one control frame, returning its session-payload byte count.
+pub async fn send_control_counted(
+    processors: &ProcessorHandle,
+    route: FrameRoute,
+    control: &LosslessSessionControl,
+) -> usize {
     let packet = build_control_packet(route, control);
+    let control_payload_bytes = packet.tcp_payload().map_or(0, |payload| payload.len());
     processors.process_packet(packet).await;
+    control_payload_bytes
 }
 
 #[cfg(test)]

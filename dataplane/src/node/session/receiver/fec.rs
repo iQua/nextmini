@@ -5,7 +5,7 @@ use std::sync::Arc;
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
 };
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
@@ -131,6 +131,16 @@ struct FecReceiverStats {
     mettle_decoder_pushes: u64,
     mettle_decoder_completions: u64,
     mettle_decoder_invalid_symbols: u64,
+    tree_stats: BTreeMap<u16, FecReceiverTreeStats>,
+}
+
+#[derive(Debug, Default)]
+struct FecReceiverTreeStats {
+    source_symbols: u64,
+    repair_symbols: u64,
+    duplicate_symbols: u64,
+    complete_block_symbols: u64,
+    invalid_symbols: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -164,27 +174,37 @@ impl FecReceiverStats {
             mettle_decoder_pushes: 0,
             mettle_decoder_completions: 0,
             mettle_decoder_invalid_symbols: 0,
+            tree_stats: BTreeMap::new(),
         }
     }
 
-    fn record_invalid(&mut self, _tree_id: u16) {
+    fn record_invalid(&mut self, tree_id: u16) {
         self.invalid_symbols = self.invalid_symbols.saturating_add(1);
+        let tree = self.tree_stats.entry(tree_id).or_default();
+        tree.invalid_symbols = tree.invalid_symbols.saturating_add(1);
     }
 
-    fn record_complete_block(&mut self, _tree_id: u16) {
+    fn record_complete_block(&mut self, tree_id: u16) {
         self.complete_block_symbols = self.complete_block_symbols.saturating_add(1);
+        let tree = self.tree_stats.entry(tree_id).or_default();
+        tree.complete_block_symbols = tree.complete_block_symbols.saturating_add(1);
     }
 
-    fn record_duplicate(&mut self, _tree_id: u16) {
+    fn record_duplicate(&mut self, tree_id: u16) {
         self.duplicate_symbols = self.duplicate_symbols.saturating_add(1);
+        let tree = self.tree_stats.entry(tree_id).or_default();
+        tree.duplicate_symbols = tree.duplicate_symbols.saturating_add(1);
     }
 
-    fn record_accepted(&mut self, _tree_id: u16, symbol_id: u32, symbols_per_block: u32) {
+    fn record_accepted(&mut self, tree_id: u16, symbol_id: u32, symbols_per_block: u32) {
         self.accepted_symbols = self.accepted_symbols.saturating_add(1);
+        let tree = self.tree_stats.entry(tree_id).or_default();
         if symbol_id < symbols_per_block {
             self.source_symbols = self.source_symbols.saturating_add(1);
+            tree.source_symbols = tree.source_symbols.saturating_add(1);
         } else {
             self.repair_symbols = self.repair_symbols.saturating_add(1);
+            tree.repair_symbols = tree.repair_symbols.saturating_add(1);
         }
     }
 
@@ -223,6 +243,26 @@ impl FecReceiverStats {
                     self.mettle_decoder_invalid_symbols.saturating_add(1);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod stats_tests {
+    use super::*;
+
+    #[test]
+    fn accepted_source_and_repair_symbols_are_attributed_per_tree() {
+        let mut stats = FecReceiverStats::new();
+
+        stats.record_accepted(7, 0, 4);
+        stats.record_accepted(9, 4, 4);
+
+        assert_eq!(stats.source_symbols, 1);
+        assert_eq!(stats.repair_symbols, 1);
+        assert_eq!(stats.tree_stats[&7].source_symbols, 1);
+        assert_eq!(stats.tree_stats[&7].repair_symbols, 0);
+        assert_eq!(stats.tree_stats[&9].source_symbols, 0);
+        assert_eq!(stats.tree_stats[&9].repair_symbols, 1);
     }
 }
 
@@ -730,8 +770,63 @@ impl FecReceiver {
         // instrumentation and adds work on every accepted METTLE bin.
     }
 
-    fn log_tree_stats(&self, _shared: &super::ReceiverShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
+    fn log_tree_stats(&self, shared: &super::ReceiverShared, reason: &'static str) {
+        let symbol_size = u64::try_from(self.geometry.symbol_size()).unwrap_or(u64::MAX);
+        let source_payload_bytes = self.stats.source_symbols.saturating_mul(symbol_size);
+        let repair_payload_bytes = self.stats.repair_symbols.saturating_mul(symbol_size);
+        let framing_bytes_per_symbol = u64::try_from(
+            lossless_session::LosslessSessionHeader::LEN + 8 + 4 + 2 + 2,
+        )
+        .unwrap_or(u64::MAX);
+        let symbol_framing_bytes = self
+            .stats
+            .accepted_symbols
+            .saturating_mul(framing_bytes_per_symbol);
+        let final_block_padding_bytes = shared.manifest.as_ref().map_or(0, |manifest| {
+            let symbols_per_block =
+                u64::try_from(self.geometry.source_symbols()).unwrap_or(u64::MAX);
+            manifest
+                .total_blocks
+                .saturating_mul(symbols_per_block.saturating_mul(symbol_size))
+                .saturating_sub(manifest.total_bytes)
+        });
+        info!(
+            session_id = shared.session_id,
+            local_node_id = shared.local_node_id,
+            reason,
+            source_symbols = self.stats.source_symbols,
+            repair_symbols = self.stats.repair_symbols,
+            source_payload_bytes,
+            repair_payload_bytes,
+            symbol_framing_bytes,
+            final_block_padding_bytes,
+            control_payload_bytes_sent = shared.control_bytes_sent(),
+            control_payload_bytes_received = shared.control_bytes_received(),
+            accepted_symbols = self.stats.accepted_symbols,
+            duplicate_symbols = self.stats.duplicate_symbols,
+            complete_block_symbols = self.stats.complete_block_symbols,
+            invalid_symbols = self.stats.invalid_symbols,
+            decode_attempts = self.stats.decode_attempts,
+            decode_successes = self.stats.decode_successes,
+            decode_insufficient_symbols = self.stats.decode_insufficient_symbols,
+            decode_invalid_symbols = self.stats.decode_invalid_symbols,
+            decoded_source_symbols = self.stats.decoded_source_symbols,
+            "Lossless FEC receiver session counters"
+        );
+        for (tree_id, tree) in &self.stats.tree_stats {
+            info!(
+                session_id = shared.session_id,
+                local_node_id = shared.local_node_id,
+                reason,
+                tree_id,
+                source_symbols = tree.source_symbols,
+                repair_symbols = tree.repair_symbols,
+                duplicate_symbols = tree.duplicate_symbols,
+                complete_block_symbols = tree.complete_block_symbols,
+                invalid_symbols = tree.invalid_symbols,
+                "Lossless FEC receiver per-tree symbol counters"
+            );
+        }
     }
 }
 

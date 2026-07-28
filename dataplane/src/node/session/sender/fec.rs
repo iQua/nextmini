@@ -204,10 +204,23 @@ struct FecSenderStats {
     repair_closed: u64,
     source_send_stalls: u64,
     repair_send_stalls: u64,
+    tree_stats: BTreeMap<u16, FecSenderTreeStats>,
+}
+
+#[derive(Debug, Default)]
+struct FecSenderTreeStats {
+    source_attempts: u64,
+    source_queued: u64,
+    source_would_block: u64,
+    source_closed: u64,
+    repair_attempts: u64,
+    repair_queued: u64,
+    repair_would_block: u64,
+    repair_closed: u64,
 }
 
 impl FecSenderStats {
-    fn new(_tree_ids: &[u16]) -> Self {
+    fn new(tree_ids: &[u16]) -> Self {
         Self {
             source_attempts: 0,
             source_queued: 0,
@@ -219,39 +232,54 @@ impl FecSenderStats {
             repair_closed: 0,
             source_send_stalls: 0,
             repair_send_stalls: 0,
+            tree_stats: tree_ids
+                .iter()
+                .copied()
+                .map(|tree_id| (tree_id, FecSenderTreeStats::default()))
+                .collect(),
         }
     }
 
-    fn record_attempt(&mut self, kind: SymbolKind, _tree_id: u16) {
+    fn record_attempt(&mut self, kind: SymbolKind, tree_id: u16) {
+        let tree = self.tree_stats.entry(tree_id).or_default();
         match kind {
             SymbolKind::Source => {
                 self.source_attempts = self.source_attempts.saturating_add(1);
+                tree.source_attempts = tree.source_attempts.saturating_add(1);
             }
             SymbolKind::Repair => {
                 self.repair_attempts = self.repair_attempts.saturating_add(1);
+                tree.repair_attempts = tree.repair_attempts.saturating_add(1);
             }
         }
     }
 
-    fn record_outcome(&mut self, kind: SymbolKind, _tree_id: u16, outcome: SendOutcome) {
+    fn record_outcome(&mut self, kind: SymbolKind, tree_id: u16, outcome: SendOutcome) {
+        let tree = self.tree_stats.entry(tree_id).or_default();
         match (kind, outcome) {
             (SymbolKind::Source, SendOutcome::Queued) => {
                 self.source_queued = self.source_queued.saturating_add(1);
+                tree.source_queued = tree.source_queued.saturating_add(1);
             }
             (SymbolKind::Source, SendOutcome::WouldBlock) => {
                 self.source_would_block = self.source_would_block.saturating_add(1);
+                tree.source_would_block = tree.source_would_block.saturating_add(1);
             }
             (SymbolKind::Source, SendOutcome::Closed) => {
                 self.source_closed = self.source_closed.saturating_add(1);
+                tree.source_closed = tree.source_closed.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::Queued) => {
                 self.repair_queued = self.repair_queued.saturating_add(1);
+                tree.repair_queued = tree.repair_queued.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::WouldBlock) => {
                 self.repair_would_block = self.repair_would_block.saturating_add(1);
+                tree.repair_would_block = tree.repair_would_block.saturating_add(1);
             }
             (SymbolKind::Repair, SendOutcome::Closed) => {
                 self.repair_closed = self.repair_closed.saturating_add(1);
+                tree.repair_closed = tree.repair_closed.saturating_add(1);
             }
         }
     }
@@ -1099,9 +1127,65 @@ impl FecSender {
         // expensive for WAN throughput measurements.
     }
 
-    fn log_tree_stats(&self, _shared: &super::SenderShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
+    fn log_tree_stats(&self, shared: &super::SenderShared, reason: &'static str) {
+        let symbol_size = u64::try_from(self.geometry.symbol_size()).unwrap_or(u64::MAX);
+        let source_payload_bytes = self.stats.source_queued.saturating_mul(symbol_size);
+        let repair_payload_bytes = self.stats.repair_queued.saturating_mul(symbol_size);
+        let framing_bytes_per_symbol =
+            u64::try_from(block_symbol_frame::framing_len()).unwrap_or(u64::MAX);
+        let symbol_framing_bytes = self
+            .stats
+            .total_queued()
+            .saturating_mul(framing_bytes_per_symbol);
+        info!(
+            session_id = shared.session.session_id,
+            reason,
+            scheme = ?self.scheme,
+            object_bytes = shared.manifest.total_bytes,
+            source_symbols = self.stats.source_queued,
+            repair_symbols = self.stats.repair_queued,
+            source_payload_bytes,
+            repair_payload_bytes,
+            symbol_framing_bytes,
+            final_block_padding_bytes = fec_padding_bytes(&shared.manifest, self.geometry),
+            control_payload_bytes_sent = shared.control_bytes_sent,
+            control_payload_bytes_received = shared.control_bytes_received,
+            source_attempts = self.stats.source_attempts,
+            source_would_block = self.stats.source_would_block,
+            source_closed = self.stats.source_closed,
+            repair_attempts = self.stats.repair_attempts,
+            repair_would_block = self.stats.repair_would_block,
+            repair_closed = self.stats.repair_closed,
+            source_send_stalls = self.stats.source_send_stalls,
+            repair_send_stalls = self.stats.repair_send_stalls,
+            "Lossless FEC sender session counters"
+        );
+        for (tree_id, tree) in &self.stats.tree_stats {
+            info!(
+                session_id = shared.session.session_id,
+                reason,
+                tree_id,
+                source_symbols = tree.source_queued,
+                repair_symbols = tree.repair_queued,
+                source_attempts = tree.source_attempts,
+                source_would_block = tree.source_would_block,
+                source_closed = tree.source_closed,
+                repair_attempts = tree.repair_attempts,
+                repair_would_block = tree.repair_would_block,
+                repair_closed = tree.repair_closed,
+                "Lossless FEC sender per-tree symbol counters"
+            );
+        }
     }
+}
+
+fn fec_padding_bytes(manifest: &LosslessSessionManifest, geometry: SymbolGeometry) -> u64 {
+    let symbols_per_block = u64::try_from(geometry.source_symbols()).unwrap_or(u64::MAX);
+    let symbol_size = u64::try_from(geometry.symbol_size()).unwrap_or(u64::MAX);
+    manifest
+        .total_blocks
+        .saturating_mul(symbols_per_block.saturating_mul(symbol_size))
+        .saturating_sub(manifest.total_bytes)
 }
 
 /// Refresh the cached source-symbol slice for `block_id` if needed.
@@ -1173,6 +1257,55 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn zero_repair_stats_keep_per_tree_repair_counts_at_zero() {
+        let mut stats = FecSenderStats::new(&[7, 9]);
+        stats.record_attempt(SymbolKind::Source, 7);
+        stats.record_outcome(SymbolKind::Source, 7, SendOutcome::Queued);
+        stats.record_attempt(SymbolKind::Source, 9);
+        stats.record_outcome(SymbolKind::Source, 9, SendOutcome::Queued);
+
+        assert_eq!(stats.source_queued, 2);
+        assert_eq!(stats.repair_queued, 0);
+        assert_eq!(stats.tree_stats[&7].source_queued, 1);
+        assert_eq!(stats.tree_stats[&7].repair_queued, 0);
+        assert_eq!(stats.tree_stats[&9].source_queued, 1);
+        assert_eq!(stats.tree_stats[&9].repair_queued, 0);
+    }
+
+    #[test]
+    fn one_repair_round_is_attributed_to_the_selected_tree() {
+        let mut stats = FecSenderStats::new(&[7, 9]);
+        stats.record_attempt(SymbolKind::Source, 7);
+        stats.record_outcome(SymbolKind::Source, 7, SendOutcome::Queued);
+        stats.record_attempt(SymbolKind::Repair, 9);
+        stats.record_outcome(SymbolKind::Repair, 9, SendOutcome::Queued);
+
+        assert_eq!(stats.source_queued, 1);
+        assert_eq!(stats.repair_queued, 1);
+        assert_eq!(stats.tree_stats[&7].source_queued, 1);
+        assert_eq!(stats.tree_stats[&7].repair_queued, 0);
+        assert_eq!(stats.tree_stats[&9].source_queued, 0);
+        assert_eq!(stats.tree_stats[&9].repair_queued, 1);
+    }
+
+    #[test]
+    fn final_short_block_padding_is_reported_separately() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 18,
+            total_blocks: 2,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(
+                4,
+                vec![7],
+            )),
+        };
+        let plan = BlockPlan::new(18, 16).expect("valid plan");
+        let geometry = plan.symbol_geometry(4).expect("valid geometry");
+
+        assert_eq!(fec_padding_bytes(&manifest, geometry), 14);
     }
 
     #[tokio::test]
@@ -1673,6 +1806,8 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            control_bytes_sent: 0,
+            control_bytes_received: 0,
         }
     }
 }

@@ -5,6 +5,10 @@ use nextmini_messages::lossless_session::{
 const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
+pub(super) const fn framing_len() -> usize {
+    LosslessSessionHeader::LEN + BLOCK_SYMBOL_FIXED_BODY_LEN
+}
+
 pub(super) fn encode_into(
     buf: &mut Vec<u8>,
     session_id: u64,

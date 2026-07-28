@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use std::collections::VecDeque;
 use std::io::{Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -86,6 +87,8 @@ pub(super) struct ReceiverShared {
     pub(super) manifest: Option<LosslessSessionManifest>,
     pub(super) plan: Option<BlockPlan>,
     pub(super) complete_blocks: BTreeSet<u64>,
+    control_bytes_sent: AtomicU64,
+    control_bytes_received: AtomicU64,
 }
 
 /// Concrete receiver mode selected after the manifest is installed.
@@ -108,6 +111,8 @@ impl SessionReceiver {
                 manifest: None,
                 plan: None,
                 complete_blocks: BTreeSet::new(),
+                control_bytes_sent: AtomicU64::new(0),
+                control_bytes_received: AtomicU64::new(0),
             },
             mode: None,
             lifecycle: ReceiverLifecycle::Active,
@@ -223,8 +228,11 @@ impl SessionReceiver {
             match (newest_round, source_done_round(&next)) {
                 (Some(current_round), Some(next_round)) => {
                     if next_round >= current_round {
+                        self.shared.record_control_bytes_received(frame.bytes.len());
                         frame = next;
                         newest_round = Some(next_round);
+                    } else {
+                        self.shared.record_control_bytes_received(next.bytes.len());
                     }
                 }
                 _ => self.pending_control_frames.push_back(next),
@@ -321,6 +329,7 @@ impl SessionReceiver {
         let Some((_, control)) = lossless_session::decode_control(&frame.bytes) else {
             return;
         };
+        self.shared.record_control_bytes_received(frame.bytes.len());
 
         match control {
             LosslessSessionControl::Manifest { manifest } => {
@@ -536,6 +545,21 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
 }
 
 impl ReceiverShared {
+    fn record_control_bytes_received(&self, bytes: usize) {
+        self.control_bytes_received.fetch_add(
+            u64::try_from(bytes).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
+    }
+
+    pub(super) fn control_bytes_sent(&self) -> u64 {
+        self.control_bytes_sent.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn control_bytes_received(&self) -> u64 {
+        self.control_bytes_received.load(Ordering::Relaxed)
+    }
+
     /// Return whether the receiver has completed every planned block.
     fn has_all_blocks(&self) -> bool {
         let Some(plan) = self.plan else {
@@ -727,7 +751,7 @@ impl ReceiverShared {
 
     /// Send a READY control frame back to the sender.
     async fn send_ready(&self) {
-        control::send_control(
+        let control_payload_bytes = control::send_control_counted(
             &self.processors,
             control::FrameRoute {
                 session_id: self.session_id,
@@ -740,10 +764,14 @@ impl ReceiverShared {
             &LosslessSessionControl::Ready,
         )
         .await;
+        self.control_bytes_sent.fetch_add(
+            u64::try_from(control_payload_bytes).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     async fn send_fec_need(&self, round_id: u32, report: &NeedReport) {
-        control::send_control(
+        let control_payload_bytes = control::send_control_counted(
             &self.processors,
             control::FrameRoute {
                 session_id: self.session_id,
@@ -759,6 +787,10 @@ impl ReceiverShared {
             },
         )
         .await;
+        self.control_bytes_sent.fetch_add(
+            u64::try_from(control_payload_bytes).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 
     fn plain_need(&self) -> Option<NeedReport> {
@@ -796,7 +828,7 @@ impl ReceiverShared {
     }
 
     async fn send_plain_need(&self, round_id: u32, report: &NeedReport) {
-        control::send_control(
+        let control_payload_bytes = control::send_control_counted(
             &self.processors,
             control::FrameRoute {
                 session_id: self.session_id,
@@ -812,6 +844,10 @@ impl ReceiverShared {
             },
         )
         .await;
+        self.control_bytes_sent.fetch_add(
+            u64::try_from(control_payload_bytes).unwrap_or(u64::MAX),
+            Ordering::Relaxed,
+        );
     }
 }
 
@@ -924,6 +960,8 @@ mod tests {
             }),
             plan: BlockPlan::new(16, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
         let mut receiver = FecReceiver::new(
             BlockPlan::new(16, 8)
@@ -992,6 +1030,8 @@ mod tests {
             }),
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
         let receiver = FecReceiver::new(geometry);
 
@@ -1041,6 +1081,8 @@ mod tests {
                 }),
                 plan: BlockPlan::new(16, 8).ok(),
                 complete_blocks: BTreeSet::from([0, 1]),
+                control_bytes_sent: AtomicU64::new(0),
+                control_bytes_received: AtomicU64::new(0),
             },
             mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
             lifecycle: ReceiverLifecycle::Active,
@@ -1110,6 +1152,8 @@ mod tests {
             }),
             plan: Some(plan),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
         let mut receiver = FecReceiver::new(geometry);
         let payload = vec![0; geometry.symbol_size()];
@@ -1647,6 +1691,8 @@ mod tests {
             }),
             plan: BlockPlan::new(8, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
 
         shared.mark_first_payload_unit();
@@ -1691,6 +1737,8 @@ mod tests {
             }),
             plan: BlockPlan::new(8, 8).ok(),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
 
         shared.mark_object_complete();
@@ -1748,6 +1796,8 @@ mod tests {
             }),
             plan: BlockPlan::new(10, 10).ok(),
             complete_blocks: BTreeSet::new(),
+            control_bytes_sent: AtomicU64::new(0),
+            control_bytes_received: AtomicU64::new(0),
         };
 
         shared
@@ -1843,6 +1893,8 @@ mod tests {
                 }),
                 plan: BlockPlan::new(8, 8).ok(),
                 complete_blocks: BTreeSet::from([0]),
+                control_bytes_sent: AtomicU64::new(0),
+                control_bytes_received: AtomicU64::new(0),
             },
             mode: Some(ReceiverMode::Fec(FecReceiver::new(geometry))),
             lifecycle: ReceiverLifecycle::Active,
@@ -2265,6 +2317,8 @@ mod tests {
                     }),
                     plan: BlockPlan::new(total_blocks * 8, 8).ok(),
                     complete_blocks,
+                    control_bytes_sent: AtomicU64::new(0),
+                    control_bytes_received: AtomicU64::new(0),
                 },
                 mode: Some(ReceiverMode::Plain(PlainReceiver::default())),
                 lifecycle: ReceiverLifecycle::Active,
@@ -2360,6 +2414,8 @@ mod tests {
                     }),
                     plan: Some(plan),
                     complete_blocks,
+                    control_bytes_sent: AtomicU64::new(0),
+                    control_bytes_received: AtomicU64::new(0),
                 },
                 mode: Some(ReceiverMode::Fec(fec)),
                 lifecycle: ReceiverLifecycle::Active,

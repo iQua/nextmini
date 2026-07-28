@@ -414,6 +414,8 @@ mod tests {
             topology_ready: None,
             pacer: None,
             payload_emitted: false,
+            control_bytes_sent: 0,
+            control_bytes_received: 0,
         }
     }
 }
