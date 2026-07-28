@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
+use std::time::{Duration, Instant};
 
 use nextmini_messages::lossless_session::{MissingBlockRange, NeedReport};
 use tokio::sync::mpsc;
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::node::session::api::{InboundFrame, SessionOutcome};
 use crate::node::session::control;
@@ -16,6 +17,46 @@ pub(super) struct CloudcastSender {
     round_reports: BTreeMap<usize, NeedReport>,
     protocol_error: bool,
     complete: bool,
+    stats: CloudcastSenderStats,
+}
+
+#[derive(Debug, Default)]
+struct CloudcastSenderStats {
+    source_symbols: u64,
+    source_payload_bytes: u64,
+    symbol_framing_bytes: u64,
+    tree_stats: BTreeMap<u16, CloudcastSenderTreeStats>,
+}
+
+#[derive(Debug, Default)]
+struct CloudcastSenderTreeStats {
+    source_symbols: u64,
+    source_payload_bytes: u64,
+    symbol_framing_bytes: u64,
+    enqueue_wait_ns: u64,
+}
+
+impl CloudcastSenderStats {
+    fn record_source(
+        &mut self,
+        tree_id: u16,
+        payload_bytes: usize,
+        frame_bytes: usize,
+        enqueue_wait: Duration,
+    ) {
+        let payload_bytes = u64::try_from(payload_bytes).unwrap_or(u64::MAX);
+        let frame_bytes = u64::try_from(frame_bytes).unwrap_or(u64::MAX);
+        let framing_bytes = frame_bytes.saturating_sub(payload_bytes);
+        let enqueue_wait_ns = u64::try_from(enqueue_wait.as_nanos()).unwrap_or(u64::MAX);
+        self.source_symbols = self.source_symbols.saturating_add(1);
+        self.source_payload_bytes = self.source_payload_bytes.saturating_add(payload_bytes);
+        self.symbol_framing_bytes = self.symbol_framing_bytes.saturating_add(framing_bytes);
+        let tree = self.tree_stats.entry(tree_id).or_default();
+        tree.source_symbols = tree.source_symbols.saturating_add(1);
+        tree.source_payload_bytes = tree.source_payload_bytes.saturating_add(payload_bytes);
+        tree.symbol_framing_bytes = tree.symbol_framing_bytes.saturating_add(framing_bytes);
+        tree.enqueue_wait_ns = tree.enqueue_wait_ns.saturating_add(enqueue_wait_ns);
+    }
 }
 
 impl super::ModeHooks for CloudcastSender {
@@ -91,6 +132,7 @@ impl CloudcastSender {
             round_reports: BTreeMap::new(),
             protocol_error: false,
             complete: false,
+            stats: CloudcastSenderStats::default(),
         })
     }
 
@@ -162,6 +204,7 @@ impl CloudcastSender {
         );
         let tree_id = self.stripe_selector.tree_id_for_block(block_id);
         shared.pace(frame.len()).await;
+        let enqueue_started = Instant::now();
         control::send_frame(
             &shared.processors,
             control::FrameRoute {
@@ -175,7 +218,44 @@ impl CloudcastSender {
             &frame,
         )
         .await;
+        self.stats.record_source(
+            tree_id,
+            payload.len(),
+            frame.len(),
+            enqueue_started.elapsed(),
+        );
         shared.mark_payload_emitted();
+    }
+
+    pub(super) fn log_stats(&self, shared: &super::SenderShared, reason: &'static str) {
+        info!(
+            session_id = shared.session.session_id,
+            reason,
+            object_bytes = shared.manifest.total_bytes,
+            source_symbols = self.stats.source_symbols,
+            repair_symbols = 0,
+            source_payload_bytes = self.stats.source_payload_bytes,
+            repair_payload_bytes = 0,
+            symbol_framing_bytes = self.stats.symbol_framing_bytes,
+            final_block_padding_bytes = 0,
+            control_payload_bytes_sent = shared.control_bytes_sent,
+            control_payload_bytes_received = shared.control_bytes_received,
+            "Lossless Cloudcast sender session counters"
+        );
+        for (tree_id, tree) in &self.stats.tree_stats {
+            info!(
+                session_id = shared.session.session_id,
+                reason,
+                tree_id,
+                source_symbols = tree.source_symbols,
+                repair_symbols = 0,
+                source_payload_bytes = tree.source_payload_bytes,
+                symbol_framing_bytes = tree.symbol_framing_bytes,
+                blocked_time_ns = tree.enqueue_wait_ns,
+                enqueue_wait_ns = tree.enqueue_wait_ns,
+                "Lossless Cloudcast sender per-tree counters"
+            );
+        }
     }
 }
 
@@ -214,7 +294,9 @@ impl CloudcastStripeSelector {
 
 #[cfg(test)]
 mod tests {
-    use super::CloudcastStripeSelector;
+    use std::time::Duration;
+
+    use super::{CloudcastSenderStats, CloudcastStripeSelector};
 
     #[test]
     fn selector_routes_blocks_by_fixed_stripe_table() {
@@ -224,5 +306,23 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(emitted, vec![3, 3, 7, 3, 3, 7]);
+    }
+
+    #[test]
+    fn stats_attribute_fixed_stripe_units_bytes_and_enqueue_wait() {
+        let mut stats = CloudcastSenderStats::default();
+
+        stats.record_source(3, 8_000, 8_024, Duration::from_millis(7));
+        stats.record_source(7, 4_000, 4_024, Duration::from_millis(2));
+        stats.record_source(3, 8_000, 8_024, Duration::from_millis(5));
+
+        assert_eq!(stats.source_symbols, 3);
+        assert_eq!(stats.source_payload_bytes, 20_000);
+        assert_eq!(stats.symbol_framing_bytes, 72);
+        assert_eq!(stats.tree_stats[&3].source_symbols, 2);
+        assert_eq!(stats.tree_stats[&3].source_payload_bytes, 16_000);
+        assert_eq!(stats.tree_stats[&3].enqueue_wait_ns, 12_000_000);
+        assert_eq!(stats.tree_stats[&7].source_symbols, 1);
+        assert_eq!(stats.tree_stats[&7].enqueue_wait_ns, 2_000_000);
     }
 }

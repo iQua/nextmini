@@ -1,6 +1,7 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
+use std::time::Instant;
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -217,6 +218,33 @@ struct FecSenderTreeStats {
     repair_queued: u64,
     repair_would_block: u64,
     repair_closed: u64,
+    blocked_since: Option<Instant>,
+    blocked_time_ns: u64,
+}
+
+impl FecSenderTreeStats {
+    fn record_block_state(&mut self, outcome: SendOutcome, at: Instant) {
+        match outcome {
+            SendOutcome::WouldBlock => {
+                self.blocked_since.get_or_insert(at);
+            }
+            SendOutcome::Queued | SendOutcome::Closed => {
+                if let Some(started) = self.blocked_since.take() {
+                    self.blocked_time_ns = self.blocked_time_ns.saturating_add(
+                        u64::try_from(at.saturating_duration_since(started).as_nanos())
+                            .unwrap_or(u64::MAX),
+                    );
+                }
+            }
+        }
+    }
+
+    fn blocked_time_ns_at(&self, at: Instant) -> u64 {
+        let active = self.blocked_since.map_or(0, |started| {
+            u64::try_from(at.saturating_duration_since(started).as_nanos()).unwrap_or(u64::MAX)
+        });
+        self.blocked_time_ns.saturating_add(active)
+    }
 }
 
 impl FecSenderStats {
@@ -255,7 +283,18 @@ impl FecSenderStats {
     }
 
     fn record_outcome(&mut self, kind: SymbolKind, tree_id: u16, outcome: SendOutcome) {
+        self.record_outcome_at(kind, tree_id, outcome, Instant::now());
+    }
+
+    fn record_outcome_at(
+        &mut self,
+        kind: SymbolKind,
+        tree_id: u16,
+        outcome: SendOutcome,
+        at: Instant,
+    ) {
         let tree = self.tree_stats.entry(tree_id).or_default();
+        tree.record_block_state(outcome, at);
         match (kind, outcome) {
             (SymbolKind::Source, SendOutcome::Queued) => {
                 self.source_queued = self.source_queued.saturating_add(1);
@@ -282,6 +321,13 @@ impl FecSenderStats {
                 tree.repair_closed = tree.repair_closed.saturating_add(1);
             }
         }
+    }
+
+    #[cfg(test)]
+    fn tree_blocked_time_ns(&self, tree_id: u16, at: Instant) -> u64 {
+        self.tree_stats
+            .get(&tree_id)
+            .map_or(0, |tree| tree.blocked_time_ns_at(at))
     }
 
     fn record_stall(&mut self, kind: SymbolKind) {
@@ -1160,6 +1206,7 @@ impl FecSender {
             repair_send_stalls = self.stats.repair_send_stalls,
             "Lossless FEC sender session counters"
         );
+        let logged_at = Instant::now();
         for (tree_id, tree) in &self.stats.tree_stats {
             info!(
                 session_id = shared.session.session_id,
@@ -1173,6 +1220,7 @@ impl FecSender {
                 repair_attempts = tree.repair_attempts,
                 repair_would_block = tree.repair_would_block,
                 repair_closed = tree.repair_closed,
+                blocked_time_ns = tree.blocked_time_ns_at(logged_at),
                 "Lossless FEC sender per-tree symbol counters"
             );
         }
@@ -1289,6 +1337,38 @@ mod tests {
         assert_eq!(stats.tree_stats[&7].repair_queued, 0);
         assert_eq!(stats.tree_stats[&9].source_queued, 0);
         assert_eq!(stats.tree_stats[&9].repair_queued, 1);
+    }
+
+    #[test]
+    fn blocked_wall_time_tracks_each_tree_without_double_counting_retries() {
+        let mut stats = FecSenderStats::new(&[7, 9]);
+        let started = std::time::Instant::now();
+
+        stats.record_outcome_at(SymbolKind::Source, 7, SendOutcome::WouldBlock, started);
+        stats.record_outcome_at(
+            SymbolKind::Source,
+            7,
+            SendOutcome::WouldBlock,
+            started + Duration::from_millis(3),
+        );
+        stats.record_outcome_at(
+            SymbolKind::Source,
+            7,
+            SendOutcome::Queued,
+            started + Duration::from_millis(8),
+        );
+        stats.record_outcome_at(
+            SymbolKind::Repair,
+            7,
+            SendOutcome::WouldBlock,
+            started + Duration::from_millis(10),
+        );
+
+        assert_eq!(
+            stats.tree_blocked_time_ns(7, started + Duration::from_millis(15)),
+            13_000_000
+        );
+        assert_eq!(stats.tree_blocked_time_ns(9, started), 0);
     }
 
     #[test]

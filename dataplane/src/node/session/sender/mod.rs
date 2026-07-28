@@ -263,6 +263,14 @@ impl SessionSender {
             SenderMode::Cloudcast(mode) => mode.run(&mut self.shared, ctrl_rx).await,
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         };
+        if let SenderMode::Cloudcast(mode) = &self.mode {
+            let reason = if outcome == SessionOutcome::Completed {
+                "run_complete"
+            } else {
+                "run_aborted"
+            };
+            mode.log_stats(&self.shared, reason);
+        }
         info!(
             session_id = self.shared.session.session_id,
             complete = outcome == SessionOutcome::Completed,
