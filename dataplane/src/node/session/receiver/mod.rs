@@ -546,10 +546,8 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
 
 impl ReceiverShared {
     fn record_control_bytes_received(&self, bytes: usize) {
-        self.control_bytes_received.fetch_add(
-            u64::try_from(bytes).unwrap_or(u64::MAX),
-            Ordering::Relaxed,
-        );
+        self.control_bytes_received
+            .fetch_add(u64::try_from(bytes).unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     pub(super) fn control_bytes_sent(&self) -> u64 {

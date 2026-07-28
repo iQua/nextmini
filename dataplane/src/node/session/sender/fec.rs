@@ -1297,10 +1297,7 @@ mod tests {
             block_size: 16,
             total_bytes: 18,
             total_blocks: 2,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(
-                4,
-                vec![7],
-            )),
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7])),
         };
         let plan = BlockPlan::new(18, 16).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");

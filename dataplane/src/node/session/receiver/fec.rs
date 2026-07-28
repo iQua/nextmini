@@ -774,10 +774,9 @@ impl FecReceiver {
         let symbol_size = u64::try_from(self.geometry.symbol_size()).unwrap_or(u64::MAX);
         let source_payload_bytes = self.stats.source_symbols.saturating_mul(symbol_size);
         let repair_payload_bytes = self.stats.repair_symbols.saturating_mul(symbol_size);
-        let framing_bytes_per_symbol = u64::try_from(
-            lossless_session::LosslessSessionHeader::LEN + 8 + 4 + 2 + 2,
-        )
-        .unwrap_or(u64::MAX);
+        let framing_bytes_per_symbol =
+            u64::try_from(lossless_session::LosslessSessionHeader::LEN + 8 + 4 + 2 + 2)
+                .unwrap_or(u64::MAX);
         let symbol_framing_bytes = self
             .stats
             .accepted_symbols
