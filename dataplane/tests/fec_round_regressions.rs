@@ -228,6 +228,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             route: capture.route(),
             local_node_id: capture.cfg.node_id,
             sink_buffer: Some(sink.clone()),
+            sink_file: None,
             progress: None,
         })
         .await
@@ -277,6 +278,16 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             )
             .await;
     }
+    timeout(Duration::from_secs(2), async {
+        loop {
+            if sink.lock().await.as_slice() == [1u8, 2, 3, 4, 5, 6, 7, 8] {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("receiver should commit source symbols before the replay assertion");
     runtime
         .deliver(
             session_id,
