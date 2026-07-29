@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use nextmini_messages::lossless_session::{
     self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
@@ -128,6 +129,7 @@ struct FecReceiverStats {
     decode_insufficient_symbols: u64,
     decode_invalid_symbols: u64,
     decoded_source_symbols: u64,
+    decoder_cpu_ns: u64,
     mettle_decoder_pushes: u64,
     mettle_decoder_completions: u64,
     mettle_decoder_invalid_symbols: u64,
@@ -171,6 +173,7 @@ impl FecReceiverStats {
             decode_insufficient_symbols: 0,
             decode_invalid_symbols: 0,
             decoded_source_symbols: 0,
+            decoder_cpu_ns: 0,
             mettle_decoder_pushes: 0,
             mettle_decoder_completions: 0,
             mettle_decoder_invalid_symbols: 0,
@@ -230,6 +233,12 @@ impl FecReceiverStats {
             .saturating_add(u64::try_from(decoded_sources).unwrap_or(u64::MAX));
     }
 
+    fn record_decoder_cpu(&mut self, elapsed: Duration) {
+        self.decoder_cpu_ns = self.decoder_cpu_ns.saturating_add(
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        );
+    }
+
     fn record_mettle_decode(&mut self, status: MettleDecodeStatus, decoded_sources: usize) {
         self.mettle_decoder_pushes = self.mettle_decoder_pushes.saturating_add(1);
         self.record_decoded_sources(decoded_sources);
@@ -263,6 +272,18 @@ mod stats_tests {
         assert_eq!(stats.tree_stats[&7].repair_symbols, 0);
         assert_eq!(stats.tree_stats[&9].source_symbols, 0);
         assert_eq!(stats.tree_stats[&9].repair_symbols, 1);
+    }
+
+    #[test]
+    fn decoder_cpu_time_accumulates_without_affecting_decode_counts() {
+        let mut stats = FecReceiverStats::new();
+
+        stats.record_decoder_cpu(std::time::Duration::from_nanos(17));
+        stats.record_decoder_cpu(std::time::Duration::from_nanos(19));
+
+        assert_eq!(stats.decoder_cpu_ns, 36);
+        assert_eq!(stats.decode_attempts, 0);
+        assert_eq!(stats.decode_successes, 0);
     }
 }
 
@@ -409,6 +430,7 @@ impl FecReceiver {
             return true;
         }
 
+        let decode_started = Instant::now();
         let params = BlockParams::with_scheme(
             source_symbols,
             self.geometry.symbol_size(),
@@ -432,6 +454,7 @@ impl FecReceiver {
         }
 
         let decode_result = decoder.decode(&received);
+        self.stats.record_decoder_cpu(decode_started.elapsed());
         let decode_status = match &decode_result {
             Ok(_) => DecodeStatus::Success,
             Err(session_fec::DecodeError::InsufficientSymbols) => DecodeStatus::InsufficientSymbols,
@@ -810,6 +833,7 @@ impl FecReceiver {
             decode_insufficient_symbols = self.stats.decode_insufficient_symbols,
             decode_invalid_symbols = self.stats.decode_invalid_symbols,
             decoded_source_symbols = self.stats.decoded_source_symbols,
+            decoder_cpu_ns = self.stats.decoder_cpu_ns,
             "Lossless FEC receiver session counters"
         );
         for (tree_id, tree) in &self.stats.tree_stats {

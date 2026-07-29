@@ -1,7 +1,7 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tracing::{debug, info, warn};
 
@@ -205,6 +205,7 @@ struct FecSenderStats {
     repair_closed: u64,
     source_send_stalls: u64,
     repair_send_stalls: u64,
+    encoder_cpu_ns: u64,
     tree_stats: BTreeMap<u16, FecSenderTreeStats>,
 }
 
@@ -260,6 +261,7 @@ impl FecSenderStats {
             repair_closed: 0,
             source_send_stalls: 0,
             repair_send_stalls: 0,
+            encoder_cpu_ns: 0,
             tree_stats: tree_ids
                 .iter()
                 .copied()
@@ -339,6 +341,12 @@ impl FecSenderStats {
                 self.repair_send_stalls = self.repair_send_stalls.saturating_add(1);
             }
         }
+    }
+
+    fn record_encoder_cpu(&mut self, elapsed: Duration) {
+        self.encoder_cpu_ns = self.encoder_cpu_ns.saturating_add(
+            u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX),
+        );
     }
 
     fn total_queued(&self) -> u64 {
@@ -818,26 +826,32 @@ impl FecSender {
             return self.mettle_symbol_payload(shared, block_id, symbol_id);
         }
 
-        let need_encoder = fec_block_ref(self, block_id).map(|block| block.encoder.is_none())?;
+        let started = Instant::now();
+        let payload = (|| {
+            let need_encoder =
+                fec_block_ref(self, block_id).map(|block| block.encoder.is_none())?;
 
-        if need_encoder {
-            let span = shared.plan.block_span(block_id)?;
-            let source_block = shared.source.padded_symbol_bytes(span, self.geometry);
-            let params = BlockParams::with_scheme(
-                usize::try_from(self.symbols_per_block).ok()?,
-                self.geometry.symbol_size(),
-                session_fec::block_seed(shared.session.session_id, block_id),
-                self.scheme,
-            );
-            let block = fec_block_mut(self, block_id)?;
-            if block.encoder.is_none() {
-                block.encoder = Encoder::from_block(params, source_block.as_ref());
+            if need_encoder {
+                let span = shared.plan.block_span(block_id)?;
+                let source_block = shared.source.padded_symbol_bytes(span, self.geometry);
+                let params = BlockParams::with_scheme(
+                    usize::try_from(self.symbols_per_block).ok()?,
+                    self.geometry.symbol_size(),
+                    session_fec::block_seed(shared.session.session_id, block_id),
+                    self.scheme,
+                );
+                let block = fec_block_mut(self, block_id)?;
+                if block.encoder.is_none() {
+                    block.encoder = Encoder::from_block(params, source_block.as_ref());
+                }
             }
-        }
 
-        fec_block_ref(self, block_id)
-            .and_then(|block| block.encoder.as_ref())
-            .and_then(|encoder| encoder.coded_symbol(symbol_id))
+            fec_block_ref(self, block_id)
+                .and_then(|block| block.encoder.as_ref())
+                .and_then(|encoder| encoder.coded_symbol(symbol_id))
+        })();
+        self.stats.record_encoder_cpu(started.elapsed());
+        payload
     }
 
     fn mettle_symbol_payload(
@@ -1204,6 +1218,7 @@ impl FecSender {
             repair_closed = self.stats.repair_closed,
             source_send_stalls = self.stats.source_send_stalls,
             repair_send_stalls = self.stats.repair_send_stalls,
+            encoder_cpu_ns = self.stats.encoder_cpu_ns,
             "Lossless FEC sender session counters"
         );
         let logged_at = Instant::now();
@@ -1369,6 +1384,18 @@ mod tests {
             13_000_000
         );
         assert_eq!(stats.tree_blocked_time_ns(9, started), 0);
+    }
+
+    #[test]
+    fn encoder_cpu_time_accumulates_without_affecting_symbol_counts() {
+        let mut stats = FecSenderStats::new(&[7]);
+
+        stats.record_encoder_cpu(Duration::from_nanos(11));
+        stats.record_encoder_cpu(Duration::from_nanos(13));
+
+        assert_eq!(stats.encoder_cpu_ns, 24);
+        assert_eq!(stats.source_queued, 0);
+        assert_eq!(stats.repair_queued, 0);
     }
 
     #[test]
