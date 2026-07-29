@@ -123,6 +123,8 @@ struct FecReceiverStats {
     repair_symbols: u64,
     duplicate_symbols: u64,
     complete_block_symbols: u64,
+    complete_block_source_symbols: u64,
+    complete_block_repair_symbols: u64,
     invalid_symbols: u64,
     decode_attempts: u64,
     decode_successes: u64,
@@ -142,6 +144,8 @@ struct FecReceiverTreeStats {
     repair_symbols: u64,
     duplicate_symbols: u64,
     complete_block_symbols: u64,
+    complete_block_source_symbols: u64,
+    complete_block_repair_symbols: u64,
     invalid_symbols: u64,
 }
 
@@ -167,6 +171,8 @@ impl FecReceiverStats {
             repair_symbols: 0,
             duplicate_symbols: 0,
             complete_block_symbols: 0,
+            complete_block_source_symbols: 0,
+            complete_block_repair_symbols: 0,
             invalid_symbols: 0,
             decode_attempts: 0,
             decode_successes: 0,
@@ -187,10 +193,21 @@ impl FecReceiverStats {
         tree.invalid_symbols = tree.invalid_symbols.saturating_add(1);
     }
 
-    fn record_complete_block(&mut self, tree_id: u16) {
+    fn record_complete_block(&mut self, tree_id: u16, symbol_id: u32, symbols_per_block: u32) {
         self.complete_block_symbols = self.complete_block_symbols.saturating_add(1);
         let tree = self.tree_stats.entry(tree_id).or_default();
         tree.complete_block_symbols = tree.complete_block_symbols.saturating_add(1);
+        if symbol_id < symbols_per_block {
+            self.complete_block_source_symbols =
+                self.complete_block_source_symbols.saturating_add(1);
+            tree.complete_block_source_symbols =
+                tree.complete_block_source_symbols.saturating_add(1);
+        } else {
+            self.complete_block_repair_symbols =
+                self.complete_block_repair_symbols.saturating_add(1);
+            tree.complete_block_repair_symbols =
+                tree.complete_block_repair_symbols.saturating_add(1);
+        }
     }
 
     fn record_duplicate(&mut self, tree_id: u16) {
@@ -285,6 +302,22 @@ mod stats_tests {
         assert_eq!(stats.decode_attempts, 0);
         assert_eq!(stats.decode_successes, 0);
     }
+
+    #[test]
+    fn post_completion_symbols_are_classified_by_source_and_repair_id() {
+        let mut stats = FecReceiverStats::new();
+
+        stats.record_complete_block(7, 3, 4);
+        stats.record_complete_block(9, 4, 4);
+
+        assert_eq!(stats.complete_block_symbols, 2);
+        assert_eq!(stats.complete_block_source_symbols, 1);
+        assert_eq!(stats.complete_block_repair_symbols, 1);
+        assert_eq!(stats.tree_stats[&7].complete_block_source_symbols, 1);
+        assert_eq!(stats.tree_stats[&7].complete_block_repair_symbols, 0);
+        assert_eq!(stats.tree_stats[&9].complete_block_source_symbols, 0);
+        assert_eq!(stats.tree_stats[&9].complete_block_repair_symbols, 1);
+    }
 }
 
 impl FecReceiver {
@@ -328,7 +361,11 @@ impl FecReceiver {
             return;
         }
         if shared.complete_blocks.contains(&symbol.block_id) {
-            self.stats.record_complete_block(symbol.tree_id);
+            self.stats.record_complete_block(
+                symbol.tree_id,
+                symbol.symbol_id,
+                fec_mode.symbols_per_block,
+            );
             return;
         }
 
@@ -827,6 +864,8 @@ impl FecReceiver {
             accepted_symbols = self.stats.accepted_symbols,
             duplicate_symbols = self.stats.duplicate_symbols,
             complete_block_symbols = self.stats.complete_block_symbols,
+            complete_block_source_symbols = self.stats.complete_block_source_symbols,
+            complete_block_repair_symbols = self.stats.complete_block_repair_symbols,
             invalid_symbols = self.stats.invalid_symbols,
             decode_attempts = self.stats.decode_attempts,
             decode_successes = self.stats.decode_successes,
@@ -846,6 +885,8 @@ impl FecReceiver {
                 repair_symbols = tree.repair_symbols,
                 duplicate_symbols = tree.duplicate_symbols,
                 complete_block_symbols = tree.complete_block_symbols,
+                complete_block_source_symbols = tree.complete_block_source_symbols,
+                complete_block_repair_symbols = tree.complete_block_repair_symbols,
                 invalid_symbols = tree.invalid_symbols,
                 "Lossless FEC receiver per-tree symbol counters"
             );
