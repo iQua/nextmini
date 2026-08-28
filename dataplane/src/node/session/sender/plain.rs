@@ -292,7 +292,6 @@ impl PlainSender {
             &frame,
         )
         .await;
-        shared.mark_payload_emitted();
     }
 }
 
@@ -413,7 +412,6 @@ mod tests {
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,
-            payload_emitted: false,
         }
     }
 }

@@ -47,6 +47,10 @@ receiver_sweep_trees="3"
 status_timeout_seconds="300"
 original_args=("$@")
 current_case_dir=""
+current_cpu_sampler_pid=""
+current_cpu_case_dir=""
+cpu_ceiling_pct="75"
+calibration_mode="false"
 
 usage() {
   cat <<'EOF'
@@ -80,6 +84,8 @@ Options:
   --receiver-sweep-max N     Run a sweep from 1..N receivers with fixed trees.
   --receiver-sweep-trees N   Tree count for receiver sweep (default: 3).
   --status-timeout-seconds N Seconds to wait for status files per case (default: 300).
+  --cpu-ceiling-pct N       Mark a run invalid above this host CPU utilization (default: 75).
+  --calibration             Run the requested scenario unshaped to record max-throughput capability.
   --no-build                 Skip cargo build and use the existing binaries.
   -h, --help                 Show this help.
 EOF
@@ -194,6 +200,14 @@ while [[ $# -gt 0 ]]; do
     --status-timeout-seconds)
       status_timeout_seconds="${2:-}"
       shift 2
+      ;;
+    --cpu-ceiling-pct)
+      cpu_ceiling_pct="${2:-}"
+      shift 2
+      ;;
+    --calibration)
+      calibration_mode="true"
+      shift
       ;;
     --no-build)
       no_build="true"
@@ -385,6 +399,9 @@ make_case_name() {
       printf -- '-floor%sm' "$tc_min_rate_mbit"
     fi
   fi
+  if [[ "$calibration_mode" == "true" ]]; then
+    printf -- '-calibration'
+  fi
 }
 
 validate_solution_json() {
@@ -563,6 +580,7 @@ start_dataplane() {
 stop_case() {
   local case_dir="$1"
   local config_path="${case_dir}/dataplane-config.toml"
+  stop_cpu_monitor "$case_dir"
   if [[ -f "${case_dir}/dataplane.pid" ]]; then
     kill "$(cat "${case_dir}/dataplane.pid")" >/dev/null 2>&1 || true
     wait "$(cat "${case_dir}/dataplane.pid")" 2>/dev/null || true
@@ -583,6 +601,41 @@ stop_case() {
     '
   )
   bash "${script_dir}/cleanup.sh" --config "${case_dir}/dataplane-config.toml" >/dev/null 2>&1 || true
+}
+
+start_cpu_monitor() {
+  local case_dir="$1"
+  local samples_path="${case_dir}/cpu-utilization.csv"
+
+  python3 "${script_dir}/tools/cpu_monitor.py" sample --output "$samples_path" &
+  current_cpu_sampler_pid=$!
+  current_cpu_case_dir="$case_dir"
+  printf '%s\n' "$current_cpu_sampler_pid" >"${case_dir}/cpu-monitor.pid"
+}
+
+stop_cpu_monitor() {
+  local case_dir="$1"
+  if [[ -z "$current_cpu_sampler_pid" || "$current_cpu_case_dir" != "$case_dir" ]]; then
+    return 0
+  fi
+
+  kill "$current_cpu_sampler_pid" >/dev/null 2>&1 || true
+  wait "$current_cpu_sampler_pid" 2>/dev/null || true
+  rm -f "${case_dir}/cpu-monitor.pid"
+  current_cpu_sampler_pid=""
+  current_cpu_case_dir=""
+
+  local summarize_args=(
+    summarize "${case_dir}/cpu-utilization.csv"
+    --ceiling-pct "$cpu_ceiling_pct"
+    --ledger "${case_dir}/run-ledger.json"
+    --metrics-dir "${case_dir}/artifacts"
+  )
+  if [[ "$calibration_mode" == "true" ]]; then
+    summarize_args+=(--calibration)
+  fi
+  python3 "${script_dir}/tools/cpu_monitor.py" "${summarize_args[@]}" \
+    >"${case_dir}/cpu-validity.json"
 }
 
 wait_for_veth_devices() {
@@ -606,6 +659,29 @@ wait_for_veth_devices() {
   done
 
   echo "Timed out waiting for namespace veth devices." >&2
+  return 1
+}
+
+find_node_namespace_pid() {
+  local dataplane_parent_pid="$1"
+  local node_id="$2"
+  local target_ip="172.16.8.$((node_id + 1))"
+  local deadline=$((SECONDS + 30))
+
+  while (( SECONDS < deadline )); do
+    local child_pid
+    while IFS= read -r child_pid; do
+      [[ -z "$child_pid" ]] && continue
+      if nsenter -t "$child_pid" -n ip -o -4 addr show 2>/dev/null |
+        grep -q " ${target_ip}/"; then
+        printf '%s\n' "$child_pid"
+        return 0
+      fi
+    done < <(pgrep -P "$dataplane_parent_pid" 2>/dev/null || true)
+    sleep 0.1
+  done
+
+  echo "Could not find network namespace for node ${node_id}." >&2
   return 1
 }
 
@@ -665,94 +741,133 @@ apply_tc_profile() {
       ;;
     solution-edge-rates|solution-two-edge-rates)
       local edge_file="${case_dir}/tc-solution-edges.tsv"
-      python3 - "$solution_json" "$tc_profile" "${tc_min_rate_mbit:-0}" >"$edge_file" <<'PY'
-import collections
-import json
-import pathlib
-import sys
-
-solution = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-profile = sys.argv[2]
-min_rate_mbit = float(sys.argv[3])
-tree_edges = collections.Counter(
-    (int(src), int(dst))
-    for tree in solution.get("trees", [])
-    for src, dst in tree.get("edges", [])
-)
-scenario_edges = {}
-for edge in solution.get("scenario", {}).get("edges", []):
-    src = int(edge["src"])
-    dst = int(edge["dst"])
-    scenario_edges[(src, dst)] = edge
-
-if profile == "solution-two-edge-rates":
-    selected_edges = [
-        edge
-        for edge, _ in sorted(
-            (
-                (edge, use_count)
-                for edge, use_count in tree_edges.items()
-                if edge[0] != 1 and edge in scenario_edges
-            ),
-            key=lambda item: (-item[1], float(scenario_edges[item[0]]["bw"])),
-        )[:2]
-    ]
-else:
-    selected_edges = [
-        (int(edge["src"]), int(edge["dst"]))
-        for edge in solution.get("scenario", {}).get("edges", [])
-        if (int(edge["src"]), int(edge["dst"])) in tree_edges
-    ]
-
-for src, dst in selected_edges:
-    if src == 1:
-        continue
-    edge = scenario_edges.get((src, dst))
-    if edge is None:
-        continue
-    bw_mbit = max(float(edge["bw"]), min_rate_mbit)
-    bw = max(1, int(round(bw_mbit * 1000.0)))
-    src_ip = f"172.16.8.{src + 1}"
-    dst_ip = f"172.16.8.{dst + 1}"
-    dev = f"veth{dst - 1}a"
-    print(f"{dev}\t{src_ip}\t{dst_ip}\t{bw}\t{src}\t{dst}")
-PY
+      local node_budget_file="${case_dir}/tc-node-budgets.tsv"
+      local node_budget_edge_file="${case_dir}/tc-node-budget-edges.tsv"
+      python3 "${script_dir}/tools/solution_edges.py" \
+        "$solution_json" \
+        --profile "$tc_profile" \
+        --min-rate-mbit "${tc_min_rate_mbit:-0}" \
+        --node-budgets-output "$node_budget_file" \
+        --node-budget-edges-output "$node_budget_edge_file" \
+        >"$edge_file"
 
       {
         echo "solution_json=${solution_json}"
         echo "edge_file=${edge_file}"
+        echo "node_budget_file=${node_budget_file}"
+        echo "node_budget_edge_file=${node_budget_edge_file}"
       } >>"$tc_log"
 
-      local shaped_devs
-      shaped_devs="$(cut -f1 "$edge_file" | sort -u)"
-      while IFS= read -r dev; do
-        [[ -z "$dev" ]] && continue
-        tc qdisc del dev "$dev" root >/dev/null 2>&1 || true
-        tc qdisc replace dev "$dev" root handle 1: htb default ffff
-        tc class replace dev "$dev" parent 1: classid 1:ffff htb rate 10000mbit ceil 10000mbit
-      done <<<"$shaped_devs"
+      if [[ -s "$node_budget_file" ]]; then
+        local dataplane_parent_pid
+        dataplane_parent_pid="$(cat "${case_dir}/dataplane.pid")"
+        local budget_id direction node_id dev budget_kbit budget_name
+        while IFS=$'\t' read -r budget_id direction node_id dev budget_kbit budget_name; do
+          [[ -z "$budget_id" ]] && continue
+          local tc_prefix=()
+          local namespace_pid=""
+          if [[ "$direction" == "egress" ]]; then
+            namespace_pid="$(find_node_namespace_pid "$dataplane_parent_pid" "$node_id")"
+            tc_prefix=(nsenter -t "$namespace_pid" -n tc)
+          else
+            tc_prefix=(tc)
+          fi
 
-      local class_id=10
-      local dev src_ip dst_ip bw_kbit src_node dst_node
-      while IFS=$'\t' read -r dev src_ip dst_ip bw_kbit src_node dst_node; do
-        [[ -z "$dev" ]] && continue
-        local class_hex
-        class_hex="$(printf '%x' "$class_id")"
-        tc class replace dev "$dev" parent 1: classid "1:${class_hex}" htb rate "${bw_kbit}kbit" ceil "${bw_kbit}kbit"
-        tc filter add dev "$dev" parent 1: protocol ip prio "$class_id" u32 \
-          match ip src "${src_ip}/32" \
-          match ip dst "${dst_ip}/32" \
-          flowid "1:${class_hex}"
-        printf 'edge=%s->%s dev=%s src_ip=%s dst_ip=%s rate_kbit=%s class=1:%s\n' \
-          "$src_node" "$dst_node" "$dev" "$src_ip" "$dst_ip" "$bw_kbit" "$class_hex" >>"$tc_log"
-        class_id=$((class_id + 1))
-      done <"$edge_file"
-      while IFS= read -r dev; do
-        [[ -z "$dev" ]] && continue
-        tc qdisc show dev "$dev" >>"$tc_log"
-        tc class show dev "$dev" >>"$tc_log"
-        tc filter show dev "$dev" parent 1: >>"$tc_log"
-      done <<<"$shaped_devs"
+          "${tc_prefix[@]}" qdisc del dev "$dev" root >/dev/null 2>&1 || true
+          "${tc_prefix[@]}" qdisc replace dev "$dev" root handle 1: htb default ffff
+          "${tc_prefix[@]}" class replace dev "$dev" parent 1: classid 1:1 \
+            htb rate "${budget_kbit}kbit" ceil "${budget_kbit}kbit"
+          "${tc_prefix[@]}" class replace dev "$dev" parent 1: classid 1:ffff \
+            htb rate 100000mbit ceil 100000mbit
+
+          local class_id=10
+          local leaf_budget_id src_ip dst_ip guaranteed_kbit ceil_kbit src_node dst_node delay_ms jitter_ms loss_pct
+          while IFS=$'\t' read -r leaf_budget_id src_ip dst_ip guaranteed_kbit ceil_kbit src_node dst_node delay_ms jitter_ms loss_pct; do
+            [[ "$leaf_budget_id" != "$budget_id" ]] && continue
+            local class_hex
+            class_hex="$(printf '%x' "$class_id")"
+            "${tc_prefix[@]}" class replace dev "$dev" parent 1:1 \
+              classid "1:${class_hex}" htb rate "${guaranteed_kbit}kbit" ceil "${ceil_kbit}kbit"
+            "${tc_prefix[@]}" filter add dev "$dev" parent 1: protocol ip prio "$class_id" u32 \
+              match ip src "${src_ip}/32" \
+              match ip dst "${dst_ip}/32" \
+              flowid "1:${class_hex}"
+            if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" || "$loss_pct" != "0" ]]; then
+              local netem_args=()
+              if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" ]]; then
+                netem_args+=(delay "${delay_ms}ms")
+                if [[ "$jitter_ms" != "0" ]]; then
+                  netem_args+=("${jitter_ms}ms")
+                fi
+              fi
+              if [[ "$loss_pct" != "0" ]]; then
+                netem_args+=(loss "${loss_pct}%")
+              fi
+              "${tc_prefix[@]}" qdisc replace dev "$dev" parent "1:${class_hex}" \
+                handle "${class_hex}:" netem "${netem_args[@]}"
+            fi
+            printf 'budget_edge=%s edge=%s->%s direction=%s dev=%s src_ip=%s dst_ip=%s guaranteed_kbit=%s ceil_kbit=%s class=1:%s delay_ms=%s jitter_ms=%s loss_pct=%s\n' \
+              "$budget_id" "$src_node" "$dst_node" "$direction" "$dev" "$src_ip" \
+              "$dst_ip" "$guaranteed_kbit" "$ceil_kbit" "$class_hex" "$delay_ms" "$jitter_ms" "$loss_pct" \
+              >>"$tc_log"
+            class_id=$((class_id + 1))
+          done <"$node_budget_edge_file"
+
+          {
+            echo "budget=${budget_id} name=${budget_name} direction=${direction} node=${node_id} dev=${dev} rate_kbit=${budget_kbit} namespace_pid=${namespace_pid:-host}"
+            "${tc_prefix[@]}" qdisc show dev "$dev"
+            "${tc_prefix[@]}" class show dev "$dev"
+            "${tc_prefix[@]}" filter show dev "$dev" parent 1:
+          } >>"$tc_log"
+        done <"$node_budget_file"
+      else
+        local shaped_devs
+        shaped_devs="$(cut -f1 "$edge_file" | sort -u)"
+        while IFS= read -r dev; do
+          [[ -z "$dev" ]] && continue
+          tc qdisc del dev "$dev" root >/dev/null 2>&1 || true
+          tc qdisc replace dev "$dev" root handle 1: htb default ffff
+          tc class replace dev "$dev" parent 1: classid 1:ffff htb rate 10000mbit ceil 10000mbit
+        done <<<"$shaped_devs"
+
+        local class_id=10
+        local dev src_ip dst_ip bw_kbit src_node dst_node delay_ms jitter_ms loss_pct
+        while IFS=$'\t' read -r dev src_ip dst_ip bw_kbit src_node dst_node delay_ms jitter_ms loss_pct; do
+          [[ -z "$dev" ]] && continue
+          local class_hex
+          class_hex="$(printf '%x' "$class_id")"
+          tc class replace dev "$dev" parent 1: classid "1:${class_hex}" htb rate "${bw_kbit}kbit" ceil "${bw_kbit}kbit"
+          tc filter add dev "$dev" parent 1: protocol ip prio "$class_id" u32 \
+            match ip src "${src_ip}/32" \
+            match ip dst "${dst_ip}/32" \
+            flowid "1:${class_hex}"
+          if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" || "$loss_pct" != "0" ]]; then
+            local netem_args=()
+            if [[ "$delay_ms" != "0" || "$jitter_ms" != "0" ]]; then
+              netem_args+=(delay "${delay_ms}ms")
+              if [[ "$jitter_ms" != "0" ]]; then
+                netem_args+=("${jitter_ms}ms")
+              fi
+            fi
+            if [[ "$loss_pct" != "0" ]]; then
+              netem_args+=(loss "${loss_pct}%")
+            fi
+            tc qdisc replace dev "$dev" parent "1:${class_hex}" handle "${class_hex}:" netem "${netem_args[@]}"
+          fi
+          printf 'edge=%s->%s dev=%s src_ip=%s dst_ip=%s rate_kbit=%s class=1:%s delay_ms=%s jitter_ms=%s loss_pct=%s\n' \
+            "$src_node" "$dst_node" "$dev" "$src_ip" "$dst_ip" "$bw_kbit" "$class_hex" \
+            "$delay_ms" "$jitter_ms" "$loss_pct" >>"$tc_log"
+          class_id=$((class_id + 1))
+        done <"$edge_file"
+        while IFS= read -r dev; do
+          [[ -z "$dev" ]] && continue
+          {
+            tc qdisc show dev "$dev"
+            tc class show dev "$dev"
+            tc filter show dev "$dev" parent 1:
+          } >>"$tc_log"
+        done <<<"$shaped_devs"
+      fi
       ;;
   esac
 }
@@ -865,11 +980,20 @@ run_case() {
     generate_args+=(--synthetic-payload)
   fi
   generate_case "${generate_args[@]}"
+  if [[ -n "${solution_json:-}" ]]; then
+    python3 "${script_dir}/tools/check_laminarity.py" \
+      "$solution_json" \
+      --output "${case_dir}/laminarity.json" \
+      --ledger "${case_dir}/run-ledger.json" \
+      >/dev/null
+  fi
 
   start_controller "$case_dir"
+  start_cpu_monitor "$case_dir"
   start_dataplane "$case_dir"
   apply_tc_profile "$case_dir" "$receivers" "$trees"
   wait_for_statuses "$case_dir" "$receivers"
+  stop_cpu_monitor "$case_dir"
 
   assert_status_ok "${case_dir}/artifacts/source-1.status"
   while IFS= read -r status_file; do
@@ -983,11 +1107,25 @@ run_receiver_sweep() {
 trap cleanup_on_exit EXIT
 
 require_positive_int "--status-timeout-seconds" "$status_timeout_seconds"
+if [[ ! "$cpu_ceiling_pct" =~ ^([0-9]+([.][0-9]*)?|[.][0-9]+)$ ]]; then
+  echo "--cpu-ceiling-pct must be a number in (0, 100]." >&2
+  exit 1
+fi
+if ! awk -v ceiling="$cpu_ceiling_pct" 'BEGIN { exit !(ceiling > 0 && ceiling <= 100) }'; then
+  echo "--cpu-ceiling-pct must be in (0, 100]." >&2
+  exit 1
+fi
+if [[ "$calibration_mode" == "true" ]]; then
+  if [[ "${tc_profile:-none}" != "none" ]]; then
+    echo "Calibration mode disabled the requested tc profile to remain unshaped."
+  fi
+  tc_profile="none"
+fi
 validate_tc_options
 validate_solution_json
 
 if [[ -n "$case_name" ]]; then
-  if [[ -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$solution_json" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || "${tc_profile:-none}" != "none" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" ]]; then
+  if [[ -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$solution_json" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || "${tc_profile:-none}" != "none" || -n "$tree_sweep_max" || -n "$receiver_sweep_max" || "$calibration_mode" == "true" ]]; then
     echo "--case cannot be combined with custom run or sweep options." >&2
     exit 1
   fi
@@ -1066,7 +1204,7 @@ if [[ -n "$receiver_sweep_max" ]]; then
   ran_any="true"
 fi
 
-if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$solution_json" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || "${tc_profile:-none}" != "none" ) ]]; then
+if [[ "$ran_any" == "false" && ( -n "$mode" || -n "$fec_scheme" || -n "$receivers" || -n "$trees" || -n "$solution_json" || -n "$block_size" || -n "$symbols_per_block" || -n "$payload_size" || "$synthetic_payload" == "true" || -n "$receive_timeout_ms" || -n "$peer_report_timeout_ms" || -n "$packet_processors" || -n "$channel_capacity" || -n "$queue_capacity" || "${tc_profile:-none}" != "none" || "$calibration_mode" == "true" ) ]]; then
   if [[ -z "$receivers" || -z "$trees" ]]; then
     echo "Custom runs require both --receivers and --trees." >&2
     exit 1

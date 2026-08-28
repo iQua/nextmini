@@ -204,7 +204,7 @@ impl NetworkInterface {
     pub fn init(
         &self,
         stream: NetworkStream,
-        remote_node_id: NodeId,
+        _remote_node_id: NodeId,
         scope: TransportScope,
     ) -> ProtocolWriter {
         match stream {
@@ -215,8 +215,6 @@ impl NetworkInterface {
                     reader,
                     self.processors.clone(),
                     self.config.node_id,
-                    remote_node_id,
-                    scope,
                     self.reporter.clone(),
                 );
                 let tcp_writer = TcpWriter::new(writer);

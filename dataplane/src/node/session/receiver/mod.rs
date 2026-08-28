@@ -242,7 +242,7 @@ impl SessionReceiver {
             return frame;
         }
 
-        if matches!(self.mode, Some(ReceiverMode::Fec(_))) {
+        if !self.source_done_requires_ready_data_drain() {
             return frame;
         }
 
@@ -251,6 +251,22 @@ impl SessionReceiver {
             return data_frame;
         }
         frame
+    }
+
+    fn source_done_requires_ready_data_drain(&self) -> bool {
+        match &self.mode {
+            Some(ReceiverMode::Fec(_)) => {
+                self.shared
+                    .manifest
+                    .as_ref()
+                    .and_then(|manifest| match &manifest.mode {
+                        LosslessSessionMode::Fec(fec) => fec.scheme_kind(),
+                        LosslessSessionMode::Plain => None,
+                    })
+                    == Some(FecScheme::RaptorQ)
+            }
+            _ => true,
+        }
     }
 
     fn reported_complete(&self) -> bool {
@@ -950,10 +966,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fec_status_reports_all_missing_blocks_for_large_transfers() {
-        let plan = BlockPlan::new(300, 1).expect("plan");
+    async fn fec_status_windows_large_missing_block_sets_to_the_packet_ceiling() {
+        const TOTAL_BLOCKS: u64 = 300_000;
+        const MAX_REPORTED_BLOCKS: usize = 6545;
+
+        let plan = BlockPlan::new(TOTAL_BLOCKS, 1).expect("plan");
         let geometry = plan.symbol_geometry(4).expect("geometry");
-        let shared = ReceiverShared {
+        let mut shared = ReceiverShared {
             session_id: 9,
             route: crate::node::session::runtime::TransportRoute {
                 src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
@@ -981,8 +1000,8 @@ mod tests {
             processors: crate::node::processor::ProcessorHandle::new(Default::default()),
             manifest: Some(LosslessSessionManifest {
                 block_size: 1,
-                total_bytes: 300,
-                total_blocks: 300,
+                total_bytes: TOTAL_BLOCKS,
+                total_blocks: TOTAL_BLOCKS,
                 mode: LosslessSessionMode::Fec(
                     nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
                         4,
@@ -999,9 +1018,27 @@ mod tests {
             panic!("expected missing-block status");
         };
 
-        assert_eq!(blocks.len(), 300);
+        assert_eq!(blocks.len(), MAX_REPORTED_BLOCKS);
         assert_eq!(blocks.first().map(|b| b.block_id), Some(0));
-        assert_eq!(blocks.last().map(|b| b.block_id), Some(299));
+        assert_eq!(
+            blocks.last().map(|b| b.block_id),
+            Some(MAX_REPORTED_BLOCKS as u64 - 1)
+        );
+
+        shared.complete_blocks.extend(0..MAX_REPORTED_BLOCKS as u64);
+        let NeedReport::Fec { blocks } = receiver.need_report(&shared).expect("next status") else {
+            panic!("expected next missing-block status");
+        };
+
+        assert_eq!(blocks.len(), MAX_REPORTED_BLOCKS);
+        assert_eq!(
+            blocks.first().map(|b| b.block_id),
+            Some(MAX_REPORTED_BLOCKS as u64)
+        );
+        assert_eq!(
+            blocks.last().map(|b| b.block_id),
+            Some((MAX_REPORTED_BLOCKS * 2) as u64 - 1)
+        );
     }
 
     #[tokio::test]

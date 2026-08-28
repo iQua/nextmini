@@ -161,4 +161,34 @@ mod tests {
 
         writer.await.expect("writer task should finish");
     }
+
+    #[tokio::test]
+    async fn framing_rejects_oversized_short_and_eof_frames() {
+        let (mut left, mut right) = duplex(64);
+        left.write_all(&u32::MAX.to_be_bytes())
+            .await
+            .expect("write oversized prefix");
+        let error = read_packet(&mut right)
+            .await
+            .expect_err("oversized frame should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+
+        let (mut left, mut right) = duplex(64);
+        left.write_all(&20u32.to_be_bytes())
+            .await
+            .expect("write short prefix");
+        left.write_all(&[0u8; 5])
+            .await
+            .expect("write short payload");
+        left.shutdown().await.expect("close short writer");
+        let error = read_packet(&mut right)
+            .await
+            .expect_err("short frame should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+
+        let (left, mut right) = duplex(64);
+        drop(left);
+        let error = read_packet(&mut right).await.expect_err("EOF should fail");
+        assert_eq!(error.kind(), std::io::ErrorKind::UnexpectedEof);
+    }
 }

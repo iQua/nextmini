@@ -1,7 +1,8 @@
-/// A processor actor is designed to forward packets from its upstream actors (LocalInterface
-/// and NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
-/// multiple processor tasks to handle incoming packets concurrently, allowing for efficient
-/// processing and routing of network packets.
+//! A processor actor forwards packets from its upstream actors (LocalInterface and
+//! NetworkInterface) to its downstream actors (LocalInterface and Scheduler). It launches
+//! multiple processor tasks to handle incoming packets concurrently, allowing efficient
+//! processing and routing of network packets.
+
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -12,8 +13,8 @@ use tokio::sync::Notify;
 use tokio::sync::broadcast;
 use tokio::sync::broadcast::error::SendError;
 use tokio::sync::mpsc;
-use tokio::time::{Duration, timeout};
-use tracing::{error, info, warn};
+use tokio::time::{Duration, Instant, timeout};
+use tracing::{debug, error, info, warn};
 
 use nextmini_messages::{
     GroupDirectoryEntry, GroupId, GroupRoutingTableEntry, INVALID, OperatingMode,
@@ -41,6 +42,7 @@ use crate::node::{FlowId, FlowIdExt, NodeId};
 const FLOW_TREE_HASH_KEY_0: u64 = 0x1234567890ABCDEF;
 const FLOW_TREE_HASH_KEY_1: u64 = 0xFEDCBA0987654321;
 const PROCESSOR_CONTROL_BROADCAST_CAPACITY: usize = 1024;
+const FANOUT_STATS_LOG_MASK: u64 = (1 << 12) - 1;
 
 #[derive(Debug)]
 struct SyncTracker {
@@ -115,7 +117,11 @@ pub enum ProcessorMessage {
         src_node_id: NodeId,
         routes: Vec<GroupRoutingTableEntry>,
     },
-    AddNode(ScopedNode, SchedulerHandle),
+    AddNode {
+        scoped_node: ScopedNode,
+        scheduler: SchedulerHandle,
+        dispatcher: FanoutDispatcher,
+    },
     ConnectLocalInterface(LocalInterfaceHandle),
     ConnectServerHandle(Box<UserSpaceServerHandle>),
     ConnectUserSpaceSender {
@@ -147,6 +153,28 @@ impl ProcessorHandle {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn new_sequential_stub_for_test(
+        config: LocalConfig,
+    ) -> (Self, mpsc::Receiver<ProcessorPacket>) {
+        let capacity = config.channel_capacity.max(1);
+        let (packet_sender, packet_receiver) = mpsc::channel(capacity);
+        let (connector_packet_sender, _connector_packet_receiver) = mpsc::channel(capacity);
+        let (connector_message_sender, _connector_message_receiver) = mpsc::channel(capacity);
+        let (broadcast_sender, _) = broadcast::channel(capacity);
+        let handle = SequentialProcHandle {
+            config,
+            broadcast_sender,
+            packet_senders: vec![packet_sender],
+            connector_packet_sender,
+            connector_message_sender,
+            sync_tracker: Arc::new(SyncTracker::new()),
+            next_sync_nonce: Arc::new(AtomicU64::new(1)),
+        };
+
+        (ProcessorHandle::Sequential(handle), packet_receiver)
+    }
+
     pub fn broadcast_sender(&self) -> &broadcast::Sender<ProcessorMessage> {
         match self {
             ProcessorHandle::Sequential(handle) => &handle.broadcast_sender,
@@ -167,10 +195,23 @@ impl ProcessorHandle {
         scope: TransportScope,
         scheduler: SchedulerHandle,
     ) -> Result<(), SendError<ProcessorMessage>> {
-        let _ = self.broadcast_sender().send(ProcessorMessage::AddNode(
-            ScopedNode::new(node_id, scope),
+        let scoped_node = ScopedNode::new(node_id, scope);
+        let config = match self {
+            ProcessorHandle::Sequential(handle) => &handle.config,
+            ProcessorHandle::Concurrent(handle) => &handle.config,
+        };
+        let capacity = config.effective_fanout_pending_capacity();
+        let dispatcher = FanoutDispatcher::new(
+            scoped_node,
+            scheduler.clone(),
+            capacity,
+            config.channel_backpressure,
+        );
+        let _ = self.broadcast_sender().send(ProcessorMessage::AddNode {
+            scoped_node,
             scheduler,
-        ))?;
+            dispatcher,
+        })?;
 
         Ok(())
     }
@@ -311,6 +352,22 @@ impl ProcessorHandle {
         match self {
             ProcessorHandle::Sequential(handle) => handle.sync_workers().await,
             ProcessorHandle::Concurrent(handle) => handle.sync_workers().await,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sync_snapshot_for_test(&self) -> (u64, usize, usize) {
+        match self {
+            ProcessorHandle::Sequential(handle) => (
+                handle.sync_tracker.current_nonce.load(Ordering::Acquire),
+                handle.sync_tracker.ack_count.load(Ordering::Acquire),
+                handle.packet_senders.len(),
+            ),
+            ProcessorHandle::Concurrent(handle) => (
+                handle.sync_tracker.current_nonce.load(Ordering::Acquire),
+                handle.sync_tracker.ack_count.load(Ordering::Acquire),
+                handle.worker_count,
+            ),
         }
     }
 
@@ -623,13 +680,15 @@ impl SequentialProcHandle {
 
     fn lossless_ingress_contract(&self, packet: &Packet) -> LosslessIngressContract {
         let dst_node_id = self.config.ip_to_node_id(packet.flow_id.dst_ip());
-        if dst_node_id == self.config.node_id
-            || matches!(self.config.operating_mode, OperatingMode::Normal)
+        let uses_processor_ingress = dst_node_id == self.config.node_id
+            || matches!(self.config.operating_mode, OperatingMode::Normal);
+        if uses_processor_ingress
+            && let TransportScope::Tree(tree_id) = TransportScope::from_packet(packet)
+            && usize::from(tree_id) + 1 < self.packet_senders.len()
         {
-            LosslessIngressContract::TreeVisibleNonBlocking
-        } else {
-            LosslessIngressContract::SharedQueueNonBlocking
+            return LosslessIngressContract::TreeVisibleNonBlocking;
         }
+        LosslessIngressContract::SharedQueueNonBlocking
     }
 
     fn select_processor_ingress_lane(&self, packet: &Packet) -> usize {
@@ -1041,6 +1100,144 @@ impl PacketReceiver {
     }
 }
 
+/// Process-wide admission lane shared by every processor worker for one scoped node.
+///
+/// The single drain task is the cross-worker merge point: Sequential lane affinity preserves
+/// per-path FIFO, while Concurrent mode keeps its pre-existing reorder window. Pending memory is
+/// bounded by `scoped_nodes × (fanout_pending_capacity + 1)` packets before scheduler buffering.
+#[derive(Clone, Debug)]
+pub struct FanoutDispatcher {
+    sender: mpsc::Sender<Packet>,
+    backpressure: bool,
+    stats: Arc<FanoutDispatcherStats>,
+    abort_handle: tokio::task::AbortHandle,
+}
+
+#[derive(Debug)]
+struct FanoutDispatcherStats {
+    scoped_node: ScopedNode,
+    admitted_packets: AtomicU64,
+    stall_entries: AtomicU64,
+    pending_high_water: AtomicUsize,
+    cumulative_blocked_nanos: AtomicU64,
+}
+
+impl FanoutDispatcherStats {
+    fn new(scoped_node: ScopedNode) -> Self {
+        Self {
+            scoped_node,
+            admitted_packets: AtomicU64::new(0),
+            stall_entries: AtomicU64::new(0),
+            pending_high_water: AtomicUsize::new(0),
+            cumulative_blocked_nanos: AtomicU64::new(0),
+        }
+    }
+
+    fn record_admitted(&self, pending: usize) {
+        self.pending_high_water
+            .fetch_max(pending, Ordering::Relaxed);
+        let admitted = self.admitted_packets.fetch_add(1, Ordering::Relaxed) + 1;
+        if admitted & FANOUT_STATS_LOG_MASK == 0 {
+            self.log();
+        }
+    }
+
+    fn record_stall_entry(&self) {
+        let stall_entries = self.stall_entries.fetch_add(1, Ordering::Relaxed) + 1;
+        // Report the first park immediately so a lane that never unblocks is still visible.
+        if stall_entries == 1 || stall_entries & FANOUT_STATS_LOG_MASK == 0 {
+            self.log();
+        }
+    }
+
+    fn record_blocked(&self, duration: Duration) {
+        let nanos = duration.as_nanos().min(u128::from(u64::MAX)) as u64;
+        self.cumulative_blocked_nanos
+            .fetch_add(nanos, Ordering::Relaxed);
+    }
+
+    fn log(&self) {
+        debug!(
+            remote_node_id = self.scoped_node.remote_node_id,
+            scope = ?self.scoped_node.scope,
+            admitted_packets = self.admitted_packets.load(Ordering::Relaxed),
+            stall_entries = self.stall_entries.load(Ordering::Relaxed),
+            pending_high_water = self.pending_high_water.load(Ordering::Relaxed),
+            cumulative_blocked_ms = self.cumulative_blocked_nanos.load(Ordering::Relaxed)
+                / 1_000_000,
+            "Child-scoped fan-out dispatcher statistics"
+        );
+    }
+}
+
+impl FanoutDispatcher {
+    fn new(
+        scoped_node: ScopedNode,
+        scheduler: SchedulerHandle,
+        capacity: usize,
+        backpressure: bool,
+    ) -> Self {
+        let (sender, mut receiver) = mpsc::channel(capacity);
+        let stats = Arc::new(FanoutDispatcherStats::new(scoped_node));
+        let drain_task = tokio::spawn(async move {
+            while let Some(packet) = receiver.recv().await {
+                // Closed schedulers retain the pre-existing SchedulerHandle log-and-drop behavior.
+                scheduler.send(packet).await;
+            }
+        });
+        let abort_handle = drain_task.abort_handle();
+        drop(drain_task);
+
+        Self {
+            sender,
+            backpressure,
+            stats,
+            abort_handle,
+        }
+    }
+
+    fn abort(&self) {
+        self.abort_handle.abort();
+    }
+
+    async fn send(&self, packet: Packet) {
+        if self.backpressure {
+            match self.sender.try_send(packet) {
+                Ok(()) => {
+                    self.record_pending();
+                }
+                Err(mpsc::error::TrySendError::Full(packet)) => {
+                    self.stats.record_stall_entry();
+                    let blocked_at = Instant::now();
+                    let result = self.sender.send(packet).await;
+                    self.stats.record_blocked(blocked_at.elapsed());
+                    match result {
+                        Ok(()) => self.record_pending(),
+                        Err(e) => {
+                            error!("FanoutDispatcher: channel closed; dropping packet: {e}");
+                        }
+                    }
+                }
+                Err(mpsc::error::TrySendError::Closed(_)) => {
+                    error!("FanoutDispatcher: channel closed; dropping packet");
+                }
+            }
+        } else if let Err(e) = self.sender.try_send(packet) {
+            error!("FanoutDispatcher: channel full or closed; dropping packet: {e}");
+        } else {
+            self.record_pending();
+        }
+    }
+
+    fn record_pending(&self) {
+        self.stats.record_admitted(
+            self.sender
+                .max_capacity()
+                .saturating_sub(self.sender.capacity()),
+        );
+    }
+}
+
 // Processes packets and forwards them to the next hop.
 struct Processor {
     config: LocalConfig,
@@ -1069,6 +1266,9 @@ struct Processor {
     // schedulers keyed by remote node and transport scope
     schedulers: AHashMap<ScopedNode, SchedulerHandle>,
 
+    // child-scoped pending lanes keyed by the same remote node and transport scope
+    fanout_dispatchers: AHashMap<ScopedNode, FanoutDispatcher>,
+
     // optional in-process Python delivery path
     #[cfg(feature = "python-extension")]
     python_interface: Option<PythonInterfaceHandle>,
@@ -1092,6 +1292,7 @@ impl Processor {
             routing_table: RoutingTable::new(config.clone()),
             flowstats_reporter: None,
             schedulers: AHashMap::new(),
+            fanout_dispatchers: AHashMap::new(),
             config,
             #[cfg(feature = "python-extension")]
             python_interface: None,
@@ -1162,7 +1363,17 @@ impl Processor {
                 self.routing_table
                     .install_group_routes(group_id, src_node_id, routes);
             }
-            ProcessorMessage::AddNode(scoped_node, scheduler) => {
+            ProcessorMessage::AddNode {
+                scoped_node,
+                scheduler,
+                dispatcher,
+            } => {
+                if let Some(replaced) = self.fanout_dispatchers.insert(scoped_node, dispatcher) {
+                    // Reconnects re-register the scoped node. Abort the old drain task so packets
+                    // queued for the dead scheduler are discarded instead of leaking into the new
+                    // connection, matching pre-dispatcher replacement semantics.
+                    replaced.abort();
+                }
                 self.schedulers.insert(scoped_node, scheduler);
             }
             ProcessorMessage::ConnectLocalInterface(local_interface) => {
@@ -1335,13 +1546,13 @@ impl Processor {
         } else {
             let scope = TransportScope::from_packet(&packet);
             let key = ScopedNode::new(next_hop_id, scope);
-            if let Some(scheduler) = self.schedulers.get(&key).cloned() {
-                scheduler.send(packet).await;
+            if let Some(dispatcher) = self.fanout_dispatchers.get(&key).cloned() {
+                dispatcher.send(packet).await;
             } else {
                 error!(
                     next_hop_id,
                     ?scope,
-                    "No scheduler available for scoped remote transport"
+                    "No fan-out dispatcher available for scoped remote transport"
                 );
             }
         }
@@ -1384,7 +1595,10 @@ impl Processor {
 mod tests {
     use std::net::Ipv4Addr;
 
+    use nextmini_messages::MULTITREE_STRIDE;
+
     use super::*;
+    use crate::node::scheduler::sched::SchedulerReaderMessage;
 
     fn base_config(operating_mode: OperatingMode) -> LocalConfig {
         LocalConfig {
@@ -1416,6 +1630,45 @@ mod tests {
         )
     }
 
+    fn make_multicast_fec_packet(dst_ip: Ipv4Addr, tree_id: u16, sequence: u8) -> Packet {
+        Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            dst_ip,
+            5000,
+            Some(crate::node::packet::LosslessTransportMeta {
+                session_id: 17,
+                tree_id: Some(tree_id),
+            }),
+            &[sequence],
+        )
+    }
+
+    fn packet_sequence(packet: &Packet) -> u8 {
+        *packet
+            .tcp_payload()
+            .and_then(|payload| payload.first())
+            .expect("forwarded packet should carry its sequence")
+    }
+
+    async fn recv_scheduler_sequence(receiver: &mut mpsc::Receiver<SchedulerReaderMessage>) -> u8 {
+        let SchedulerReaderMessage::InboundPacket(packet) = receiver
+            .recv()
+            .await
+            .expect("scheduler channel closed before packet arrived");
+        packet_sequence(&packet)
+    }
+
+    async fn wait_for_dispatcher_capacity(dispatcher: &FanoutDispatcher, capacity: usize) {
+        timeout(Duration::from_secs(1), async {
+            while dispatcher.sender.capacity() != capacity {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("dispatcher did not reach the expected pending capacity");
+    }
+
     fn make_sequential_handle_with_lanes(
         config: LocalConfig,
         packet_senders: Vec<mpsc::Sender<ProcessorPacket>>,
@@ -1442,19 +1695,346 @@ mod tests {
         make_sequential_handle_with_lanes(config, vec![packet_sender], connector_packet_sender)
     }
 
-    fn find_distinct_fec_tree_lanes(
-        handle: &SequentialProcHandle,
-        dst_ip: Ipv4Addr,
-    ) -> ((u16, usize), (u16, usize)) {
-        let first_tree = 0u16;
-        let first_lane = handle.select_processor_ingress_lane(&make_fec_packet(dst_ip, first_tree));
-        for tree_id in 1u16..=255 {
-            let lane = handle.select_processor_ingress_lane(&make_fec_packet(dst_ip, tree_id));
-            if lane != first_lane {
-                return ((first_tree, first_lane), (tree_id, lane));
+    #[tokio::test]
+    async fn child_scoped_fanout_isolates_blocked_first_child_and_preserves_fifo() {
+        const GROUP_ID: GroupId = 7;
+        const TREE_ID: u16 = 3;
+        const BLOCKED_CHILD: NodeId = 3;
+        const HEALTHY_CHILD: NodeId = 4;
+        const PACKET_COUNT: usize = 2;
+        const FANOUT_PENDING_CAPACITY: usize = 1;
+        const COMPLETION_BOUND: Duration = Duration::from_secs(1);
+
+        let group_ip = Ipv4Addr::new(10, 0, 0, 200);
+        let mut config = base_config(OperatingMode::Normal);
+        config.node_id = 2;
+        config.local_address = Ipv4Addr::new(10, 0, 0, 2);
+        config.virtual_base_addr = Ipv4Addr::new(10, 0, 0, 0);
+        config.local_netmask = Ipv4Addr::new(255, 255, 255, 0);
+        // Capacity one makes the single packet visible in the blocked scheduler deterministic:
+        // its second packet waits in the dispatcher drain until the first packet is consumed.
+        config.fanout_pending_capacity = Some(FANOUT_PENDING_CAPACITY);
+
+        let (_packet_sender, packet_receiver) = mpsc::channel(1);
+        let (_broadcast_sender, broadcast_receiver) = broadcast::channel(8);
+        let (sync_ack_sender, _sync_ack_receiver) = mpsc::unbounded_channel();
+        let mut processor = Processor::new(
+            PacketReceiver::Sequential(packet_receiver),
+            broadcast_receiver,
+            sync_ack_sender,
+            config,
+        );
+
+        processor
+            .handle_message(ProcessorMessage::UpdateGroupDirectory(vec![
+                GroupDirectoryEntry {
+                    group_id: GROUP_ID,
+                    group_ip,
+                },
+            ]))
+            .await;
+        processor
+            .handle_message(ProcessorMessage::UpdateGroupRoutes {
+                group_id: GROUP_ID,
+                src_node_id: 1,
+                routes: vec![GroupRoutingTableEntry {
+                    route_id: GROUP_ID * MULTITREE_STRIDE + usize::from(TREE_ID),
+                    next_hops: vec![BLOCKED_CHILD, HEALTHY_CHILD],
+                    src_node_id: 1,
+                    group_id: GROUP_ID,
+                }],
+            })
+            .await;
+
+        let (blocked_sender, mut blocked_receiver) = mpsc::channel(1);
+        processor
+            .handle_message({
+                let scoped_node = ScopedNode::new(BLOCKED_CHILD, TransportScope::Tree(TREE_ID));
+                let scheduler = SchedulerHandle::new_for_test(blocked_sender, true);
+                ProcessorMessage::AddNode {
+                    scoped_node,
+                    dispatcher: FanoutDispatcher::new(
+                        scoped_node,
+                        scheduler.clone(),
+                        FANOUT_PENDING_CAPACITY,
+                        true,
+                    ),
+                    scheduler,
+                }
+            })
+            .await;
+
+        let (healthy_sender, mut healthy_receiver) = mpsc::channel(1);
+        processor
+            .handle_message({
+                let scoped_node = ScopedNode::new(HEALTHY_CHILD, TransportScope::Tree(TREE_ID));
+                let scheduler = SchedulerHandle::new_for_test(healthy_sender, true);
+                ProcessorMessage::AddNode {
+                    scoped_node,
+                    dispatcher: FanoutDispatcher::new(
+                        scoped_node,
+                        scheduler.clone(),
+                        FANOUT_PENDING_CAPACITY,
+                        true,
+                    ),
+                    scheduler,
+                }
+            })
+            .await;
+
+        let forward_task = tokio::spawn(async move {
+            for sequence in 0..PACKET_COUNT as u8 {
+                processor
+                    .process_packet(make_multicast_fec_packet(group_ip, TREE_ID, sequence))
+                    .await;
             }
+        });
+
+        let healthy_sequences = timeout(COMPLETION_BOUND, async {
+            let mut sequences = Vec::with_capacity(PACKET_COUNT);
+            while sequences.len() < PACKET_COUNT {
+                let SchedulerReaderMessage::InboundPacket(packet) = healthy_receiver
+                    .recv()
+                    .await
+                    .expect("healthy child scheduler channel closed");
+                sequences.push(packet_sequence(&packet));
+            }
+            sequences
+        })
+        .await
+        .expect("healthy child did not receive all packets within the HOL bound");
+
+        assert_eq!(healthy_sequences, vec![0, 1]);
+        assert_eq!(
+            blocked_receiver.len(),
+            1,
+            "blocked child scheduler should remain full"
+        );
+        timeout(COMPLETION_BOUND, forward_task)
+            .await
+            .expect("child-scoped fan-out should finish admission within the bound")
+            .expect("fan-out task panicked");
+
+        let blocked_sequences = timeout(COMPLETION_BOUND, async {
+            let mut sequences = Vec::with_capacity(PACKET_COUNT);
+            while sequences.len() < PACKET_COUNT {
+                sequences.push(recv_scheduler_sequence(&mut blocked_receiver).await);
+            }
+            sequences
+        })
+        .await
+        .expect("blocked child did not eventually receive all admitted packets");
+        assert_eq!(blocked_sequences, vec![0, 1]);
+    }
+
+    #[tokio::test]
+    async fn fanout_capacity_exhaustion_parks_producer_without_dropping() {
+        const SENTINEL: u8 = u8::MAX;
+        const TREE_ID: u16 = 7;
+        const COMPLETION_BOUND: Duration = Duration::from_secs(1);
+
+        let dst_ip = Ipv4Addr::new(10, 0, 0, 3);
+        let scoped_node = ScopedNode::new(3, TransportScope::Tree(TREE_ID));
+        let (scheduler_sender, mut scheduler_receiver) = mpsc::channel(1);
+        scheduler_sender
+            .try_send(SchedulerReaderMessage::InboundPacket(
+                make_multicast_fec_packet(dst_ip, TREE_ID, SENTINEL),
+            ))
+            .expect("failed to prefill scheduler channel");
+        let scheduler = SchedulerHandle::new_for_test(scheduler_sender, true);
+        let dispatcher = FanoutDispatcher::new(scoped_node, scheduler, 1, true);
+
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 0))
+            .await;
+        wait_for_dispatcher_capacity(&dispatcher, 1).await;
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 1))
+            .await;
+
+        let parked_dispatcher = dispatcher.clone();
+        let parked_send = tokio::spawn(async move {
+            parked_dispatcher
+                .send(make_multicast_fec_packet(dst_ip, TREE_ID, 2))
+                .await;
+        });
+        timeout(COMPLETION_BOUND, async {
+            while dispatcher.stats.stall_entries.load(Ordering::Relaxed) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("producer did not park after exhausting pending capacity");
+        assert!(!parked_send.is_finished());
+
+        assert_eq!(
+            recv_scheduler_sequence(&mut scheduler_receiver).await,
+            SENTINEL
+        );
+        let mut sequences = Vec::new();
+        for _ in 0..3 {
+            sequences.push(
+                timeout(
+                    COMPLETION_BOUND,
+                    recv_scheduler_sequence(&mut scheduler_receiver),
+                )
+                .await
+                .expect("backpressured packet was dropped"),
+            );
         }
-        panic!("expected at least two distinct ingress lanes for FEC tree IDs");
+        timeout(COMPLETION_BOUND, parked_send)
+            .await
+            .expect("parked producer did not resume")
+            .expect("parked producer task panicked");
+        assert_eq!(sequences, vec![0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn fanout_without_backpressure_drops_when_pending_capacity_is_full() {
+        const SENTINEL: u8 = u8::MAX;
+        const TREE_ID: u16 = 7;
+
+        let dst_ip = Ipv4Addr::new(10, 0, 0, 3);
+        let scoped_node = ScopedNode::new(3, TransportScope::Tree(TREE_ID));
+        let (scheduler_sender, mut scheduler_receiver) = mpsc::channel(1);
+        scheduler_sender
+            .try_send(SchedulerReaderMessage::InboundPacket(
+                make_multicast_fec_packet(dst_ip, TREE_ID, SENTINEL),
+            ))
+            .expect("failed to prefill scheduler channel");
+        // Keep the scheduler lossless here so the observed drop is specifically the
+        // dispatcher's legacy non-backpressured full-channel behavior.
+        let scheduler = SchedulerHandle::new_for_test(scheduler_sender, true);
+        let dispatcher = FanoutDispatcher::new(scoped_node, scheduler, 1, false);
+
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 0))
+            .await;
+        wait_for_dispatcher_capacity(&dispatcher, 1).await;
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 1))
+            .await;
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 2))
+            .await;
+
+        assert_eq!(
+            recv_scheduler_sequence(&mut scheduler_receiver).await,
+            SENTINEL
+        );
+        assert_eq!(recv_scheduler_sequence(&mut scheduler_receiver).await, 0);
+        assert_eq!(recv_scheduler_sequence(&mut scheduler_receiver).await, 1);
+        assert!(
+            timeout(Duration::from_millis(50), scheduler_receiver.recv())
+                .await
+                .is_err(),
+            "non-backpressured dispatcher should drop the packet that exceeds capacity"
+        );
+        assert_eq!(dispatcher.stats.admitted_packets.load(Ordering::Relaxed), 2);
+    }
+
+    #[tokio::test]
+    async fn fanout_pending_capacity_is_independent_of_scheduler_channel_capacity() {
+        const SENTINEL: u8 = u8::MAX;
+        const TREE_ID: u16 = 7;
+        const FANOUT_PENDING_CAPACITY: usize = 3;
+
+        let config = LocalConfig {
+            channel_capacity: 1,
+            fanout_pending_capacity: Some(FANOUT_PENDING_CAPACITY),
+            ..Default::default()
+        };
+        let dst_ip = Ipv4Addr::new(10, 0, 0, 3);
+        let scoped_node = ScopedNode::new(3, TransportScope::Tree(TREE_ID));
+        let (scheduler_sender, mut scheduler_receiver) = mpsc::channel(config.channel_capacity);
+        scheduler_sender
+            .try_send(SchedulerReaderMessage::InboundPacket(
+                make_multicast_fec_packet(dst_ip, TREE_ID, SENTINEL),
+            ))
+            .expect("failed to prefill scheduler channel");
+        let scheduler = SchedulerHandle::new_for_test(scheduler_sender, true);
+        let dispatcher = FanoutDispatcher::new(
+            scoped_node,
+            scheduler,
+            config.effective_fanout_pending_capacity(),
+            true,
+        );
+
+        dispatcher
+            .send(make_multicast_fec_packet(dst_ip, TREE_ID, 0))
+            .await;
+        wait_for_dispatcher_capacity(&dispatcher, FANOUT_PENDING_CAPACITY).await;
+        for sequence in 1..=FANOUT_PENDING_CAPACITY as u8 {
+            dispatcher
+                .send(make_multicast_fec_packet(dst_ip, TREE_ID, sequence))
+                .await;
+        }
+
+        assert_eq!(dispatcher.sender.max_capacity(), FANOUT_PENDING_CAPACITY);
+        assert_eq!(dispatcher.sender.capacity(), 0);
+
+        assert_eq!(
+            recv_scheduler_sequence(&mut scheduler_receiver).await,
+            SENTINEL
+        );
+        for expected in 0..=FANOUT_PENDING_CAPACITY as u8 {
+            assert_eq!(
+                timeout(
+                    Duration::from_secs(1),
+                    recv_scheduler_sequence(&mut scheduler_receiver),
+                )
+                .await
+                .expect("buffered packet did not reach scheduler"),
+                expected
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fanout_dispatcher_is_shared_and_replacement_aborts_old_drain() {
+        let config = base_config(OperatingMode::Normal);
+        let (_packet_sender, packet_receiver) = mpsc::channel(1);
+        let (_broadcast_sender, broadcast_receiver) = broadcast::channel(1);
+        let (sync_ack_sender, _sync_ack_receiver) = mpsc::unbounded_channel();
+        let mut processor = Processor::new(
+            PacketReceiver::Sequential(packet_receiver),
+            broadcast_receiver,
+            sync_ack_sender,
+            config,
+        );
+        let scoped_node = ScopedNode::new(3, TransportScope::Tree(7));
+
+        let (old_scheduler_sender, _old_scheduler_receiver) = mpsc::channel(1);
+        let old_scheduler = SchedulerHandle::new_for_test(old_scheduler_sender, true);
+        let old_dispatcher = FanoutDispatcher::new(scoped_node, old_scheduler.clone(), 1, true);
+        let shared_dispatcher = old_dispatcher.clone();
+        assert!(
+            old_dispatcher
+                .sender
+                .same_channel(&shared_dispatcher.sender),
+            "dispatcher clones should share one pending lane"
+        );
+        assert!(Arc::ptr_eq(&old_dispatcher.stats, &shared_dispatcher.stats));
+        processor
+            .handle_message(ProcessorMessage::AddNode {
+                scoped_node,
+                scheduler: old_scheduler,
+                dispatcher: shared_dispatcher,
+            })
+            .await;
+
+        let (new_scheduler_sender, _new_scheduler_receiver) = mpsc::channel(1);
+        let new_scheduler = SchedulerHandle::new_for_test(new_scheduler_sender, true);
+        processor
+            .handle_message(ProcessorMessage::AddNode {
+                scoped_node,
+                dispatcher: FanoutDispatcher::new(scoped_node, new_scheduler.clone(), 1, true),
+                scheduler: new_scheduler,
+            })
+            .await;
+        tokio::task::yield_now().await;
+
+        assert!(old_dispatcher.abort_handle.is_finished());
     }
 
     fn make_concurrent_handle(
@@ -1556,7 +2136,7 @@ mod tests {
     }
 
     #[test]
-    fn sequential_lossless_ingress_contract_is_tree_visible_in_normal_mode() {
+    fn sequential_lossless_ingress_contract_is_tree_visible_on_dedicated_lane() {
         let mut config = base_config(OperatingMode::Normal);
         config.num_packet_processors = 4;
         let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
@@ -1570,11 +2150,48 @@ mod tests {
         let (connector_sender, connector_receiver) = mpsc::channel(1);
         drop(connector_receiver);
         let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
-        let packet = make_fec_packet(remote_ip, 7);
+        let packet = make_fec_packet(remote_ip, 1);
 
         assert_eq!(
             handle.lossless_ingress_contract(&packet),
             LosslessIngressContract::TreeVisibleNonBlocking
+        );
+    }
+
+    #[test]
+    fn sequential_lossless_ingress_contract_is_shared_with_one_lane() {
+        let config = base_config(OperatingMode::Normal);
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let (processor_sender, processor_receiver) = mpsc::channel(1);
+        drop(processor_receiver);
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle(config, processor_sender, connector_sender);
+
+        assert_eq!(
+            handle.lossless_ingress_contract(&make_fec_packet(remote_ip, 0)),
+            LosslessIngressContract::SharedQueueNonBlocking
+        );
+    }
+
+    #[test]
+    fn sequential_lossless_ingress_contract_is_shared_on_hashed_lane() {
+        let mut config = base_config(OperatingMode::Normal);
+        config.num_packet_processors = 4;
+        let remote_ip = Ipv4Addr::new(10, 0, 0, 2);
+        let mut processor_senders = Vec::new();
+        for _ in 0..config.num_packet_processors {
+            let (sender, receiver) = mpsc::channel(1);
+            drop(receiver);
+            processor_senders.push(sender);
+        }
+        let (connector_sender, connector_receiver) = mpsc::channel(1);
+        drop(connector_receiver);
+        let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
+
+        assert_eq!(
+            handle.lossless_ingress_contract(&make_fec_packet(remote_ip, 7)),
+            LosslessIngressContract::SharedQueueNonBlocking
         );
     }
 
@@ -1596,8 +2213,13 @@ mod tests {
         drop(connector_receiver);
         let handle = make_sequential_handle_with_lanes(config, processor_senders, connector_sender);
 
-        let ((blocked_tree, blocked_lane), (writable_tree, _writable_lane)) =
-            find_distinct_fec_tree_lanes(&handle, remote_ip);
+        let blocked_tree = 0;
+        let writable_tree = 1;
+        let blocked_lane =
+            handle.select_processor_ingress_lane(&make_fec_packet(remote_ip, blocked_tree));
+        let writable_lane =
+            handle.select_processor_ingress_lane(&make_fec_packet(remote_ip, writable_tree));
+        assert_ne!(blocked_lane, writable_lane);
         handle.packet_senders[blocked_lane]
             .try_send(ProcessorPacket::ProcessPacket(make_packet(remote_ip)))
             .expect("failed to fill selected tree lane");
@@ -1764,7 +2386,7 @@ mod tests {
         let attempt = handle.try_submit_lossless_packet(make_fec_packet(remote_ip, 3));
         assert_eq!(
             attempt.contract,
-            LosslessIngressContract::TreeVisibleNonBlocking
+            LosslessIngressContract::SharedQueueNonBlocking
         );
         assert_eq!(attempt.outcome, SendOutcome::Queued);
     }

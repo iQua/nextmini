@@ -3,12 +3,17 @@
 use std::error::Error;
 use std::fmt::{Display, Formatter};
 
+use nextmini_messages::lossless_session::block_symbol_packet_len;
+
+use crate::node::packet::{LOSSLESS_TRANSPORT_OVERHEAD, MAX_FRAMED_PACKET_SIZE};
+
 /// Construction or derivation failures for shared block geometry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlanError {
     BlockSizeZero,
     SymbolsPerBlockZero,
     SymbolsPerBlockTooLarge,
+    SymbolSizeTooLarge,
 }
 
 impl Display for PlanError {
@@ -17,6 +22,7 @@ impl Display for PlanError {
             Self::BlockSizeZero => write!(f, "block_size must be >= 1"),
             Self::SymbolsPerBlockZero => write!(f, "symbols_per_block must be >= 1"),
             Self::SymbolsPerBlockTooLarge => write!(f, "symbols_per_block does not fit usize"),
+            Self::SymbolSizeTooLarge => write!(f, "symbol payload does not fit a framed packet"),
         }
     }
 }
@@ -153,6 +159,11 @@ impl SymbolGeometry {
         let source_symbols =
             usize::try_from(symbols_per_block).map_err(|_| PlanError::SymbolsPerBlockTooLarge)?;
         let symbol_size = block_size.div_ceil(source_symbols);
+        if block_symbol_packet_len(symbol_size, LOSSLESS_TRANSPORT_OVERHEAD)
+            .is_none_or(|packet_len| packet_len > MAX_FRAMED_PACKET_SIZE)
+        {
+            return Err(PlanError::SymbolSizeTooLarge);
+        }
 
         Ok(Self {
             symbols_per_block,
@@ -174,7 +185,9 @@ impl SymbolGeometry {
 
 #[cfg(test)]
 mod tests {
-    use super::{BlockPlan, PlanError, SymbolGeometry};
+    use super::{
+        BlockPlan, LOSSLESS_TRANSPORT_OVERHEAD, MAX_FRAMED_PACKET_SIZE, PlanError, SymbolGeometry,
+    };
 
     #[test]
     fn block_plan_tracks_full_and_final_blocks() {
@@ -251,6 +264,20 @@ mod tests {
         assert_eq!(
             SymbolGeometry::new(16, 0),
             Err(PlanError::SymbolsPerBlockZero)
+        );
+    }
+
+    #[test]
+    fn symbol_geometry_rejects_unframeable_symbol_payloads() {
+        let max_symbol_size = MAX_FRAMED_PACKET_SIZE
+            - LOSSLESS_TRANSPORT_OVERHEAD
+            - nextmini_messages::lossless_session::LosslessSessionHeader::LEN
+            - 16;
+
+        assert!(SymbolGeometry::new(max_symbol_size, 1).is_ok());
+        assert_eq!(
+            SymbolGeometry::new(max_symbol_size + 1, 1),
+            Err(PlanError::SymbolSizeTooLarge)
         );
     }
 }

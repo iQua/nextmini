@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import sys
 from typing import Any
 
 
@@ -118,10 +119,21 @@ def load_imported_topology(path: pathlib.Path) -> dict[str, Any]:
 
     raw_trees = data.get("trees") or []
     trees: list[tuple[int, list[tuple[int, int]]]] = []
-    for raw_tree in raw_trees:
-        tree_id = int(raw_tree["tree_id"])
+    seen_tree_ids: set[int] = set()
+    tree_id_mapping: list[dict[str, int]] = []
+    for runtime_tree_id, raw_tree in enumerate(raw_trees):
+        solver_tree_id = int(raw_tree["tree_id"])
+        if solver_tree_id in seen_tree_ids:
+            raise SystemExit(f"solution has duplicate tree_id {solver_tree_id}: {path}")
+        seen_tree_ids.add(solver_tree_id)
         edges = [(int(src), int(dst)) for src, dst in raw_tree["edges"]]
-        trees.append((tree_id, edges))
+        trees.append((runtime_tree_id, edges))
+        tree_id_mapping.append(
+            {
+                "solver_tree_id": solver_tree_id,
+                "runtime_tree_id": runtime_tree_id,
+            }
+        )
 
     if not trees:
         raise SystemExit(f"solution has no trees: {path}")
@@ -144,6 +156,7 @@ def load_imported_topology(path: pathlib.Path) -> dict[str, Any]:
         "trees": trees,
         "topology_edges": sorted(set(scenario_edges)),
         "n_nodes": max(ordered_nodes),
+        "tree_id_mapping": tree_id_mapping,
     }
 
 def relay_pairs(tree_count: int) -> list[tuple[int, int]]:
@@ -195,6 +208,26 @@ def total_nodes(tree_count: int, receiver_count: int) -> int:
     if IMPORTED_TOPOLOGY is not None:
         return int(IMPORTED_TOPOLOGY["n_nodes"])
     return 1 + (tree_count * 2) + receiver_count
+
+
+def worker_feasibility(packet_processors: int, tree_ids: list[int]) -> dict[str, Any]:
+    max_tree_id = max(tree_ids)
+    required_minimum = max_tree_id + 2
+    feasible = packet_processors >= required_minimum
+    warning = None
+    if not feasible:
+        warning = (
+            "degraded ingress contract: num_packet_processors must be greater than "
+            f"max_tree_id + 1 ({max_tree_id + 1}); tree-visible steering may collapse "
+            "to SharedQueue"
+        )
+    return {
+        "num_packet_processors": packet_processors,
+        "max_tree_id": max_tree_id,
+        "required_minimum": required_minimum,
+        "feasible": feasible,
+        "warning": warning,
+    }
 
 
 def render_controller_config(args: argparse.Namespace) -> str:
@@ -323,6 +356,26 @@ def main() -> None:
     (out_dir / "dataplane-config.toml").write_text(
         render_dataplane_config(args, payload_path, artifact_dir), encoding="utf-8"
     )
+    if IMPORTED_TOPOLOGY is not None:
+        (out_dir / "solution-import.json").write_text(
+            json.dumps(
+                {"tree_id_mapping": IMPORTED_TOPOLOGY["tree_id_mapping"]},
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        feasibility = worker_feasibility(
+            args.packet_processors,
+            [tree_id for tree_id, _ in IMPORTED_TOPOLOGY["trees"]],
+        )
+        (out_dir / "run-ledger.json").write_text(
+            json.dumps({"worker_feasibility": feasibility}, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        if feasibility["warning"] is not None:
+            print(f"WARNING: {feasibility['warning']}", file=sys.stderr)
 
     print(f"Wrote {out_dir / 'controller-config.toml'}")
     print(f"Wrote {out_dir / 'dataplane-config.toml'}")

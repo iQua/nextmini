@@ -10,6 +10,23 @@ const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
 
+/// Return the largest FEC Need block list that fits in one framed packet.
+pub fn max_fec_need_blocks(max_packet_size: usize, transport_overhead: usize) -> Option<usize> {
+    let fixed_len = transport_overhead
+        .checked_add(LosslessSessionHeader::LEN)?
+        .checked_add(NEED_FIXED_BODY_LEN)?;
+    let available = max_packet_size.checked_sub(fixed_len)?;
+    Some(available / NEED_BLOCK_LEN)
+}
+
+/// Return the framed packet size for an FEC Need block list.
+pub fn fec_need_packet_len(block_count: usize, transport_overhead: usize) -> Option<usize> {
+    transport_overhead
+        .checked_add(LosslessSessionHeader::LEN)?
+        .checked_add(NEED_FIXED_BODY_LEN)?
+        .checked_add(block_count.checked_mul(NEED_BLOCK_LEN)?)
+}
+
 /// Stack-friendly scratch size for common control frames.
 ///
 /// Large `Need::Fec` reports can exceed this bound; callers that need to encode
@@ -357,6 +374,25 @@ mod tests {
         FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
         LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport, encode_block_data,
     };
+
+    #[test]
+    fn fec_need_packet_sizing_accepts_only_the_framed_boundary() {
+        const MAX_PACKET_SIZE: usize = u16::MAX as usize;
+        const TRANSPORT_OVERHEAD: usize = 56;
+
+        let max_blocks = max_fec_need_blocks(MAX_PACKET_SIZE, TRANSPORT_OVERHEAD)
+            .expect("transport overhead should leave room for a Need frame");
+
+        assert_eq!(max_blocks, 6545);
+        assert!(
+            fec_need_packet_len(max_blocks, TRANSPORT_OVERHEAD)
+                .is_some_and(|len| len <= MAX_PACKET_SIZE)
+        );
+        assert!(
+            fec_need_packet_len(max_blocks + 1, TRANSPORT_OVERHEAD)
+                .is_some_and(|len| len > MAX_PACKET_SIZE)
+        );
+    }
 
     #[test]
     fn roundtrip_controls() {

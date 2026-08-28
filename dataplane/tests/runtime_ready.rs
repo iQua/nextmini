@@ -219,6 +219,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await
@@ -230,6 +231,7 @@ async fn start_receiver_rejects_duplicate_active_session_ids() {
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await;
@@ -270,6 +272,7 @@ async fn completed_receiver_replays_complete_on_late_eot() {
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await
@@ -330,6 +333,7 @@ async fn passive_complete_receiver_answers_later_round_before_handoff_then_runti
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await
@@ -436,6 +440,7 @@ async fn completed_receiver_does_not_replay_complete_on_late_duplicate_block_dat
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await
@@ -500,6 +505,7 @@ async fn passive_complete_receiver_ignores_duplicate_payload_after_later_round_b
             route: capture.route(),
             local_node_id: RECEIVER_NODE_ID,
             sink_buffer: None,
+            sink_file: None,
             progress: None,
         })
         .await

@@ -3,14 +3,14 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
 use tokio::io::Result;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
@@ -206,21 +206,31 @@ impl QuicClient {
 }
 
 /// An actor that reads packets from a QUIC stream.
-pub struct QuicReader {
-    stream: ReceiveStream,
+pub struct QuicReader<S = ReceiveStream> {
+    stream: S,
     processors: ProcessorHandle,
 }
 
-impl QuicReader {
+impl QuicReader<ReceiveStream> {
     pub fn new(stream: ReceiveStream, processors: ProcessorHandle, scope: TransportScope) -> Self {
         let _ = scope;
         Self { processors, stream }
     }
+}
 
+impl<S: AsyncRead + Unpin> QuicReader<S> {
     pub async fn run(&mut self) {
         loop {
-            if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet).await;
+            match self.read_packet().await {
+                Ok(packet) => self.processors.process_packet(packet).await,
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                        debug!(error = %error, "QUIC packet reader reached EOF");
+                    } else {
+                        warn!(error = %error, "QUIC packet reader stopped");
+                    }
+                    break;
+                }
             }
         }
     }
@@ -243,5 +253,38 @@ impl QuicWriter {
     /// Writes multiple packets to the QUIC network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         framing::write_packets(&mut self.stream, &packets).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncWriteExt, duplex};
+    use tokio::time::timeout;
+
+    use super::*;
+
+    async fn assert_reader_stops_after(input: &[u8]) {
+        let (mut writer, stream) = duplex(64);
+        writer.write_all(input).await.expect("write test input");
+        writer.shutdown().await.expect("close test writer");
+        let mut reader = QuicReader {
+            stream,
+            processors: ProcessorHandle::new(Default::default()),
+        };
+
+        timeout(Duration::from_secs(1), reader.run())
+            .await
+            .expect("reader loop should stop after framing error");
+    }
+
+    #[tokio::test]
+    async fn quic_reader_stops_on_oversized_short_and_eof_frames() {
+        assert_reader_stops_after(&u32::MAX.to_be_bytes()).await;
+
+        let mut short_frame = (20u32).to_be_bytes().to_vec();
+        short_frame.extend_from_slice(&[0u8; 5]);
+        assert_reader_stops_after(&short_frame).await;
+
+        assert_reader_stops_after(&[]).await;
     }
 }

@@ -95,7 +95,6 @@ pub(super) struct SenderShared {
     pub(super) ready_grace: Duration,
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
-    pub(super) payload_emitted: bool,
 }
 
 /// Concrete sender mode selected from the manifest.
@@ -227,7 +226,6 @@ impl SessionSender {
                 ready_grace,
                 topology_ready: cfg.topology_ready,
                 pacer,
-                payload_emitted: false,
             },
             mode,
         })
@@ -439,11 +437,6 @@ impl SenderShared {
             quorum = ?self.active_quorum.active_members(),
             "Lossless sender froze the active session quorum"
         );
-    }
-
-    /// Mark that a payload frame has actually left the sender.
-    pub(super) fn mark_payload_emitted(&mut self) {
-        self.payload_emitted = true;
     }
 
     /// Begin the fixed-interval solicitation window for the frozen quorum.
@@ -978,7 +971,6 @@ mod tests {
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,
-            payload_emitted: false,
         }
     }
 

@@ -6,7 +6,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
@@ -180,14 +180,8 @@ pub struct TcpReader {
     stream: ReadHalf<TcpStream>,
     processors: ProcessorHandle,
     local_node_id: usize,
-    remote_node_id: usize,
-    scope: TransportScope,
     reporter: Option<ControllerReporterHandle>,
     active_probes: AHashMap<u64, ProbeState>,
-    started_at: Instant,
-    last_stats_log_at: Instant,
-    forwarded_packets: u64,
-    process_packet_time: Duration,
 }
 
 /// Tracks an in-flight bandwidth probe on the receive side.
@@ -208,74 +202,37 @@ impl TcpReader {
         stream: ReadHalf<TcpStream>,
         processors: ProcessorHandle,
         local_node_id: usize,
-        remote_node_id: usize,
-        scope: TransportScope,
         reporter: Option<ControllerReporterHandle>,
     ) -> Self {
-        let now = Instant::now();
         Self {
             stream,
             processors,
             local_node_id,
-            remote_node_id,
-            scope,
             reporter,
             active_probes: AHashMap::new(),
-            started_at: now,
-            last_stats_log_at: now,
-            forwarded_packets: 0,
-            process_packet_time: Duration::ZERO,
         }
     }
 
     pub async fn run(mut self) {
         loop {
-            if let Ok(packet) = framing::read_packet(&mut self.stream).await {
-                if packet.flow_id == PROBE_FLOW_ID {
-                    self.handle_probe(packet);
-                } else {
-                    let started = Instant::now();
-                    self.processors.process_packet(packet).await;
-                    self.process_packet_time += started.elapsed();
-                    self.forwarded_packets += 1;
-                    self.maybe_log_process_share();
+            match framing::read_packet(&mut self.stream).await {
+                Ok(packet) => {
+                    if packet.flow_id == PROBE_FLOW_ID {
+                        self.handle_probe(packet);
+                    } else {
+                        self.processors.process_packet(packet).await;
+                    }
+                }
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                        debug!(error = %error, "TCP packet reader reached EOF");
+                    } else {
+                        warn!(error = %error, "TCP packet reader stopped");
+                    }
+                    break;
                 }
             }
         }
-    }
-
-    fn maybe_log_process_share(&mut self) {
-        let now = Instant::now();
-        if now.duration_since(self.last_stats_log_at) < Duration::from_millis(250) {
-            return;
-        }
-
-        self.last_stats_log_at = now;
-        let elapsed = now.duration_since(self.started_at);
-        let process_secs = self.process_packet_time.as_secs_f64();
-        let elapsed_secs = elapsed.as_secs_f64();
-        let process_pct = if elapsed_secs > 0.0 {
-            (process_secs / elapsed_secs) * 100.0
-        } else {
-            0.0
-        };
-        let avg_process_ms = if self.forwarded_packets > 0 {
-            (process_secs * 1000.0) / self.forwarded_packets as f64
-        } else {
-            0.0
-        };
-
-        info!(
-            local_node_id = self.local_node_id,
-            remote_node_id = self.remote_node_id,
-            scope = ?self.scope,
-            forwarded_packets = self.forwarded_packets,
-            elapsed_ms = elapsed.as_millis() as u64,
-            process_packet_ms_total = self.process_packet_time.as_millis() as u64,
-            process_packet_pct = process_pct,
-            avg_process_packet_ms = avg_process_ms,
-            "TcpReader process_packet.await share"
-        );
     }
 
     fn handle_probe(&mut self, packet: Packet) {
@@ -340,5 +297,45 @@ impl TcpWriter {
     /// Writes multiple packets to the TCP network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         framing::write_packets(&mut self.stream, &packets).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+
+    async fn assert_reader_stops_after(input: &[u8]) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener address");
+        let client = tokio::spawn(TcpStream::connect(addr));
+        let (server, _) = listener.accept().await.expect("accept test connection");
+        let mut client = client
+            .await
+            .expect("client task should finish")
+            .expect("connect test client");
+        client.write_all(input).await.expect("write test input");
+        client.shutdown().await.expect("close test client");
+
+        let (reader, _writer) = tokio::io::split(server);
+        let reader = TcpReader::new(reader, ProcessorHandle::new(Default::default()), 1, None);
+
+        timeout(Duration::from_secs(1), reader.run())
+            .await
+            .expect("reader loop should stop after framing error");
+    }
+
+    #[tokio::test]
+    async fn tcp_reader_stops_on_oversized_short_and_eof_frames() {
+        assert_reader_stops_after(&u32::MAX.to_be_bytes()).await;
+
+        let mut short_frame = (20u32).to_be_bytes().to_vec();
+        short_frame.extend_from_slice(&[0u8; 5]);
+        assert_reader_stops_after(&short_frame).await;
+
+        assert_reader_stops_after(&[]).await;
     }
 }

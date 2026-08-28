@@ -228,6 +228,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
             route: capture.route(),
             local_node_id: capture.cfg.node_id,
             sink_buffer: Some(sink.clone()),
+            sink_file: None,
             progress: None,
         })
         .await

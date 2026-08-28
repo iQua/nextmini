@@ -13,6 +13,8 @@ static PACKET_BUFFER_POOL: Lazy<Mutex<Vec<BytesMut>>> = Lazy::new(|| Mutex::new(
 
 /// Maximum serialized IPv4 packet size supported by the packet envelope.
 pub(crate) const MAX_FRAMED_PACKET_SIZE: usize = u16::MAX as usize;
+/// IPv4, TCP, and private lossless-option bytes around a lossless frame.
+pub(crate) const LOSSLESS_TRANSPORT_OVERHEAD: usize = 20 + 20 + 16;
 
 /// A reusable packet buffer backed by a global pool.
 #[derive(Debug)]
@@ -372,6 +374,10 @@ impl Packet {
             };
 
         let total_len = Self::IP_HLEN + tcp_hlen + payload.len();
+        debug_assert!(
+            total_len <= MAX_FRAMED_PACKET_SIZE,
+            "serialized IPv4 packet exceeds the framed packet limit"
+        );
         let mut buf = vec![0u8; total_len];
 
         // IPv4 header
@@ -520,6 +526,20 @@ mod tests {
         buf[tcp_off + 13] = flags;
 
         Packet::from_vec(buf)
+    }
+
+    #[test]
+    #[cfg(debug_assertions)]
+    #[should_panic(expected = "serialized IPv4 packet exceeds the framed packet limit")]
+    fn packet_builder_rejects_total_length_that_would_truncate() {
+        let payload = vec![0u8; MAX_FRAMED_PACKET_SIZE];
+        Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            45000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            46000,
+            &payload,
+        );
     }
 
     #[test]

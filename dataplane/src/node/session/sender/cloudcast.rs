@@ -175,7 +175,6 @@ impl CloudcastSender {
             &frame,
         )
         .await;
-        shared.mark_payload_emitted();
     }
 }
 

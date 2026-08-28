@@ -259,6 +259,331 @@ impl ControllerInterfaceHandle {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use std::future::pending;
+
+    use bytes::Bytes;
+    use futures::StreamExt;
+    use nextmini_messages::lossless_session::{self, LosslessSessionControl};
+    use nextmini_messages::{GroupDirectoryEntry, MULTITREE_STRIDE};
+    use tokio::net::TcpListener;
+    use tokio::time::{sleep, timeout};
+    use tokio_tungstenite::accept_async;
+
+    use super::*;
+    use crate::node::network::scope::TransportScope;
+    use crate::node::packet::{LosslessTransportMeta, Packet};
+    use crate::node::scheduler::sched::{SchedulerHandle, SchedulerReaderMessage};
+    use crate::node::session::runtime::{SenderRequest, SessionConfig, TransportRoute};
+
+    async fn test_receiver(
+        config: LocalConfig,
+        processors: ProcessorHandle,
+        lossless_runtime: LosslessRuntimeHandle,
+    ) -> (ControllerToDataplaneReceiver, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test websocket listener");
+        let addr = listener.local_addr().expect("test listener address");
+        let server_task = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("accept test websocket");
+            let _websocket = accept_async(stream)
+                .await
+                .expect("accept websocket upgrade");
+            pending::<()>().await;
+        });
+        let (websocket, _) = connect_async(format!("ws://{addr}"))
+            .await
+            .expect("connect test websocket");
+        let (_, receiver_stream) = websocket.split();
+
+        let (northbridge_sender, _northbridge_receiver) = mpsc::unbounded_channel();
+        let controller = ControllerInterfaceHandle {
+            config: config.clone(),
+            processors: processors.clone(),
+            northbridge_sender,
+            #[cfg(feature = "python-extension")]
+            python_interface: Arc::new(Mutex::new(None)),
+        };
+        let reporter = ControllerReporterHandle::new(controller.clone(), 3600);
+        let flowstats = FlowStatsReporterHandle::new(controller.clone(), config.clone());
+        let user_space_client =
+            UserSpaceClientHandle::new(config.clone(), processors.clone(), flowstats.clone());
+        let user_space_server = UserSpaceServerHandle::new(config.clone(), processors.clone());
+        processors.connect_server(user_space_server.clone());
+        processors.connect_lossless_handle(lossless_runtime.clone());
+        let lossless_unicast = LosslessUnicastFlowManager::new(
+            config.clone(),
+            processors.clone(),
+            flowstats,
+            lossless_runtime.clone(),
+        );
+        let (local_event_sender, local_event_receiver) = mpsc::unbounded_channel();
+
+        (
+            ControllerToDataplaneReceiver {
+                controller,
+                config,
+                receiver_stream,
+                processors,
+                reporter,
+                user_space_client,
+                user_space_server,
+                #[cfg(feature = "python-extension")]
+                python_interface: Arc::new(Mutex::new(None)),
+                group_ip_by_id: HashMap::new(),
+                lossless_runtime,
+                lossless_unicast,
+                topology_ready: false,
+                lossless_topology_ready: false,
+                pending_tcp_flows: Vec::new(),
+                pending_lossless_flows: Vec::new(),
+                expected_neighbor_count: 0,
+                connected_neighbor_count: 0,
+                neighbor_addrs: HashMap::new(),
+                connected_scopes: HashSet::new(),
+                routes_installed: false,
+                group_directory_installed: false,
+                installed_group_route_ids: HashSet::new(),
+                local_topology_ready_sent: false,
+                local_event_sender,
+                local_event_receiver,
+                last_group_route_update_at: None,
+                latest_group_route_nonce: 0,
+            },
+            server_task,
+        )
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn startup_holds_sender_until_group_route_workers_ack() {
+        const SOURCE_NODE_ID: usize = 1;
+        const RECEIVER_NODE_ID: usize = 2;
+        const GROUP_ID: usize = 1;
+        const SESSION_ID: u64 = 0xA11C_E401;
+
+        let group_ip = Ipv4Addr::new(239, 1, 1, 1);
+        let mut config = LocalConfig {
+            node_id: SOURCE_NODE_ID,
+            num_packet_processors: 3,
+            channel_capacity: 8,
+            queue_capacity: 8,
+            fanout_pending_capacity: Some(1),
+            channel_backpressure: true,
+            ..Default::default()
+        };
+        config.lossless_runtime_config.fec_enabled = false;
+        config.lossless_runtime_config.ready_grace_ms = 1_000;
+
+        let processors = ProcessorHandle::new(config.clone());
+        let lossless_runtime =
+            LosslessRuntimeHandle::new(processors.clone(), config.lossless_runtime_config.clone());
+        let (mut receiver, server_task) =
+            test_receiver(config.clone(), processors.clone(), lossless_runtime.clone()).await;
+
+        let (default_scheduler_sender, mut default_scheduler_receiver) = mpsc::channel(8);
+        processors
+            .add_node(
+                RECEIVER_NODE_ID,
+                TransportScope::Default,
+                SchedulerHandle::new_for_test(default_scheduler_sender, true),
+            )
+            .expect("install default test scheduler");
+        let (tree_scheduler_sender, mut tree_scheduler_receiver) = mpsc::channel(1);
+        processors
+            .add_node(
+                RECEIVER_NODE_ID,
+                TransportScope::Tree(0),
+                SchedulerHandle::new_for_test(tree_scheduler_sender, true),
+            )
+            .expect("install tree test scheduler");
+        processors.sync_workers().await;
+
+        let directory = vec![GroupDirectoryEntry {
+            group_id: GROUP_ID,
+            group_ip,
+        }];
+        let routes = vec![GroupRoutingTableEntry {
+            route_id: GROUP_ID * MULTITREE_STRIDE,
+            next_hops: vec![RECEIVER_NODE_ID],
+            src_node_id: SOURCE_NODE_ID,
+            group_id: GROUP_ID,
+        }];
+
+        let base_route_nonce = processors.sync_snapshot_for_test().0;
+        receiver
+            .process_control_msg(ControllerToDataplane::InstallRoutes { routes: Vec::new() })
+            .await;
+        let (installed_nonce, installed_ack_count, worker_count) =
+            processors.sync_snapshot_for_test();
+        assert!(
+            installed_nonce > base_route_nonce,
+            "base topology readiness must include a worker route-ACK barrier"
+        );
+        assert_eq!(
+            installed_ack_count, worker_count,
+            "base routes were marked installed before every worker acknowledged them"
+        );
+        receiver
+            .process_control_msg(ControllerToDataplane::InstallGroupDirectory {
+                groups: Vec::new(),
+            })
+            .await;
+        receiver
+            .process_control_msg(ControllerToDataplane::TopologyReady)
+            .await;
+        receiver
+            .process_control_msg(ControllerToDataplane::InstallGroupDirectory { groups: directory })
+            .await;
+        receiver
+            .process_control_msg(ControllerToDataplane::InstallGroupRoutes {
+                group_id: GROUP_ID,
+                src_node_id: SOURCE_NODE_ID,
+                routes: routes.clone(),
+            })
+            .await;
+
+        sleep(LOSSLESS_GROUP_ROUTE_QUIET_PERIOD + Duration::from_millis(20)).await;
+        let initial_ready_event = receiver
+            .local_event_receiver
+            .recv()
+            .await
+            .expect("initial route quiet-period event");
+        receiver.handle_local_event(initial_ready_event).await;
+        assert!(receiver.lossless_topology_ready);
+
+        let parked_packet = Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            config.user_space_address,
+            45000,
+            group_ip,
+            46000,
+            Some(LosslessTransportMeta {
+                session_id: SESSION_ID,
+                tree_id: Some(0),
+            }),
+            b"park",
+        );
+        for _ in 0..4 {
+            processors.process_packet(parked_packet.clone()).await;
+        }
+
+        let baseline_nonce = processors.sync_snapshot_for_test().0;
+        let update_task = tokio::spawn(async move {
+            receiver
+                .process_control_msg(ControllerToDataplane::InstallGroupRoutes {
+                    group_id: GROUP_ID,
+                    src_node_id: SOURCE_NODE_ID,
+                    routes,
+                })
+                .await;
+            receiver
+        });
+
+        timeout(Duration::from_secs(2), async {
+            loop {
+                let (nonce, ack_count, worker_count) = processors.sync_snapshot_for_test();
+                if nonce > baseline_nonce && ack_count + 1 == worker_count {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("route update should reach a real N-1/N worker barrier");
+
+        let mut session = lossless_runtime
+            .start_sender(SenderRequest {
+                session: SessionConfig {
+                    session_id: SESSION_ID,
+                    block_size: 16,
+                },
+                route: TransportRoute {
+                    src_ip: config.user_space_address,
+                    dst_ip: group_ip,
+                    src_port: 45000,
+                    dst_port: 46000,
+                },
+                pacing: None,
+                receiver_ids: vec![RECEIVER_NODE_ID],
+                total_bytes: 16,
+                source_buffer: Bytes::from_static(b"abcdefghijklmnop"),
+                ready_grace_ms: 1_000,
+                peer_report_timeout_ms: 1_000,
+            })
+            .await
+            .expect("start sender behind route barrier");
+
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                default_scheduler_receiver.recv()
+            )
+            .await
+            .is_err(),
+            "sender emitted before the last processor worker acknowledged the route barrier"
+        );
+
+        timeout(Duration::from_secs(1), tree_scheduler_receiver.recv())
+            .await
+            .expect("free the blocked tree scheduler")
+            .expect("blocked tree scheduler should still be open");
+        let mut receiver = timeout(Duration::from_secs(2), update_task)
+            .await
+            .expect("route update should finish after the parked worker resumes")
+            .expect("route update task should not panic");
+        let (_, ack_count, worker_count) = processors.sync_snapshot_for_test();
+        assert_eq!(
+            ack_count, worker_count,
+            "route update returned before the last ACK"
+        );
+
+        for _ in 0..3 {
+            timeout(Duration::from_secs(1), tree_scheduler_receiver.recv())
+                .await
+                .expect("drain parked tree packet")
+                .expect("tree scheduler should remain open");
+        }
+        assert!(
+            timeout(
+                Duration::from_millis(100),
+                default_scheduler_receiver.recv()
+            )
+            .await
+            .is_err(),
+            "sender emitted before the post-barrier quiet period completed"
+        );
+
+        let ready_event = timeout(
+            LOSSLESS_GROUP_ROUTE_QUIET_PERIOD + Duration::from_secs(1),
+            receiver.local_event_receiver.recv(),
+        )
+        .await
+        .expect("route quiet-period event should fire")
+        .expect("local event channel should remain open");
+        receiver.handle_local_event(ready_event).await;
+
+        let manifest = timeout(Duration::from_secs(1), default_scheduler_receiver.recv())
+            .await
+            .expect("sender should emit after the complete route barrier")
+            .expect("default scheduler should remain open");
+        let SchedulerReaderMessage::InboundPacket(manifest) = manifest;
+        assert!(matches!(
+            manifest
+                .tcp_payload()
+                .and_then(lossless_session::decode_control),
+            Some((_, LosslessSessionControl::Manifest { .. }))
+        ));
+
+        session.abort();
+        assert!(matches!(
+            timeout(Duration::from_secs(1), session.wait()).await,
+            Ok(crate::node::session::api::SessionOutcome::Aborted)
+        ));
+        server_task.abort();
+    }
+}
+
 /// An actor used for sending messages from the dataplane to the controller over WebSockets.
 pub struct DataplaneToControllerSender {
     northbridge_receiver: mpsc::UnboundedReceiver<DataplaneToController>,
@@ -439,6 +764,7 @@ impl ControllerToDataplaneReceiver {
                 );
 
                 self.processors.update_routing_table(routes).await;
+                self.processors.sync_workers().await;
                 self.routes_installed = true;
                 self.maybe_send_local_topology_ready().await;
             }
@@ -554,6 +880,9 @@ impl ControllerToDataplaneReceiver {
                     groups.len(),
                     self.config.node_id
                 );
+                if !groups.is_empty() {
+                    self.deactivate_lossless_topology().await;
+                }
                 self.processors.update_group_directory(groups.clone()).await;
                 self.group_ip_by_id.clear();
                 self.installed_group_route_ids.clear();
@@ -578,6 +907,7 @@ impl ControllerToDataplaneReceiver {
                 src_node_id,
                 routes,
             } => {
+                self.deactivate_lossless_topology().await;
                 info!(
                     "Installing multicast routes for group {} from src {} on node {} ({} entries).",
                     group_id,
@@ -988,6 +1318,19 @@ impl ControllerToDataplaneReceiver {
         );
         self.lossless_runtime.set_topology_ready(true).await;
         self.flush_pending_lossless_flows();
+    }
+
+    async fn deactivate_lossless_topology(&mut self) {
+        if !self.lossless_topology_ready {
+            return;
+        }
+
+        self.lossless_topology_ready = false;
+        info!(
+            node_id = self.config.node_id,
+            "Lossless topology changed; closing runtime admission until worker route sync completes"
+        );
+        self.lossless_runtime.set_topology_ready(false).await;
     }
 
     #[cfg(feature = "python-extension")]

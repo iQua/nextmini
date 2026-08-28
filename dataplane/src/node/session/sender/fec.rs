@@ -2,13 +2,14 @@ use bytes::Bytes;
 use std::collections::BTreeMap;
 use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
+use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
     FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport,
 };
 
-use crate::node::processor::SendOutcome;
+use crate::node::processor::{LosslessIngressContract, SendOutcome};
 use crate::node::session::api::InboundFrame;
 use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
@@ -18,22 +19,12 @@ use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 
 use super::block_symbol_frame;
 
+const FEC_SEND_STATS_LOG_MASK: u64 = (1 << 12) - 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RoundPhase {
     SendingData,
     WaitingForReports,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SymbolKind {
-    Source,
-    Repair,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TreeScheduleEntry {
-    tree_id: u16,
-    tree_index: usize,
 }
 
 /// FEC-mode sender state and scheduling cursors.
@@ -45,7 +36,7 @@ pub(super) struct FecSender {
     mettle_stream_symbol_limit: u32,
     mettle_overhead: mettle::OverheadRatio,
     tree_ids: Vec<u16>,
-    tree_schedule: Vec<TreeScheduleEntry>,
+    symbol_retry_sweep_width: usize,
     geometry: SymbolGeometry,
     next_tree_rr: usize,
     current_source_cache: Option<(u64, Vec<Bytes>)>,
@@ -57,6 +48,7 @@ pub(super) struct FecSender {
     round_reports: BTreeMap<usize, NeedReport>,
     repair_window_symbols: u32,
     protocol_error: bool,
+    ingress_contract_checked: bool,
     stats: FecSenderStats,
 }
 
@@ -194,127 +186,57 @@ impl MettleSymbolStream {
 
 #[derive(Debug)]
 struct FecSenderStats {
-    source_attempts: u64,
-    source_queued: u64,
-    source_would_block: u64,
-    source_closed: u64,
-    repair_attempts: u64,
-    repair_queued: u64,
-    repair_would_block: u64,
-    repair_closed: u64,
-    source_send_stalls: u64,
-    repair_send_stalls: u64,
+    queued: u64,
+    events: u64,
+    would_block_by_tree: Box<[u64]>,
+    cumulative_stall: Duration,
 }
 
 impl FecSenderStats {
-    fn new(_tree_ids: &[u16]) -> Self {
+    fn new(tree_count: usize) -> Self {
         Self {
-            source_attempts: 0,
-            source_queued: 0,
-            source_would_block: 0,
-            source_closed: 0,
-            repair_attempts: 0,
-            repair_queued: 0,
-            repair_would_block: 0,
-            repair_closed: 0,
-            source_send_stalls: 0,
-            repair_send_stalls: 0,
+            queued: 0,
+            events: 0,
+            would_block_by_tree: vec![0; tree_count].into_boxed_slice(),
+            cumulative_stall: Duration::ZERO,
         }
     }
 
-    fn record_attempt(&mut self, kind: SymbolKind, _tree_id: u16) {
-        match kind {
-            SymbolKind::Source => {
-                self.source_attempts = self.source_attempts.saturating_add(1);
-            }
-            SymbolKind::Repair => {
-                self.repair_attempts = self.repair_attempts.saturating_add(1);
-            }
-        }
+    fn record_queued(&mut self) -> bool {
+        self.queued = self.queued.saturating_add(1);
+        self.record_event()
     }
 
-    fn record_outcome(&mut self, kind: SymbolKind, _tree_id: u16, outcome: SendOutcome) {
-        match (kind, outcome) {
-            (SymbolKind::Source, SendOutcome::Queued) => {
-                self.source_queued = self.source_queued.saturating_add(1);
-            }
-            (SymbolKind::Source, SendOutcome::WouldBlock) => {
-                self.source_would_block = self.source_would_block.saturating_add(1);
-            }
-            (SymbolKind::Source, SendOutcome::Closed) => {
-                self.source_closed = self.source_closed.saturating_add(1);
-            }
-            (SymbolKind::Repair, SendOutcome::Queued) => {
-                self.repair_queued = self.repair_queued.saturating_add(1);
-            }
-            (SymbolKind::Repair, SendOutcome::WouldBlock) => {
-                self.repair_would_block = self.repair_would_block.saturating_add(1);
-            }
-            (SymbolKind::Repair, SendOutcome::Closed) => {
-                self.repair_closed = self.repair_closed.saturating_add(1);
-            }
+    fn record_would_block(&mut self, tree_idx: usize) -> bool {
+        if let Some(count) = self.would_block_by_tree.get_mut(tree_idx) {
+            *count = count.saturating_add(1);
         }
+        self.record_event()
     }
 
-    fn record_stall(&mut self, kind: SymbolKind) {
-        match kind {
-            SymbolKind::Source => {
-                self.source_send_stalls = self.source_send_stalls.saturating_add(1);
-            }
-            SymbolKind::Repair => {
-                self.repair_send_stalls = self.repair_send_stalls.saturating_add(1);
-            }
-        }
+    fn record_stall(&mut self, duration: Duration) {
+        self.cumulative_stall = self.cumulative_stall.saturating_add(duration);
+    }
+
+    fn record_event(&mut self) -> bool {
+        self.events = self.events.saturating_add(1);
+        self.events & FEC_SEND_STATS_LOG_MASK == 0
+    }
+
+    fn log(&self, session_id: u64, tree_ids: &[u16]) {
+        debug!(
+            session_id,
+            queued = self.queued,
+            tree_ids = ?tree_ids,
+            would_block_by_tree = ?self.would_block_by_tree,
+            cumulative_stall_ms = self.cumulative_stall.as_millis(),
+            "Lossless RaptorQ sender ingress statistics"
+        );
     }
 
     fn total_queued(&self) -> u64 {
-        self.source_queued.saturating_add(self.repair_queued)
+        self.queued
     }
-}
-
-/// Build a one-slot-per-tree round-robin schedule for FEC symbol striping.
-///
-/// METTLE/RaptorQ FEC symbols are striped across `tree_ids` in flat
-/// round-robin order; the sender advances `next_tree_rr` modulo the schedule
-/// length per send. This is paper-faithful for METTLE (no notion of weighted
-/// trees in the spec) and matches the RaptorQ reference behavior in this
-/// codebase.
-fn unweighted_tree_schedule(tree_ids: &[u16]) -> Vec<TreeScheduleEntry> {
-    tree_ids
-        .iter()
-        .copied()
-        .enumerate()
-        .map(|(tree_index, tree_id)| TreeScheduleEntry {
-            tree_id,
-            tree_index,
-        })
-        .collect()
-}
-
-fn mark_tree_attempted(
-    tree_index: usize,
-    tried_mask: &mut u128,
-    tried_large: Option<&mut Vec<bool>>,
-) -> bool {
-    if let Some(tried) = tried_large {
-        let Some(entry) = tried.get_mut(tree_index) else {
-            return false;
-        };
-        if *entry {
-            return false;
-        }
-        *entry = true;
-        return true;
-    }
-
-    let Some(bit) = 1u128.checked_shl(tree_index as u32) else {
-        return false;
-    };
-    if *tried_mask & bit != 0 {
-        return false;
-    }
-    *tried_mask |= bit;
-    true
 }
 
 impl FecSender {
@@ -362,8 +284,9 @@ impl FecSender {
         };
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
-        let tree_schedule = unweighted_tree_schedule(&fec.tree_ids);
-
+        let tree_ids = fec.tree_ids.clone();
+        let symbol_retry_sweep_width = tree_ids.len();
+        let stats = FecSenderStats::new(tree_ids.len());
         Ok(Self {
             blocks: (0..block_count)
                 .map(|_| FecBlockState {
@@ -384,8 +307,8 @@ impl FecSender {
             initial_symbol_count,
             mettle_stream_symbol_limit,
             mettle_overhead,
-            tree_ids: fec.tree_ids.clone(),
-            tree_schedule,
+            tree_ids,
+            symbol_retry_sweep_width,
             geometry,
             next_tree_rr: 0,
             current_source_cache: None,
@@ -397,7 +320,8 @@ impl FecSender {
             round_reports: BTreeMap::new(),
             repair_window_symbols: 0,
             protocol_error: false,
-            stats: FecSenderStats::new(&fec.tree_ids),
+            ingress_contract_checked: false,
+            stats,
         })
     }
 
@@ -413,35 +337,24 @@ impl FecSender {
         shared: &mut super::SenderShared,
         ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
     ) -> SessionOutcome {
+        self.apply_ingress_contract(shared);
+
         while !self.is_complete() {
             shared.drain_controls(ctrl_rx, self);
             if self.protocol_error {
-                self.log_tree_stats(shared, "protocol_error");
                 return SessionOutcome::Aborted;
             }
 
-            if let Some((block_id, symbol_id)) = self.next_source_symbol(shared) {
+            if let Some((block_id, symbol_id)) = self.next_source_symbol() {
                 if !self.send_source_symbol(shared, block_id, symbol_id).await {
-                    self.log_tree_stats(shared, "source_send_failed");
                     return SessionOutcome::Aborted;
                 }
                 self.round_source_done_sent = false;
                 continue;
             }
 
-            if let Some((block_id, symbol_id)) = self.next_extra_symbol(shared) {
+            if let Some((block_id, symbol_id)) = self.next_extra_symbol() {
                 if !self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    self.log_tree_stats(shared, "repair_send_failed");
-                    return SessionOutcome::Aborted;
-                }
-                continue;
-            }
-
-            if self.has_pending_repair_work()
-                && let Some((block_id, symbol_id)) = self.next_extra_symbol(shared)
-            {
-                if !self.send_extra_symbol(shared, block_id, symbol_id).await {
-                    self.log_tree_stats(shared, "pending_repair_send_failed");
                     return SessionOutcome::Aborted;
                 }
                 continue;
@@ -471,14 +384,46 @@ impl FecSender {
             {
                 super::QuorumWaitOutcome::Control | super::QuorumWaitOutcome::Solicited => {}
                 super::QuorumWaitOutcome::TimedOut | super::QuorumWaitOutcome::Closed => {
-                    self.log_tree_stats(shared, "quorum_wait_aborted");
                     return SessionOutcome::Aborted;
                 }
             }
         }
 
-        self.log_tree_stats(shared, "run_complete");
         SessionOutcome::Completed
+    }
+
+    fn apply_ingress_contract(&mut self, shared: &super::SenderShared) {
+        if self.ingress_contract_checked {
+            return;
+        }
+        self.ingress_contract_checked = true;
+
+        if self.scheme != FecScheme::RaptorQ || self.tree_ids.len() <= 1 {
+            return;
+        }
+
+        let tree_id = self.tree_ids[0];
+        let packet = control::build_packet(
+            control::FrameRoute {
+                session_id: shared.session.session_id,
+                tree_id: Some(tree_id),
+                src_ip: shared.route.src_ip,
+                src_port: shared.route.src_port,
+                dst_ip: shared.route.dst_ip,
+                dst_port: shared.route.dst_port,
+            },
+            &[],
+        );
+        if shared.processors.lossless_ingress_contract(&packet)
+            == LosslessIngressContract::SharedQueueNonBlocking
+        {
+            self.symbol_retry_sweep_width = 1;
+            warn!(
+                session_id = shared.session.session_id,
+                tree_count = self.tree_ids.len(),
+                "Lossless RaptorQ sender detected shared ingress; per-symbol tree failover disabled while striping is retained"
+            );
+        }
     }
 
     pub(super) fn is_complete(&self) -> bool {
@@ -486,7 +431,7 @@ impl FecSender {
     }
 
     /// Return the next source symbol to send in FEC mode.
-    fn next_source_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
+    fn next_source_symbol(&mut self) -> Option<(u64, u32)> {
         let source_phase_limit = self.source_phase_symbol_limit();
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
@@ -500,7 +445,7 @@ impl FecSender {
     }
 
     /// Return the next extra fountain symbol requested by a receiver.
-    fn next_extra_symbol(&mut self, _shared: &super::SenderShared) -> Option<(u64, u32)> {
+    fn next_extra_symbol(&mut self) -> Option<(u64, u32)> {
         if self.total_emitted_extra_symbols() >= self.repair_window_symbols {
             return None;
         }
@@ -537,13 +482,7 @@ impl FecSender {
         };
         shared.pace(payload.len()).await;
         if !self
-            .send_symbol(
-                shared,
-                block_id,
-                symbol_id,
-                payload.as_ref(),
-                SymbolKind::Source,
-            )
+            .send_symbol(shared, block_id, symbol_id, payload.as_ref())
             .await
         {
             return false;
@@ -557,7 +496,6 @@ impl FecSender {
             block.next_source_symbol = next_symbol;
         }
         self.discard_sent_mettle_symbol(block_id, symbol_id);
-        shared.mark_payload_emitted();
         true
     }
 
@@ -574,7 +512,7 @@ impl FecSender {
         };
         shared.pace(payload.len()).await;
         if !self
-            .send_symbol(shared, block_id, symbol_id, &payload, SymbolKind::Repair)
+            .send_symbol(shared, block_id, symbol_id, &payload)
             .await
         {
             return false;
@@ -585,7 +523,6 @@ impl FecSender {
             block.next_fountain_symbol += 1;
         }
         self.discard_sent_mettle_symbol(block_id, symbol_id);
-        shared.mark_payload_emitted();
         true
     }
 
@@ -596,19 +533,17 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
         payload: &[u8],
-        kind: SymbolKind,
     ) -> bool {
-        if self.tree_schedule.is_empty() {
-            self.stats.record_stall(kind);
-            self.maybe_log_progress(shared);
+        if self.tree_ids.is_empty() {
             return false;
         }
 
         let tree_count = self.tree_ids.len();
-        let schedule_count = self.tree_schedule.len();
+        let sweep_width = self.symbol_retry_sweep_width.clamp(1, tree_count);
+        let mut stall_started: Option<Instant> = None;
         loop {
-            let start_idx = self.next_tree_rr % schedule_count;
-            let initial_tree_id = self.tree_schedule[start_idx].tree_id;
+            let start_idx = self.next_tree_rr % tree_count;
+            let initial_tree_id = self.tree_ids[start_idx];
             block_symbol_frame::encode_into(
                 &mut self.frame_scratch,
                 shared.session.session_id,
@@ -620,27 +555,14 @@ impl FecSender {
 
             let mut saw_would_block = false;
             let mut frame_tree_id = initial_tree_id;
-            let mut tried_mask = 0u128;
-            let mut tried_large = if tree_count > 128 {
-                Some(vec![false; tree_count])
-            } else {
-                None
-            };
-            let mut attempted_trees = 0usize;
-            for offset in 0..schedule_count {
-                let idx = (start_idx + offset) % schedule_count;
-                let slot = self.tree_schedule[idx];
-                if !mark_tree_attempted(slot.tree_index, &mut tried_mask, tried_large.as_mut()) {
-                    continue;
-                }
-                attempted_trees += 1;
-                let tree_id = slot.tree_id;
+            for offset in 0..sweep_width {
+                let idx = (start_idx + offset) % tree_count;
+                let tree_id = self.tree_ids[idx];
                 if tree_id != frame_tree_id {
                     block_symbol_frame::patch_tree_id(&mut self.frame_scratch, tree_id)
                         .expect("encoded block symbol should accept tree-id patch");
                     frame_tree_id = tree_id;
                 }
-                self.stats.record_attempt(kind, tree_id);
                 let submission = control::try_send_frame(
                     &shared.processors,
                     control::FrameRoute {
@@ -653,21 +575,31 @@ impl FecSender {
                     },
                     &self.frame_scratch,
                 );
-                self.stats.record_outcome(kind, tree_id, submission.outcome);
                 match submission.outcome {
                     SendOutcome::Queued => {
+                        if self.scheme == FecScheme::RaptorQ {
+                            if let Some(stall_started) = stall_started.take() {
+                                self.stats.record_stall(stall_started.elapsed());
+                            }
+                            if self.stats.record_queued() {
+                                self.stats.log(shared.session.session_id, &self.tree_ids);
+                            }
+                        } else {
+                            self.stats.record_queued();
+                        }
                         self.note_queued_symbol(
-                            shared,
-                            block_id,
-                            symbol_id,
-                            tree_id,
-                            idx,
-                            schedule_count,
+                            shared, block_id, symbol_id, tree_id, idx, tree_count,
                         );
                         return true;
                     }
                     SendOutcome::WouldBlock => {
                         saw_would_block = true;
+                        if self.scheme == FecScheme::RaptorQ {
+                            stall_started.get_or_insert_with(Instant::now);
+                            if self.stats.record_would_block(idx) {
+                                self.stats.log(shared.session.session_id, &self.tree_ids);
+                            }
+                        }
                     }
                     SendOutcome::Closed => {
                         warn!(
@@ -677,14 +609,9 @@ impl FecSender {
                         );
                     }
                 }
-                if attempted_trees == tree_count {
-                    break;
-                }
             }
 
             if !saw_would_block {
-                self.stats.record_stall(kind);
-                self.maybe_log_progress(shared);
                 return false;
             }
 
@@ -699,7 +626,7 @@ impl FecSender {
         symbol_id: u32,
         tree_id: u16,
         idx: usize,
-        schedule_count: usize,
+        tree_count: usize,
     ) {
         if self.stats.total_queued() == 1 {
             info!(
@@ -707,8 +634,7 @@ impl FecSender {
                 tree_id, block_id, symbol_id, "Lossless sender queued first FEC payload symbol"
             );
         }
-        self.next_tree_rr = (idx + 1) % schedule_count;
-        self.maybe_log_progress(shared);
+        self.next_tree_rr = (idx + 1) % tree_count;
     }
 
     /// Return the next initial data-phase symbol payload for one block.
@@ -812,7 +738,6 @@ impl FecSender {
         shared.send_source_done(self.current_round_id).await;
         self.round_reports.clear();
         self.phase = RoundPhase::WaitingForReports;
-        self.log_tree_stats(shared, "source_done");
     }
 
     fn finish_report_round(&mut self, shared: &mut super::SenderShared) {
@@ -835,7 +760,6 @@ impl FecSender {
 
         if all_complete {
             self.round_complete = true;
-            self.log_tree_stats(shared, "all_complete");
             return;
         }
 
@@ -913,7 +837,6 @@ impl super::ModeHooks for FecSender {
                                 == shared.active_quorum.active_members().len()
                         {
                             self.round_complete = true;
-                            self.log_tree_stats(shared, "all_complete");
                         }
                         return;
                     }
@@ -1012,7 +935,6 @@ impl FecSender {
             .note_feedback_progress(tokio::time::Instant::now());
         if self.round_reports.len() == shared.active_quorum.active_members().len() {
             self.round_complete = true;
-            self.log_tree_stats(shared, "all_complete");
         }
         true
     }
@@ -1093,15 +1015,6 @@ impl FecSender {
             .max(1);
         self.repair_window_symbols = speculative_window.min(total_required);
     }
-
-    fn maybe_log_progress(&mut self, _shared: &super::SenderShared) {
-        // Intentionally empty: the per-symbol progress instrumentation is too
-        // expensive for WAN throughput measurements.
-    }
-
-    fn log_tree_stats(&self, _shared: &super::SenderShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
-    }
 }
 
 /// Refresh the cached source-symbol slice for `block_id` if needed.
@@ -1145,33 +1058,104 @@ mod tests {
 
     use super::*;
     use crate::node::config::LocalConfig;
-    use crate::node::processor::ProcessorHandle;
+    use crate::node::processor::{ProcessorHandle, ProcessorPacket};
     use crate::node::session::plan::BlockPlan;
     use crate::node::session::runtime::{SessionConfig, TransportRoute};
     use crate::node::session::sender::state::{ActiveSessionQuorum, QuorumLiveness};
     use crate::node::session::sender::{BlockSource, ModeHooks, SenderShared};
+    use nextmini_messages::OperatingMode;
     use nextmini_messages::lossless_session::{LosslessSessionFecMode, NeedBlock};
 
-    #[test]
-    fn fec_tree_schedule_is_one_slot_per_tree_round_robin() {
-        let schedule = unweighted_tree_schedule(&[7, 9, 11]);
+    #[tokio::test]
+    async fn fec_tree_ids_drive_round_robin_order() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9, 11])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut shared = test_sender_shared(manifest);
+        let (processors, mut processor_packets) =
+            ProcessorHandle::new_sequential_stub_for_test(LocalConfig {
+                node_id: 0,
+                n_nodes: 3,
+                channel_capacity: 8,
+                operating_mode: OperatingMode::Normal,
+                user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+                local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+                ..Default::default()
+            });
+        shared.processors = processors;
 
+        for symbol_id in 0..6 {
+            assert!(
+                sender.send_symbol(&mut shared, 0, symbol_id, b"data").await,
+                "symbol should enter the stub processor"
+            );
+        }
+
+        let mut observed = Vec::new();
+        for expected_symbol_id in 0..6 {
+            let ProcessorPacket::ProcessPacket(packet) = processor_packets
+                .recv()
+                .await
+                .expect("stub processor channel closed")
+            else {
+                panic!("stub processor received an unexpected link-probe message");
+            };
+            let route_tree_id = packet
+                .lossless_fec_tree_id()
+                .expect("FEC packet should carry a route tree id");
+            let (_, symbol, _) = nextmini_messages::lossless_session::decode_block_symbol(
+                packet
+                    .tcp_payload()
+                    .expect("FEC packet should carry a block symbol frame"),
+            )
+            .expect("FEC packet payload should decode as a block symbol");
+            assert_eq!(symbol.symbol_id, expected_symbol_id);
+            assert_eq!(symbol.tree_id, route_tree_id);
+            observed.push(route_tree_id);
+        }
+
+        assert_eq!(observed, vec![7, 9, 11, 7, 9, 11]);
+    }
+
+    #[tokio::test]
+    async fn fec_sender_run_retains_tree_striping_on_shared_ingress() {
+        let manifest = LosslessSessionManifest {
+            block_size: 16,
+            total_bytes: 16,
+            total_blocks: 1,
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(4, vec![7, 9, 11])),
+        };
+        let plan = BlockPlan::new(16, 16).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("sender should build");
+        let mut shared = test_sender_shared(manifest);
+        shared.processors = ProcessorHandle::new(LocalConfig {
+            node_id: 0,
+            n_nodes: 1,
+            num_packet_processors: 1,
+            channel_capacity: 8,
+            operating_mode: OperatingMode::Max,
+            user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+            local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+            ..Default::default()
+        });
+        shared.active_quorum = ActiveSessionQuorum::new([]);
+        shared.active_quorum.freeze();
+        let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(1);
+
+        let outcome = sender.run(&mut shared, &mut ctrl_rx).await;
+
+        assert_eq!(outcome, SessionOutcome::Completed);
+        assert!(sender.ingress_contract_checked);
+        assert_eq!(sender.tree_ids, vec![7, 9, 11]);
+        assert_eq!(sender.symbol_retry_sweep_width, 1);
         assert_eq!(
-            schedule,
-            vec![
-                TreeScheduleEntry {
-                    tree_id: 7,
-                    tree_index: 0,
-                },
-                TreeScheduleEntry {
-                    tree_id: 9,
-                    tree_index: 1,
-                },
-                TreeScheduleEntry {
-                    tree_id: 11,
-                    tree_index: 2,
-                },
-            ]
+            sender.next_tree_rr,
+            sender.initial_symbol_count as usize % sender.tree_ids.len()
         );
     }
 
@@ -1254,7 +1238,7 @@ mod tests {
 
         assert!(sender.has_pending_repair_work());
         assert_eq!(
-            sender.next_extra_symbol(&shared),
+            sender.next_extra_symbol(),
             Some((0, sender.symbols_per_block)),
             "first quorum report should open a bounded speculative repair window"
         );
@@ -1263,7 +1247,7 @@ mod tests {
             block.next_fountain_symbol = sender.symbols_per_block + 2;
         }
         assert_eq!(
-            sender.next_extra_symbol(&shared),
+            sender.next_extra_symbol(),
             None,
             "speculative repair should stop once the partial window is exhausted"
         );
@@ -1271,7 +1255,7 @@ mod tests {
         sender.on_need(&mut shared, 23, 0, NeedReport::Complete);
 
         assert_eq!(
-            sender.next_extra_symbol(&shared),
+            sender.next_extra_symbol(),
             Some((0, sender.symbols_per_block + 2)),
             "full quorum should open the remaining repair budget"
         );
@@ -1382,16 +1366,15 @@ mod tests {
         assert_eq!(sender.source_phase_symbol_limit(), expected_symbol_count);
 
         sender.blocks[0].next_source_symbol = sender.initial_symbol_count;
-        let shared = test_sender_shared(manifest.clone());
         assert_eq!(
-            sender.next_source_symbol(&shared),
+            sender.next_source_symbol(),
             Some((0, sender.initial_symbol_count)),
             "METTLE should emit the paper-native finite-stream tail instead of stopping at a session window"
         );
 
         sender.blocks[0].next_source_symbol = sender.mettle_stream_symbol_limit;
         assert_eq!(
-            sender.next_source_symbol(&shared),
+            sender.next_source_symbol(),
             None,
             "METTLE should stop after the paper finite-stream symbol count"
         );
@@ -1453,7 +1436,7 @@ mod tests {
             "METTLE should retain the incomplete quorum feedback for this round"
         );
         assert_eq!(
-            sender.next_extra_symbol(&shared),
+            sender.next_extra_symbol(),
             Some((0, 0)),
             "METTLE repair should restart the finite stream so lost bins can be retransmitted"
         );
@@ -1482,7 +1465,7 @@ mod tests {
         );
 
         assert_eq!(
-            sender.next_extra_symbol(&shared),
+            sender.next_extra_symbol(),
             Some((0, 0)),
             "a later incomplete round should start another retransmission pass"
         );
@@ -1672,7 +1655,6 @@ mod tests {
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,
-            payload_emitted: false,
         }
     }
 }

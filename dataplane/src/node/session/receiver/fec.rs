@@ -3,10 +3,11 @@ use std::num::NonZeroUsize;
 use std::sync::Arc;
 
 use nextmini_messages::lossless_session::{
-    self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport,
+    self, FecScheme, LosslessSessionMode, NeedBlock, NeedReport, max_fec_need_blocks,
 };
 use tracing::warn;
 
+use crate::node::packet::{LOSSLESS_TRANSPORT_OVERHEAD, MAX_FRAMED_PACKET_SIZE};
 use crate::node::session::api::InboundFrame;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Decoder};
@@ -233,6 +234,11 @@ impl FecReceiver {
 
     /// Build receiver-side FEC state from the negotiated symbol geometry.
     pub(super) fn new(geometry: SymbolGeometry) -> Self {
+        assert_eq!(
+            max_fec_need_blocks(MAX_FRAMED_PACKET_SIZE, LOSSLESS_TRANSPORT_OVERHEAD),
+            Some(6545),
+            "FEC Need sizing must match the lossless packet envelope"
+        );
         Self {
             geometry,
             blocks: BTreeMap::new(),
@@ -315,7 +321,6 @@ impl FecReceiver {
         state.symbols.insert(symbol.symbol_id, stored_payload);
         self.stats
             .record_accepted(symbol.tree_id, symbol.symbol_id, fec_mode.symbols_per_block);
-        self.maybe_log_progress(shared);
         true
     }
 
@@ -492,7 +497,6 @@ impl FecReceiver {
                 let decoded_count = decoded_sources.len();
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::Pending, decoded_count);
-                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await;
                 false
@@ -500,14 +504,12 @@ impl FecReceiver {
             MettleDecodeOutcome::InvalidSymbol => {
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::InvalidSymbol, 0);
-                self.maybe_log_progress(shared);
                 false
             }
             MettleDecodeOutcome::Complete { decoded_sources } => {
                 let decoded_count = decoded_sources.len();
                 self.stats
                     .record_mettle_decode(MettleDecodeStatus::Complete, decoded_count);
-                self.maybe_log_progress(shared);
                 self.write_decoded_mettle_sources(shared, block_id, decoded_sources)
                     .await;
                 self.complete_mettle_block(shared, block_id).await;
@@ -558,7 +560,6 @@ impl FecReceiver {
         self.blocks.remove(&block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
-            self.log_tree_stats(shared, "object_complete");
             self.report_mettle_complete(shared).await;
         }
     }
@@ -586,7 +587,6 @@ impl FecReceiver {
         self.blocks.remove(&block_id);
         if shared.has_all_blocks() {
             shared.mark_object_complete();
-            self.log_tree_stats(shared, "object_complete");
         }
     }
 
@@ -630,6 +630,8 @@ impl FecReceiver {
             return Some(NeedReport::Complete);
         }
         let mut blocks = Vec::new();
+        let max_blocks = max_fec_need_blocks(MAX_FRAMED_PACKET_SIZE, LOSSLESS_TRANSPORT_OVERHEAD)
+            .expect("lossless transport must fit a FEC Need frame");
         for block_id in 0..plan.total_blocks() {
             if shared.complete_blocks.contains(&block_id) {
                 continue;
@@ -648,6 +650,9 @@ impl FecReceiver {
                 block_id,
                 deficit_symbols,
             });
+            if blocks.len() == max_blocks {
+                break;
+            }
         }
         Some(NeedReport::Fec { blocks })
     }
@@ -678,7 +683,6 @@ impl FecReceiver {
         self.last_round_need = Some(report.clone());
         shared.send_fec_need(round_id, &report).await;
         self.complete_reported = matches!(report, NeedReport::Complete);
-        self.log_tree_stats(shared, "source_done");
     }
 
     fn record_reported_mettle_repairs(
@@ -723,15 +727,6 @@ impl FecReceiver {
 
     pub(super) fn is_complete(&self) -> bool {
         self.complete_reported
-    }
-
-    fn maybe_log_progress(&mut self, _shared: &super::ReceiverShared) {
-        // Intentionally empty: the receiver progress log was temporary
-        // instrumentation and adds work on every accepted METTLE bin.
-    }
-
-    fn log_tree_stats(&self, _shared: &super::ReceiverShared, _reason: &'static str) {
-        // Intentionally empty: detailed tree stats were temporary instrumentation.
     }
 }
 

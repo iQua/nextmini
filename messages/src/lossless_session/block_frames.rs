@@ -27,6 +27,14 @@ const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
 #[cfg(test)]
 const BLOCK_SYMBOL_TREE_ID_OFFSET: usize = LosslessSessionHeader::LEN + 8 + 4;
 
+/// Return the framed packet size for one BlockSymbol payload.
+pub fn block_symbol_packet_len(payload_len: usize, transport_overhead: usize) -> Option<usize> {
+    transport_overhead
+        .checked_add(LosslessSessionHeader::LEN)?
+        .checked_add(BLOCK_SYMBOL_FIXED_BODY_LEN)?
+        .checked_add(payload_len)
+}
+
 /// Encode a `BlockSymbol` frame into a fresh `Vec<u8>`.
 pub fn encode_block_symbol(
     session_id: u64,

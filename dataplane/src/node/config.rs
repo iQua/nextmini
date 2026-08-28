@@ -191,6 +191,16 @@ pub struct LocalConfig {
     #[arg(long)]
     pub channel_capacity: usize,
 
+    /// Per-child pending packet capacity in child-scoped fan-out mode.
+    /// When omitted, this inherits `channel_capacity`.
+    ///
+    /// This capacity applies once per scoped node. Increasing it adds buffering on top of the
+    /// scheduler channel and queue, and delays the `WouldBlock` feedback that drives sender
+    /// tree-switching. Experiments should set it explicitly when that tradeoff matters.
+    #[default(None)]
+    #[arg(long)]
+    pub fanout_pending_capacity: Option<usize>,
+
     /// The address of the local network interface to use for communicating between nodes on the same subnet.
     #[default("".to_string())]
     #[arg(long)]
@@ -392,7 +402,16 @@ impl LocalConfig {
     #[allow(dead_code)]
     pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
         let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
-        Ok(LocalConfig::from(&mut opt))
+        let mut config = LocalConfig::from(&mut opt);
+        config.normalize();
+        Ok(config)
+    }
+
+    /// Returns the normalized per-scoped-node fan-out pending capacity.
+    pub fn effective_fanout_pending_capacity(&self) -> usize {
+        self.fanout_pending_capacity
+            .unwrap_or(self.channel_capacity)
+            .max(1)
     }
 
     /// Converts IP address to node ID, supporting both TUN and user space networks.
@@ -487,10 +506,16 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
-        cfgs.normalize_controller_addr();
+        cfgs.normalize();
         cfgs.populate_runtime_defaults();
 
         cfgs
+    }
+
+    /// Normalizes user-provided values that have runtime validity constraints.
+    pub fn normalize(&mut self) {
+        self.normalize_controller_addr();
+        self.fanout_pending_capacity = Some(self.effective_fanout_pending_capacity());
     }
 
     fn normalize_controller_addr(&mut self) {
@@ -616,8 +641,6 @@ impl LocalConfig {
             self.num_packet_processors = num_cpus::get();
         }
 
-        self.lossless_runtime_config.ingress_feature = self.feature.clone();
-        self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
         let lossless_control_capacity = self.channel_capacity.max(1024);
         self.lossless_runtime_config.runtime_message_capacity = lossless_control_capacity;
         self.lossless_runtime_config.session_control_inbox_capacity = lossless_control_capacity;
@@ -743,16 +766,6 @@ pub struct LosslessConfig {
     #[serde(default)]
     pub cloudcast_stripe_tree_ids: Vec<u16>,
 
-    /// Effective processor ingress policy copied from `LocalConfig.feature`.
-    /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
-    #[serde(skip)]
-    pub ingress_feature: Feature,
-
-    /// Effective ingress backpressure policy copied from `LocalConfig.channel_backpressure`.
-    /// Runtime preflight uses this to reject FEC modes that can silently drop on full queues.
-    #[serde(skip)]
-    pub ingress_channel_backpressure: bool,
-
     /// Capacity of the runtime actor mailbox that forwards inbound lossless
     /// frames and lifecycle commands to the background session runtime.
     #[serde(skip)]
@@ -786,8 +799,6 @@ impl Default for LosslessConfig {
             mettle_default_coded_rate_den: 1,
             cloudcast_stripes: 0,
             cloudcast_stripe_tree_ids: Vec::new(),
-            ingress_feature: Feature::Sequential,
-            ingress_channel_backpressure: true,
             runtime_message_capacity: 1024,
             session_control_inbox_capacity: 1024,
             session_inbox_capacity: 1024,
@@ -1010,6 +1021,40 @@ mod tests {
     }
 
     #[test]
+    fn fanout_pending_capacity_defaults_to_channel_capacity() {
+        let cfg = LocalConfig {
+            channel_capacity: 37,
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 37);
+    }
+
+    #[test]
+    fn fanout_pending_capacity_accepts_an_explicit_value() {
+        let cfg = LocalConfig {
+            fanout_pending_capacity: Some(11),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 11);
+    }
+
+    #[test]
+    fn fanout_pending_capacity_is_clamped_to_one() {
+        let mut cfg = LocalConfig {
+            channel_capacity: 0,
+            fanout_pending_capacity: Some(0),
+            ..Default::default()
+        };
+
+        cfg.normalize();
+
+        assert_eq!(cfg.fanout_pending_capacity, Some(1));
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 1);
+    }
+
+    #[test]
     fn unordered_mode_disables_tolerances() {
         let cfg = LocalConfig {
             enforce_tcp_order: false,
@@ -1083,33 +1128,6 @@ mod tests {
         assert!(lossless.fec_default_tree_weights.is_empty());
         assert_eq!(lossless.mettle_default_coded_rate_num, 1);
         assert_eq!(lossless.mettle_default_coded_rate_den, 1);
-        assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
-        assert!(
-            lossless.ingress_channel_backpressure,
-            "lossless defaults should assume backpressured ingress unless synced from LocalConfig"
-        );
-    }
-
-    #[test]
-    fn populate_runtime_defaults_syncs_lossless_ingress_policy() {
-        let mut cfg = LocalConfig {
-            feature: super::Feature::Concurrent,
-            channel_backpressure: false,
-            private_network_addr: "127.0.0.1".to_string(),
-            public_network_addr: "127.0.0.1".to_string(),
-            ..Default::default()
-        };
-
-        cfg.populate_runtime_defaults();
-
-        assert_eq!(
-            cfg.lossless_runtime_config.ingress_feature,
-            super::Feature::Concurrent
-        );
-        assert!(
-            !cfg.lossless_runtime_config.ingress_channel_backpressure,
-            "runtime ingress backpressure policy must mirror LocalConfig.channel_backpressure"
-        );
     }
 
     #[test]
