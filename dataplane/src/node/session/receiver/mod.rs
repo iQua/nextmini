@@ -12,8 +12,8 @@ mod plain;
 
 use std::collections::BTreeSet;
 use std::collections::VecDeque;
-use std::io::{Seek, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Unbounded};
+use std::os::unix::fs::FileExt;
 
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -551,6 +551,39 @@ fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
     }
 }
 
+/// Grow `buf` to `len` zero bytes, returning false if the allocation fails.
+///
+/// An empty buffer (the normal case) is replaced by a zeroed allocation, which the allocator
+/// serves with lazily zeroed pages instead of memsetting the whole object up front. A fresh
+/// `try_reserve_exact` + `resize` would touch every page, so the fallible allocation is done
+/// with `alloc_zeroed` directly to keep the "fail and warn instead of abort" behavior.
+fn try_grow_sink_buffer(buf: &mut Vec<u8>, len: usize) -> bool {
+    if !buf.is_empty() {
+        if buf.try_reserve_exact(len - buf.len()).is_err() {
+            return false;
+        }
+        buf.resize(len, 0);
+        return true;
+    }
+    if len == 0 {
+        return true;
+    }
+    let Ok(layout) = std::alloc::Layout::array::<u8>(len) else {
+        return false;
+    };
+    // SAFETY: `layout` has non-zero size; a non-null result is a `len`-byte allocation from the
+    // global allocator with u8 alignment, fully initialized to zero, which is exactly what
+    // `Vec<u8>::from_raw_parts(ptr, len, len)` requires.
+    unsafe {
+        let ptr = std::alloc::alloc_zeroed(layout);
+        if ptr.is_null() {
+            return false;
+        }
+        *buf = Vec::from_raw_parts(ptr, len, len);
+    }
+    true
+}
+
 impl ReceiverShared {
     /// Return whether the receiver has completed every planned block.
     fn has_all_blocks(&self) -> bool {
@@ -622,8 +655,8 @@ impl ReceiverShared {
             let Some(object_len) = plan.total_bytes_usize() else {
                 return;
             };
-            if guard.len() < object_len {
-                guard.resize(object_len, 0);
+            if guard.len() < object_len && !try_grow_sink_buffer(&mut guard, object_len) {
+                return;
             }
 
             let start = usize::try_from(span.offset()).unwrap_or(0);
@@ -634,9 +667,10 @@ impl ReceiverShared {
         }
 
         if let Some(sink) = &self.cfg.sink_file {
-            let mut guard = sink.lock().await;
-            if guard.seek(SeekFrom::Start(span.offset())).is_err()
-                || guard.write_all(&payload[..copy_len]).is_err()
+            let guard = sink.lock().await;
+            if guard
+                .write_all_at(&payload[..copy_len], span.offset())
+                .is_err()
             {
                 warn!(
                     session_id = self.session_id,
@@ -695,9 +729,10 @@ impl ReceiverShared {
             else {
                 return;
             };
-            let mut guard = sink.lock().await;
-            if guard.seek(SeekFrom::Start(file_offset)).is_err()
-                || guard.write_all(&payload[..copy_len]).is_err()
+            let guard = sink.lock().await;
+            if guard
+                .write_all_at(&payload[..copy_len], file_offset)
+                .is_err()
             {
                 warn!(
                     session_id = self.session_id,
@@ -714,16 +749,12 @@ impl ReceiverShared {
     async fn ensure_sink_buffer_len(&self, object_len: usize) -> bool {
         if let Some(sink) = &self.cfg.sink_buffer {
             let mut guard = sink.lock().await;
-            if guard.len() < object_len {
-                let additional = object_len - guard.len();
-                if guard.try_reserve_exact(additional).is_err() {
-                    warn!(
-                        session_id = self.session_id,
-                        object_len, "Lossless receiver failed to reserve sink buffer for manifest"
-                    );
-                    return false;
-                }
-                guard.resize(object_len, 0);
+            if guard.len() < object_len && !try_grow_sink_buffer(&mut guard, object_len) {
+                warn!(
+                    session_id = self.session_id,
+                    object_len, "Lossless receiver failed to reserve sink buffer for manifest"
+                );
+                return false;
             }
         }
 
@@ -833,6 +864,28 @@ impl ReceiverShared {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn grows_empty_sink_buffer_with_zeroes() {
+        let mut buf = Vec::new();
+        assert!(super::try_grow_sink_buffer(&mut buf, 4096));
+        assert_eq!(buf.len(), 4096);
+        assert!(buf.iter().all(|byte| *byte == 0));
+    }
+
+    #[test]
+    fn grows_populated_sink_buffer_preserving_contents() {
+        let mut buf = vec![1, 2, 3];
+        assert!(super::try_grow_sink_buffer(&mut buf, 6));
+        assert_eq!(buf, vec![1, 2, 3, 0, 0, 0]);
+    }
+
+    #[test]
+    fn rejects_impossible_sink_buffer_size() {
+        let mut buf = Vec::new();
+        assert!(!super::try_grow_sink_buffer(&mut buf, usize::MAX));
+        assert!(buf.is_empty());
+    }
+
     use std::collections::{BTreeMap, BTreeSet};
     use std::net::Ipv4Addr;
     use std::sync::Arc;
