@@ -88,6 +88,17 @@ impl PacketBuf {
         }
     }
 
+    /// Consumes the buffer and freezes its contents into shared `Bytes`.
+    ///
+    /// A pooled buffer is detached from the pool: it is not returned on drop, so the pool
+    /// allocates a replacement on demand and never hands out storage the `Bytes` still views.
+    pub fn into_bytes(mut self) -> Bytes {
+        self.buf
+            .take()
+            .expect("packet buffer already released")
+            .freeze()
+    }
+
     /// Returns the current length of valid data.
     pub fn len(&self) -> usize {
         self.buf.as_ref().map(|b| b.len()).unwrap_or(0)
@@ -263,6 +274,15 @@ impl Packet {
     pub fn tcp_payload(&self) -> Option<&[u8]> {
         let (start, end) = self.tcp_payload_bounds()?;
         Some(&self.bytes()[start..end])
+    }
+
+    /// Consumes the packet and returns its TCP payload as a zero-copy `Bytes` view of the packet
+    /// storage, or gives the packet back untouched when it carries no TCP payload.
+    pub fn into_tcp_payload_bytes(self) -> Result<Bytes, Packet> {
+        let Some((start, end)) = self.tcp_payload_bounds() else {
+            return Err(self);
+        };
+        Ok(self.buffer.into_bytes().slice(start..end))
     }
 
     /// Returns the FEC tree id when this packet carries a lossless-session FEC data frame.
@@ -529,6 +549,55 @@ impl Clone for Packet {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn into_tcp_payload_bytes_returns_payload_of_unpooled_packet() {
+        let packet = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            b"payload",
+        );
+        let payload = packet.into_tcp_payload_bytes().expect("tcp payload");
+        assert_eq!(&payload[..], b"payload");
+    }
+
+    #[test]
+    fn into_tcp_payload_bytes_survives_pool_reuse_for_pooled_packets() {
+        let wire = Packet::build_ipv4_tcp_packet(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            b"pooled payload",
+        );
+        let mut buf = PacketBuf::new();
+        buf.prepare_uninit(wire.packet_size)
+            .copy_from_slice(wire.bytes());
+        let payload = Packet::new(wire.packet_size, buf)
+            .into_tcp_payload_bytes()
+            .expect("tcp payload");
+
+        // Churn the pool: a buffer wrongly returned to it would be handed out and overwritten.
+        for _ in 0..4 {
+            let mut churn = PacketBuf::new();
+            churn.prepare_uninit(RECEIVE_BUF_SIZE).fill(0xFF);
+        }
+        assert_eq!(&payload[..], b"pooled payload");
+    }
+
+    #[test]
+    fn into_tcp_payload_bytes_returns_non_tcp_packet_unchanged() {
+        let mut bytes = vec![0u8; 40];
+        bytes[0] = 0x45;
+        bytes[9] = 17; // UDP
+        let packet = Packet::from_vec(bytes.clone());
+        let packet = packet
+            .into_tcp_payload_bytes()
+            .expect_err("udp packet has no tcp payload");
+        assert_eq!(packet.bytes(), &bytes[..]);
+    }
 
     #[test]
     fn lossless_packet_layout_is_stable() {

@@ -1511,9 +1511,10 @@ impl Processor {
         // checks if the next hop is the dst node
         if next_hop_id == self.routing_table.local_id {
             // if possible, deliver to the lossless transport subsystem
-            if self.try_deliver_lossless(&packet).await {
-                return;
-            }
+            packet = match self.try_deliver_lossless(packet).await {
+                Ok(()) => return,
+                Err(packet) => packet,
+            };
 
             // local TUN delivery: use the destination IP address to distinguish between the TUN interface
             // and user-space TCP clients or servers
@@ -1558,15 +1559,16 @@ impl Processor {
         }
     }
 
-    async fn try_deliver_lossless(&mut self, packet: &Packet) -> bool {
+    /// Hand a lossless-session packet to the session runtime, or give it back when it is not one.
+    ///
+    /// Delivery consumes the packet so its TCP payload can move to the session runtime as a
+    /// zero-copy view; pooled receive buffers are detached from the pool in the process.
+    async fn try_deliver_lossless(&mut self, packet: Packet) -> Result<(), Packet> {
         let Some(handle) = self.lossless_handle.clone() else {
-            return false;
+            return Err(packet);
         };
         let Some(session_id) = packet.lossless_session_id() else {
-            return false;
-        };
-        let Some(payload) = packet.tcp_payload() else {
-            return false;
+            return Err(packet);
         };
 
         let src_node = self.config.ip_to_node_id(packet.flow_id.src_ip());
@@ -1576,18 +1578,12 @@ impl Processor {
             Some(src_node)
         };
 
-        let payload_vec = payload.to_vec();
+        let bytes = packet.into_tcp_payload_bytes()?;
 
         handle
-            .deliver(
-                session_id,
-                LosslessInboundFrame {
-                    bytes: payload_vec,
-                    peer_id,
-                },
-            )
+            .deliver(session_id, LosslessInboundFrame { bytes, peer_id })
             .await;
-        true
+        Ok(())
     }
 }
 

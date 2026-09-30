@@ -920,7 +920,8 @@ mod tests {
             bytes: lossless_session::encode_control(
                 receiver.shared.session_id,
                 &LosslessSessionControl::SourceDone { round_id: 0 },
-            ),
+            )
+            .into(),
             peer_id: Some(SOURCE_NODE_ID),
         };
         let expected = NeedReport::Fec {
@@ -942,7 +943,8 @@ mod tests {
                     1,
                     0,
                     &[3, 4],
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1204,7 +1206,8 @@ mod tests {
         let mut receiver = FecReceiver::new(geometry);
         let payload = vec![0; geometry.symbol_size()];
         let frame = InboundFrame {
-            bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload),
+            bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload)
+                .into(),
             peer_id: Some(SOURCE_NODE_ID),
         };
 
@@ -1266,7 +1269,8 @@ mod tests {
                         u32::try_from(bin_id).expect("small test bin id"),
                         0,
                         &payload,
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 })
                 .await;
@@ -1306,7 +1310,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -1317,7 +1322,8 @@ mod tests {
             let payload = vec![7; geometry.symbol_size()];
             data_tx
                 .send(InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 0, &payload),
+                    bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 0, &payload)
+                        .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 })
                 .await
@@ -1360,7 +1366,8 @@ mod tests {
                     0,
                     0,
                     &[1],
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1387,7 +1394,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1439,7 +1447,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1456,7 +1465,8 @@ mod tests {
             bytes: lossless_session::encode_control(
                 receiver.shared.session_id,
                 &LosslessSessionControl::SourceDone { round_id: 0 },
-            ),
+            )
+            .into(),
             peer_id: Some(SOURCE_NODE_ID),
         };
         let expected = NeedReport::Plain {
@@ -1477,7 +1487,8 @@ mod tests {
                     receiver.shared.session_id,
                     1,
                     b"ijklmnop",
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1500,7 +1511,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1522,7 +1534,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1540,7 +1553,8 @@ mod tests {
                     receiver.shared.session_id,
                     1,
                     b"abcdefgh",
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1558,7 +1572,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 1 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1577,7 +1592,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1603,7 +1619,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 1 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1622,7 +1639,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1638,7 +1656,8 @@ mod tests {
     async fn plain_receiver_ignores_duplicate_data_before_source_done() {
         let (mut receiver, mut packet_rx) = plain_test_receiver(2, BTreeSet::from([0])).await;
         let frame = InboundFrame {
-            bytes: lossless_session::encode_block_data(receiver.shared.session_id, 0, b"abcdefgh"),
+            bytes: lossless_session::encode_block_data(receiver.shared.session_id, 0, b"abcdefgh")
+                .into(),
             peer_id: Some(SOURCE_NODE_ID),
         };
 
@@ -1672,7 +1691,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1691,7 +1711,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -1945,7 +1966,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     receiver.shared.session_id,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await;
@@ -2056,7 +2078,8 @@ mod tests {
                             mode: LosslessSessionMode::Plain,
                         },
                     },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2069,7 +2092,7 @@ mod tests {
 
         data_tx
             .send(InboundFrame {
-                bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh"),
+                bytes: lossless_session::encode_block_data(11, 0, b"abcdefgh").into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2079,7 +2102,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     11,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2098,7 +2122,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     11,
                     &LosslessSessionControl::SourceDone { round_id: 1 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2209,7 +2234,8 @@ mod tests {
                             mode: LosslessSessionMode::Plain,
                         },
                     },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2222,7 +2248,7 @@ mod tests {
 
         data_tx
             .send(InboundFrame {
-                bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh"),
+                bytes: lossless_session::encode_block_data(12, 0, b"abcdefgh").into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2232,7 +2258,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     12,
                     &LosslessSessionControl::SourceDone { round_id: 0 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -2256,7 +2283,8 @@ mod tests {
                 bytes: lossless_session::encode_control(
                     12,
                     &LosslessSessionControl::SourceDone { round_id: 1 },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await

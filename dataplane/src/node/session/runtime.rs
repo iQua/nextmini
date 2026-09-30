@@ -902,7 +902,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -933,7 +934,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -947,7 +949,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -976,7 +979,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 2 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -998,7 +1002,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 1 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1026,7 +1031,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 2 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1064,7 +1070,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1083,7 +1090,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 1 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1097,7 +1105,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 2 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1145,7 +1154,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1203,7 +1213,8 @@ mod tests {
                     bytes: lossless_session::encode_control(
                         session_id,
                         &LosslessSessionControl::SourceDone { round_id: 0 },
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -1254,7 +1265,7 @@ mod tests {
             .deliver_frame(
                 session_id,
                 InboundFrame {
-                    bytes,
+                    bytes: bytes.into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )

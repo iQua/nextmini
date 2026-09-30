@@ -136,7 +136,7 @@ pub fn block_data_frame(
     payload: &[u8],
 ) -> InboundFrame {
     InboundFrame {
-        bytes: lossless_session::encode_block_data(session_id, block_id, payload),
+        bytes: lossless_session::encode_block_data(session_id, block_id, payload).into(),
         peer_id: Some(peer_id),
     }
 }
@@ -177,7 +177,7 @@ pub fn source_done_frame(session_id: u64, peer_id: usize, round_id: u32) -> Inbo
 
 fn control_frame(session_id: u64, peer_id: usize, control: LosslessSessionControl) -> InboundFrame {
     InboundFrame {
-        bytes: lossless_session::encode_control(session_id, &control),
+        bytes: lossless_session::encode_control(session_id, &control).into(),
         peer_id: Some(peer_id),
     }
 }
@@ -200,7 +200,7 @@ pub fn legacy_control_frame(
     .encode_into(&mut bytes[..LosslessSessionHeader::LEN]);
     bytes[LosslessSessionHeader::LEN..].copy_from_slice(body);
     InboundFrame {
-        bytes,
+        bytes: bytes.into(),
         peer_id: Some(peer_id),
     }
 }

@@ -608,7 +608,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             },
             &mut NoopMode,
@@ -630,7 +630,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: None,
             },
             &mut NoopMode,
@@ -644,7 +644,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             },
             &mut NoopMode,
@@ -652,7 +652,7 @@ mod tests {
         shared.freeze_active_quorum();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(23),
             },
             &mut NoopMode,
@@ -676,7 +676,7 @@ mod tests {
 
         ctrl_tx
             .send(InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             })
             .await
@@ -687,7 +687,7 @@ mod tests {
 
         ctrl_tx
             .send(InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(23),
             })
             .await
@@ -710,7 +710,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             },
             &mut NoopMode,
@@ -726,7 +726,8 @@ mod tests {
                         round_id: 0,
                         report: NeedReport::Complete,
                     },
-                ),
+                )
+                .into(),
                 peer_id: Some(23),
             },
             &mut mode,
@@ -740,7 +741,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             },
             &mut NoopMode,
@@ -756,7 +757,8 @@ mod tests {
                         round_id: 0,
                         report: NeedReport::Complete,
                     },
-                ),
+                )
+                .into(),
                 peer_id: None,
             },
             &mut mode,
@@ -770,7 +772,7 @@ mod tests {
         let mut shared = test_sender_shared();
         shared.handle_control(
             InboundFrame {
-                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(7, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             },
             &mut NoopMode,
@@ -833,7 +835,7 @@ mod tests {
 
         ctrl_tx
             .send(InboundFrame {
-                bytes: lossless_session::encode_control(9, &LosslessSessionControl::Ready),
+                bytes: lossless_session::encode_control(9, &LosslessSessionControl::Ready).into(),
                 peer_id: Some(22),
             })
             .await
@@ -847,7 +849,8 @@ mod tests {
                         round_id: 0,
                         report: NeedReport::Complete,
                     },
-                ),
+                )
+                .into(),
                 peer_id: Some(22),
             })
             .await

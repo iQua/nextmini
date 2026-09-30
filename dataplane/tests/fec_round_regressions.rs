@@ -251,7 +251,8 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
                             )),
                         },
                     },
-                ),
+                )
+                .into(),
                 peer_id: Some(SOURCE_NODE_ID),
             },
         )
@@ -272,7 +273,8 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
                         symbol_id as u32,
                         if symbol_id % 2 == 0 { 1 } else { 3 },
                         chunk,
-                    ),
+                    )
+                    .into(),
                     peer_id: Some(SOURCE_NODE_ID),
                 },
             )
@@ -302,7 +304,7 @@ async fn completed_fec_receiver_replays_complete_on_duplicate_source_done_only()
         .deliver(
             session_id,
             InboundFrame {
-                bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]),
+                bytes: lossless_session::encode_block_symbol(session_id, 0, 0, 1, &[1u8, 2]).into(),
                 peer_id: Some(SOURCE_NODE_ID),
             },
         )

@@ -727,7 +727,8 @@ fn fec_status_frame(
         bytes: lossless_session::encode_control(
             session_id,
             &LosslessSessionControl::Need { round_id, report },
-        ),
+        )
+        .into(),
         peer_id: Some(peer_id),
     }
 }

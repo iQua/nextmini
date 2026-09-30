@@ -2,6 +2,7 @@
 
 use std::fmt::{Display, Formatter};
 
+use bytes::Bytes;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use nextmini_messages::lossless_session::NeedReport;
@@ -19,7 +20,7 @@ pub use crate::node::session::runtime::LosslessRuntimeHandle;
 #[derive(Clone, Debug)]
 pub struct InboundFrame {
     /// Raw session frame bytes.
-    pub bytes: Vec<u8>,
+    pub bytes: Bytes,
     /// Optional peer identity derived from the lower transport path.
     pub peer_id: Option<usize>,
 }

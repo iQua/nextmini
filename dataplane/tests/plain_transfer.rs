@@ -58,7 +58,8 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -87,7 +88,7 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
     );
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_block_data(SESSION_ID, 0, b"abcdefghijklmnop"),
+        bytes: lossless_session::encode_block_data(SESSION_ID, 0, b"abcdefghijklmnop").into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -97,7 +98,8 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
         bytes: lossless_session::encode_control(
             SESSION_ID,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -169,7 +171,8 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -185,7 +188,7 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
     ));
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_block_data(SESSION_ID + 20, 0, b"abcdefghijklmnop"),
+        bytes: lossless_session::encode_block_data(SESSION_ID + 20, 0, b"abcdefghijklmnop").into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -194,7 +197,8 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
         bytes: lossless_session::encode_control(
             SESSION_ID + 20,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -225,7 +229,8 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
         bytes: lossless_session::encode_control(
             SESSION_ID + 20,
             &LosslessSessionControl::SourceDone { round_id: 1 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -289,7 +294,8 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -297,7 +303,7 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
     let _ = common::recv_packet(&mut capture.packet_rx).await;
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_block_data(SESSION_ID + 21, 0, b"abcdefghijklmnop"),
+        bytes: lossless_session::encode_block_data(SESSION_ID + 21, 0, b"abcdefghijklmnop").into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -306,7 +312,8 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
         bytes: lossless_session::encode_control(
             SESSION_ID + 21,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -359,7 +366,8 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -375,7 +383,7 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
     ));
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_block_data(SESSION_ID + 2, 0, b"abcdefghijklmnop"),
+        bytes: lossless_session::encode_block_data(SESSION_ID + 2, 0, b"abcdefghijklmnop").into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -398,7 +406,8 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
         bytes: lossless_session::encode_control(
             SESSION_ID + 2,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -464,7 +473,8 @@ async fn plain_receiver_ignores_removed_legacy_control_ids() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -548,7 +558,8 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
                 &LosslessSessionControl::Manifest {
                     manifest: manifest.clone(),
                 },
-            ),
+            )
+            .into(),
             peer_id: Some(SOURCE_NODE_ID),
         })
         .await
@@ -608,7 +619,8 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -634,7 +646,8 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -648,7 +661,7 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
     );
 
     tx.send(InboundFrame {
-        bytes: lossless_session::encode_block_data(SESSION_ID + 5, 0, b"abcdefghijklmnop"),
+        bytes: lossless_session::encode_block_data(SESSION_ID + 5, 0, b"abcdefghijklmnop").into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -658,7 +671,8 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         bytes: lossless_session::encode_control(
             SESSION_ID + 5,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
