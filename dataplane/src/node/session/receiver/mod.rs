@@ -656,6 +656,12 @@ impl ReceiverShared {
                 return;
             };
             if guard.len() < object_len && !try_grow_sink_buffer(&mut guard, object_len) {
+                warn!(
+                    session_id = self.session_id,
+                    block_id,
+                    object_len,
+                    "Lossless receiver failed to grow sink buffer; dropping block"
+                );
                 return;
             }
 
