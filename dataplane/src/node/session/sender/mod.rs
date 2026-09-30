@@ -124,18 +124,21 @@ impl BlockSource {
     }
 
     /// Materialize one logical block payload for the requested span.
-    fn block_payload(&self, span: BlockSpan) -> Vec<u8> {
+    ///
+    /// In-range spans are zero-copy slices of the source; synthetic and short-tail spans are
+    /// freshly allocated.
+    fn block_payload(&self, span: BlockSpan) -> Bytes {
         let len = span.len();
         if self.synthetic {
             let mut out = vec![0u8; len];
             fill_synthetic_payload(span.offset(), self.total_bytes, &mut out);
-            return out;
+            return Bytes::from(out);
         }
         let Some(offset) = usize::try_from(span.offset()).ok() else {
-            return vec![0u8; len];
+            return Bytes::from(vec![0u8; len]);
         };
         if offset + len <= self.bytes.len() {
-            return self.bytes.slice(offset..offset + len).to_vec();
+            return self.bytes.slice(offset..offset + len);
         }
 
         let mut out = vec![0u8; len];
@@ -143,7 +146,7 @@ impl BlockSource {
             let available = len.min(self.bytes.len() - offset);
             out[..available].copy_from_slice(&self.bytes[offset..offset + available]);
         }
-        out
+        Bytes::from(out)
     }
 
     /// Materialize one padded block image sized for fixed-width source symbols.
@@ -914,7 +917,7 @@ mod tests {
         let source = BlockSource::new(Bytes::from_static(b"ab"), 2);
         let plan = BlockPlan::new(8, 4).expect("valid plan");
         let payload = source.block_payload(plan.block_span(1).expect("second block"));
-        assert_eq!(payload, b"\0\0\0\0");
+        assert_eq!(&payload[..], b"\0\0\0\0");
     }
 
     #[test]

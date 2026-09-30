@@ -366,6 +366,30 @@ impl Packet {
         lossless_meta: Option<LosslessTransportMeta>,
         payload: &[u8],
     ) -> Self {
+        Self::build_ipv4_tcp_packet_with_payload_writer(
+            src_ip,
+            src_port,
+            dst_ip,
+            dst_port,
+            lossless_meta,
+            payload.len(),
+            |buf| buf.extend_from_slice(payload),
+        )
+    }
+
+    /// Same packet layout as `build_ipv4_tcp_packet_with_lossless_meta`, but the payload is
+    /// appended by `write_payload` straight into the single packet allocation so callers can
+    /// encode a frame in place without an intermediate copy or a zero-filled payload region.
+    /// `write_payload` must append exactly `payload_len` bytes.
+    pub fn build_ipv4_tcp_packet_with_payload_writer(
+        src_ip: Ipv4Addr,
+        src_port: u16,
+        dst_ip: Ipv4Addr,
+        dst_port: u16,
+        lossless_meta: Option<LosslessTransportMeta>,
+        payload_len: usize,
+        write_payload: impl FnOnce(&mut Vec<u8>),
+    ) -> Self {
         let tcp_hlen = Self::TCP_BASE_HLEN
             + if lossless_meta.is_some() {
                 Self::LOSSLESS_META_OPTION_LEN
@@ -373,12 +397,13 @@ impl Packet {
                 0
             };
 
-        let total_len = Self::IP_HLEN + tcp_hlen + payload.len();
+        let total_len = Self::IP_HLEN + tcp_hlen + payload_len;
         debug_assert!(
             total_len <= MAX_FRAMED_PACKET_SIZE,
             "serialized IPv4 packet exceeds the framed packet limit"
         );
-        let mut buf = vec![0u8; total_len];
+        let mut buf = Vec::with_capacity(total_len);
+        buf.resize(Self::IP_HLEN + tcp_hlen, 0);
 
         // IPv4 header
         buf[0] = 0x45; // version=4, header length=5 words
@@ -407,7 +432,8 @@ impl Packet {
         }
 
         // Payload
-        buf[Self::IP_HLEN + tcp_hlen..].copy_from_slice(payload);
+        write_payload(&mut buf);
+        debug_assert_eq!(buf.len(), total_len, "payload writer length mismatch");
 
         Packet::from_vec(buf)
     }
@@ -503,6 +529,33 @@ impl Clone for Packet {
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn lossless_packet_layout_is_stable() {
+        let packet = Packet::build_ipv4_tcp_packet_with_lossless_meta(
+            Ipv4Addr::new(10, 0, 0, 1),
+            4000,
+            Ipv4Addr::new(10, 0, 0, 2),
+            5000,
+            Some(LosslessTransportMeta {
+                session_id: 0x0102_0304_0506_0708,
+                tree_id: Some(9),
+            }),
+            &[0xAA, 0xBB],
+        );
+        #[rustfmt::skip]
+        let expected: Vec<u8> = vec![
+            // IPv4: version/IHL, TOS, total length 58, id, flags, TTL 64, TCP, checksum, addrs.
+            0x45, 0, 0, 58, 0, 0, 0, 0, 64, 6, 0, 0, 10, 0, 0, 1, 10, 0, 0, 2,
+            // TCP: ports, seq, ack, data offset 9 words, PSH|ACK, window, checksum, urgent.
+            0x0f, 0xa0, 0x13, 0x88, 0, 0, 0, 0, 0, 0, 0, 0, 0x90, 0x18, 0, 0, 0, 0, 0, 0,
+            // Lossless option: kind, length, has-tree flag, pad, session id, tree id, pad.
+            Packet::LOSSLESS_META_OPTION_KIND, 16, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 9, 0, 0,
+            // Payload.
+            0xAA, 0xBB,
+        ];
+        assert_eq!(packet.bytes(), &expected[..]);
+    }
 
     fn make_tcp_packet(flags: u8, payload_len: usize) -> Packet {
         let ip_hlen = 20usize;
