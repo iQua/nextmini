@@ -118,6 +118,19 @@ send_sid = dp_src.send_data(
 print(dp_src.lossless_wait(send_sid, timeout_ms=60_000))
 ```
 
+To send a file without first copying it into Python memory, use `send_data_from_file`. It takes the same arguments as `send_data` with a file `path` in place of `buffer`, memory-maps the file read-only, and hands the mapping to the sender without copying. The file must not be modified or truncated while the session is running, and it must not be empty.
+
+```python
+send_sid = dp_src.send_data_from_file(
+    group_id=group_id,
+    dest_ip=group_ip,
+    receiver_ids=[2, 3],
+    path="/abs/path/to/weights.bin",
+    block_size=8192,
+)
+print(dp_src.lossless_wait(send_sid, timeout_ms=60_000))
+```
+
 ```python
 import asyncio
 import nextmini_py as nm
@@ -148,7 +161,7 @@ This is an intentional breaking change in the Python receive API: `receive_data(
 
 The sender fixes `total_bytes` and `block_size` in the first manifest for a session. Receivers only register by `(group_id, source_node_id)` plus optional port overrides, then read the reconstructed bytes from `get_data_buffer(...)`.
 
-The core methods are `send_data`, `receive_data`, `receive_data_async`, `lossless_wait`, `lossless_wait_async`, and `get_data_buffer`.
+The core methods are `send_data`, `send_data_from_file`, `receive_data`, `receive_data_async`, `lossless_wait`, `lossless_wait_async`, and `get_data_buffer`.
 
 ## Packet buffers
 
