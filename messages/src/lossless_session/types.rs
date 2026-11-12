@@ -217,7 +217,7 @@ pub struct LosslessSessionBlockSymbol {
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// Version 5 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
+/// Version 8 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
 /// -> Need` protocol. `Need` is the only live receiver-to-sender report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {
