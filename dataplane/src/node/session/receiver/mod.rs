@@ -20,15 +20,15 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    self, FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionManifest,
-    LosslessSessionMode, MissingBlockRange, NeedReport,
+    self, LosslessSessionControl, LosslessSessionManifest, LosslessSessionMode, MissingBlockRange,
+    NeedReport,
 };
 
 use crate::node::processor::ProcessorHandle;
 use crate::node::session::api::SessionId;
 use crate::node::session::api::{CompletedReceiverReplay, InboundFrame, LosslessRuntimeMessage};
 use crate::node::session::control;
-use crate::node::session::plan::{BlockPlan, SymbolGeometry};
+use crate::node::session::plan::BlockPlan;
 use crate::node::session::runtime::{ReceiverConfig, TransportRoute};
 use crate::node::session::timing;
 
@@ -242,31 +242,11 @@ impl SessionReceiver {
             return frame;
         }
 
-        if !self.source_done_requires_ready_data_drain() {
-            return frame;
-        }
-
         if let Ok(data_frame) = data_rx.try_recv() {
             self.pending_control_frames.push_front(frame);
             return data_frame;
         }
         frame
-    }
-
-    fn source_done_requires_ready_data_drain(&self) -> bool {
-        match &self.mode {
-            Some(ReceiverMode::Fec(_)) => {
-                self.shared
-                    .manifest
-                    .as_ref()
-                    .and_then(|manifest| match &manifest.mode {
-                        LosslessSessionMode::Fec(fec) => fec.scheme_kind(),
-                        LosslessSessionMode::Plain => None,
-                    })
-                    == Some(FecScheme::RaptorQ)
-            }
-            _ => true,
-        }
     }
 
     fn reported_complete(&self) -> bool {
@@ -412,11 +392,6 @@ impl SessionReceiver {
             );
             return;
         }
-        if let LosslessSessionMode::Fec(fec) = &manifest.mode
-            && !receiver_supports_fec_scheme(fec)
-        {
-            return;
-        }
 
         let Ok(block_size) = usize::try_from(manifest.block_size) else {
             return;
@@ -540,14 +515,6 @@ fn source_done_round(frame: &InboundFrame) -> Option<u32> {
     match control {
         LosslessSessionControl::SourceDone { round_id } => Some(round_id),
         _ => None,
-    }
-}
-
-fn receiver_supports_fec_scheme(fec: &LosslessSessionFecMode) -> bool {
-    match fec.scheme_kind() {
-        Some(FecScheme::RaptorQ) => true,
-        Some(FecScheme::Mettle) => true,
-        None => false,
     }
 }
 
@@ -681,71 +648,6 @@ impl ReceiverShared {
                 warn!(
                     session_id = self.session_id,
                     block_id, "Lossless receiver failed to write block to sink file"
-                );
-            }
-        }
-    }
-
-    /// Copy one contiguous run of decoded source symbols into the optional sinks.
-    pub(super) async fn write_symbol_run(
-        &self,
-        block_id: u64,
-        geometry: SymbolGeometry,
-        first_source_index: usize,
-        payload: &[u8],
-    ) {
-        let Some(plan) = self.plan else {
-            return;
-        };
-        let Some(span) = plan.block_span(block_id) else {
-            return;
-        };
-
-        let Some(symbol_offset) = first_source_index.checked_mul(geometry.symbol_size()) else {
-            return;
-        };
-        if symbol_offset >= span.len() {
-            return;
-        }
-        let copy_len = payload.len().min(span.len() - symbol_offset);
-        if copy_len == 0 {
-            return;
-        }
-        let Some(start) = usize::try_from(span.offset())
-            .ok()
-            .and_then(|offset| offset.checked_add(symbol_offset))
-        else {
-            return;
-        };
-        let Some(end) = start.checked_add(copy_len) else {
-            return;
-        };
-
-        if let Some(sink) = &self.cfg.sink_buffer {
-            let mut guard = sink.lock().await;
-            if end <= guard.len() {
-                guard[start..end].copy_from_slice(&payload[..copy_len]);
-            }
-        }
-
-        if let Some(sink) = &self.cfg.sink_file {
-            let Some(file_offset) = u64::try_from(symbol_offset)
-                .ok()
-                .and_then(|offset| span.offset().checked_add(offset))
-            else {
-                return;
-            };
-            let guard = sink.lock().await;
-            if guard
-                .write_all_at(&payload[..copy_len], file_offset)
-                .is_err()
-            {
-                warn!(
-                    session_id = self.session_id,
-                    block_id,
-                    first_source_index,
-                    bytes = copy_len,
-                    "Lossless receiver failed to write symbol run to sink file"
                 );
             }
         }
@@ -1012,7 +914,6 @@ mod tests {
             0,
             FecBlockState {
                 symbols: BTreeMap::from([(0, vec![1, 2])]),
-                ..Default::default()
             },
         )]);
         receiver.last_source_done_round_id = Some(0);
@@ -1149,147 +1050,6 @@ mod tests {
         assert!(!receiver.is_complete());
     }
 
-    #[test]
-    fn receiver_supports_mettle_for_small_experimental_geometry() {
-        const PAPER_SCALE_METTLE_K: u32 = 2400;
-
-        assert!(receiver_supports_fec_scheme(
-            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
-                PAPER_SCALE_METTLE_K,
-                vec![0],
-            )
-        ));
-        assert!(receiver_supports_fec_scheme(
-            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(16, vec![0])
-        ));
-        assert!(receiver_supports_fec_scheme(
-            &nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(4, vec![0])
-        ));
-    }
-
-    #[tokio::test]
-    async fn mettle_receiver_streams_without_retaining_session_symbol_payloads() {
-        let k = 131_072u32;
-        let block_size = 1_073_741_824u32;
-        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
-        let geometry = plan.symbol_geometry(k).expect("valid geometry");
-        let route = crate::node::session::runtime::TransportRoute {
-            src_ip: Ipv4Addr::new(10, 0, 0, 2),
-            dst_ip: Ipv4Addr::new(10, 0, 0, 1),
-            src_port: 4752,
-            dst_port: 5752,
-        };
-        let mut shared = ReceiverShared {
-            session_id: 33,
-            route,
-            local_node_id: RECEIVER_NODE_ID,
-            cfg: ReceiverConfig {
-                session_id: 33,
-                route,
-                local_node_id: RECEIVER_NODE_ID,
-                sink_buffer: None,
-                sink_file: None,
-                progress: None,
-                peer_report_timeout_ms: 200,
-                fec_enabled: true,
-                cloudcast: None,
-            },
-            processors: ProcessorHandle::new(Default::default()),
-            manifest: Some(LosslessSessionManifest {
-                block_size,
-                total_bytes: u64::from(block_size),
-                total_blocks: 1,
-                mode: LosslessSessionMode::Fec(
-                    nextmini_messages::lossless_session::LosslessSessionFecMode::new_mettle(
-                        k,
-                        vec![0],
-                    ),
-                ),
-            }),
-            plan: Some(plan),
-            complete_blocks: BTreeSet::new(),
-        };
-        let mut receiver = FecReceiver::new(geometry);
-        let payload = vec![0; geometry.symbol_size()];
-        let frame = InboundFrame {
-            bytes: lossless_session::encode_block_symbol(shared.session_id, 0, 0, 0, &payload)
-                .into(),
-            peer_id: Some(SOURCE_NODE_ID),
-        };
-
-        receiver.handle_block_symbol_frame(&mut shared, frame).await;
-
-        let state = receiver.blocks.get(&0).expect("METTLE block state");
-        assert!(
-            state.symbols.is_empty(),
-            "METTLE should stream bins into the decoder without retaining session payload entries"
-        );
-        assert!(state.mettle.is_some());
-        assert_eq!(
-            receiver.block_deficit(&shared, 0),
-            1,
-            "METTLE's finite stream reports incomplete as a completion probe, not a session repair budget"
-        );
-    }
-
-    #[tokio::test]
-    async fn mettle_receiver_reports_complete_as_soon_as_decoder_finishes() {
-        let (mut receiver, mut packet_rx) =
-            fec_test_receiver(8, BTreeSet::new(), BTreeMap::new()).await;
-        let geometry = receiver
-            .shared
-            .plan
-            .expect("test receiver has a plan")
-            .symbol_geometry(4)
-            .expect("valid geometry");
-        receiver.shared.manifest = Some(LosslessSessionManifest {
-            block_size: 8,
-            total_bytes: 8,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
-        });
-        receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
-
-        let source_symbol_bytes =
-            std::num::NonZeroUsize::new(geometry.symbol_size()).expect("non-zero symbol size");
-        let mut encoder = mettle::stream::Encoder::new_terminated(
-            mettle::MettleParams::new(mettle::OverheadRatio::ZERO),
-            source_symbol_bytes,
-            crate::node::session::fec::block_seed(receiver.shared.session_id, 0),
-            4,
-        );
-        let mut bins = Vec::new();
-        for source_id in 0..4u8 {
-            let source = [source_id, source_id + 1];
-            bins.extend(encoder.push_source(&source));
-        }
-        bins.extend(encoder.finish());
-
-        for bin in bins {
-            let (bin_id, payload) = bin.into_parts();
-            receiver
-                .handle_block_symbol_frame(InboundFrame {
-                    bytes: lossless_session::encode_block_symbol(
-                        receiver.shared.session_id,
-                        0,
-                        u32::try_from(bin_id).expect("small test bin id"),
-                        0,
-                        &payload,
-                    )
-                    .into(),
-                    peer_id: Some(SOURCE_NODE_ID),
-                })
-                .await;
-            if receiver.is_complete() {
-                break;
-            }
-        }
-
-        assert!(receiver.shared.has_all_blocks());
-        assert_eq!(recv_fec_need(&mut packet_rx).await, NeedReport::Complete);
-        assert!(receiver.is_complete());
-    }
-
     #[tokio::test]
     async fn fec_receiver_processes_source_done_without_waiting_for_late_data() {
         let (mut receiver, _packet_rx) =
@@ -1304,7 +1064,12 @@ mod tests {
             block_size: 8,
             total_bytes: 8,
             total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![0, 1])),
+            mode: LosslessSessionMode::Fec(
+                nextmini_messages::lossless_session::LosslessSessionFecMode::new_raptorq(
+                    4,
+                    vec![0, 1],
+                ),
+            ),
         });
         receiver.mode = Some(ReceiverMode::Fec(FecReceiver::new(geometry)));
 
@@ -1813,83 +1578,6 @@ mod tests {
         shared.mark_object_complete();
 
         assert!(progress.object_complete_at().is_some());
-    }
-
-    #[tokio::test]
-    async fn write_symbol_run_updates_contiguous_sink_region() {
-        let route = crate::node::session::runtime::TransportRoute {
-            src_ip: std::net::Ipv4Addr::new(10, 0, 0, 1),
-            dst_ip: std::net::Ipv4Addr::new(10, 0, 0, 2),
-            src_port: 1,
-            dst_port: 2,
-        };
-        let tmp_path = std::env::temp_dir().join(format!(
-            "nextmini-symbol-run-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("system clock should be after epoch")
-                .as_nanos()
-        ));
-        let sink_buffer = Arc::new(tokio::sync::Mutex::new(vec![0; 10]));
-        let sink_file = Arc::new(tokio::sync::Mutex::new(
-            std::fs::OpenOptions::new()
-                .create(true)
-                .truncate(true)
-                .read(true)
-                .write(true)
-                .open(&tmp_path)
-                .expect("temp sink file should open"),
-        ));
-        let shared = ReceiverShared {
-            session_id: 9,
-            route,
-            local_node_id: 1,
-            cfg: ReceiverConfig {
-                session_id: 9,
-                route,
-                local_node_id: 1,
-                sink_buffer: Some(sink_buffer.clone()),
-                sink_file: Some(sink_file.clone()),
-                progress: None,
-                peer_report_timeout_ms: 200,
-                fec_enabled: false,
-                cloudcast: None,
-            },
-            processors: crate::node::processor::ProcessorHandle::new(Default::default()),
-            manifest: Some(LosslessSessionManifest {
-                block_size: 10,
-                total_bytes: 10,
-                total_blocks: 1,
-                mode: LosslessSessionMode::Plain,
-            }),
-            plan: BlockPlan::new(10, 10).ok(),
-            complete_blocks: BTreeSet::new(),
-        };
-
-        shared
-            .write_symbol_run(
-                0,
-                SymbolGeometry::new(10, 4).expect("valid symbol geometry"),
-                1,
-                &[4, 5, 6, 7, 8, 9, 10, 11, 12],
-            )
-            .await;
-
-        assert_eq!(
-            sink_buffer.lock().await.as_slice(),
-            &[0, 0, 0, 4, 5, 6, 7, 8, 9, 10]
-        );
-        sink_file
-            .lock()
-            .await
-            .sync_all()
-            .expect("temp sink file should sync");
-        assert_eq!(
-            std::fs::read(&tmp_path).expect("temp sink file should read"),
-            vec![0, 0, 0, 4, 5, 6, 7, 8, 9, 10]
-        );
-        let _ = std::fs::remove_file(tmp_path);
     }
 
     #[tokio::test]
@@ -2442,15 +2130,7 @@ mod tests {
         let mut fec = FecReceiver::new(geometry);
         fec.blocks = blocks
             .into_iter()
-            .map(|(block_id, symbols)| {
-                (
-                    block_id,
-                    FecBlockState {
-                        symbols,
-                        ..Default::default()
-                    },
-                )
-            })
+            .map(|(block_id, symbols)| (block_id, FecBlockState { symbols }))
             .collect();
 
         (
