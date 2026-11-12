@@ -25,6 +25,7 @@ const SRC_PORT: u16 = 4500;
 const DST_PORT: u16 = 4600;
 
 struct ReceiverHarness {
+    _processors: ProcessorHandle,
     tx: mpsc::Sender<InboundFrame>,
     packet_rx: mpsc::Receiver<Packet>,
     receiver_task: tokio::task::JoinHandle<()>,
@@ -79,9 +80,10 @@ async fn build_receiver_harness() -> ReceiverHarness {
     };
 
     let (tx, rx) = mpsc::channel::<InboundFrame>(128);
-    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, processors));
+    let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, processors.clone()));
 
     ReceiverHarness {
+        _processors: processors,
         tx,
         packet_rx,
         receiver_task,
