@@ -146,8 +146,6 @@ def main() -> None:
             "closed-loop-smoke",
             "--mode",
             "fec",
-            "--fec-scheme",
-            "raptorq",
             "--receivers",
             str(receiver_count),
             "--trees",

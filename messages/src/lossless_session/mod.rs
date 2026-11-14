@@ -1,7 +1,8 @@
 //! Wire protocol definitions for dataplane lossless sessions.
 //!
-//! Version 6 is the flag-day `Manifest -> Ready -> payload sweep ->
-//! SourceDone -> Need` protocol with 32-bit FEC `symbols_per_block`.
+//! Version 8 is the flag-day `Manifest -> Ready -> payload sweep ->
+//! SourceDone -> Need` protocol with 32-bit FEC `symbols_per_block` and no
+//! coded-rate fields in manifests.
 //! The normative rewrite rules live in `plans/simple-lossless.md`.
 
 mod block_frames;

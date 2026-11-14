@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 
 /// Magic constant ("RLM1" ASCII) used by lossless session frames.
 pub const LOSSLESS_SESSION_MAGIC: u32 = 0x524C_4D31;
-/// Protocol version with explicit FEC coded-rate fields in manifests.
-pub const LOSSLESS_SESSION_VERSION: u8 = 7;
+/// Protocol version with 32-bit FEC `symbols_per_block` and no coded-rate fields in manifests.
+pub const LOSSLESS_SESSION_VERSION: u8 = 8;
 /// Maximum number of tree ids representable in a manifest body.
 pub const MAX_MANIFEST_TREE_IDS: usize = u8::MAX as usize;
 
@@ -48,7 +48,6 @@ impl LosslessSessionModeKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum FecScheme {
     RaptorQ = 1,
-    Mettle = 2,
 }
 
 impl FecScheme {
@@ -61,7 +60,6 @@ impl FecScheme {
     pub fn from_wire(raw: u8) -> Option<Self> {
         match raw {
             x if x == Self::RaptorQ as u8 => Some(Self::RaptorQ),
-            x if x == Self::Mettle as u8 => Some(Self::Mettle),
             _ => None,
         }
     }
@@ -72,10 +70,6 @@ pub struct LosslessSessionFecMode {
     /// Raw wire scheme identifier to preserve clean handling for unknown schemes.
     pub scheme: u8,
     pub symbols_per_block: u32,
-    /// Finite-stream coded-rate numerator. `1/1` means no finite prefix expansion.
-    pub coded_rate_num: u32,
-    /// Finite-stream coded-rate denominator.
-    pub coded_rate_den: u32,
     pub tree_ids: Vec<u16>,
 }
 
@@ -85,29 +79,6 @@ impl LosslessSessionFecMode {
         Self {
             scheme: FecScheme::RaptorQ.to_wire(),
             symbols_per_block,
-            coded_rate_num: 1,
-            coded_rate_den: 1,
-            tree_ids,
-        }
-    }
-
-    #[must_use]
-    pub fn new_mettle(symbols_per_block: u32, tree_ids: Vec<u16>) -> Self {
-        Self::new_mettle_with_coded_rate(symbols_per_block, tree_ids, 1, 1)
-    }
-
-    #[must_use]
-    pub fn new_mettle_with_coded_rate(
-        symbols_per_block: u32,
-        tree_ids: Vec<u16>,
-        coded_rate_num: u32,
-        coded_rate_den: u32,
-    ) -> Self {
-        Self {
-            scheme: FecScheme::Mettle.to_wire(),
-            symbols_per_block,
-            coded_rate_num,
-            coded_rate_den,
             tree_ids,
         }
     }
@@ -115,11 +86,6 @@ impl LosslessSessionFecMode {
     #[inline]
     pub fn scheme_kind(&self) -> Option<FecScheme> {
         FecScheme::from_wire(self.scheme)
-    }
-
-    #[inline]
-    pub const fn coded_rate_is_valid(&self) -> bool {
-        self.coded_rate_den != 0 && self.coded_rate_num >= self.coded_rate_den
     }
 }
 
@@ -189,10 +155,6 @@ pub enum LosslessSessionValidationError {
         scheme: u8,
     },
     ZeroSymbolsPerBlock,
-    InvalidFecCodedRate {
-        numerator: u32,
-        denominator: u32,
-    },
     FecTreeIdsEmpty,
     TooManyTreeIds {
         configured: usize,
@@ -255,7 +217,7 @@ pub struct LosslessSessionBlockSymbol {
 
 /// CONTROL payload variants (follows `LosslessSessionHeader` when kind == Control).
 ///
-/// Version 5 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
+/// Version 8 is the flag-day `Manifest -> Ready -> payload sweep -> SourceDone
 /// -> Need` protocol. `Need` is the only live receiver-to-sender report.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LosslessSessionControl {

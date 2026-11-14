@@ -120,12 +120,6 @@ impl LosslessSessionManifest {
             if fec.symbols_per_block == 0 {
                 return Err(LosslessSessionValidationError::ZeroSymbolsPerBlock);
             }
-            if !fec.coded_rate_is_valid() {
-                return Err(LosslessSessionValidationError::InvalidFecCodedRate {
-                    numerator: fec.coded_rate_num,
-                    denominator: fec.coded_rate_den,
-                });
-            }
             if fec.tree_ids.is_empty() {
                 return Err(LosslessSessionValidationError::FecTreeIdsEmpty);
             }
@@ -309,8 +303,6 @@ mod tests {
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode {
                 scheme: 99,
                 symbols_per_block: 0,
-                coded_rate_num: 1,
-                coded_rate_den: 1,
                 tree_ids: vec![],
             }),
         };
@@ -322,15 +314,15 @@ mod tests {
 
     #[test]
     fn manifest_validation_accepts_known_fec_schemes_and_rejects_unknown() {
-        let mettle = LosslessSessionManifest {
+        let raptorq = LosslessSessionManifest {
             block_size: 1024,
             total_bytes: 1024,
             total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(8, vec![1, 3])),
+            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(8, vec![1, 3])),
         };
-        mettle
+        raptorq
             .validate()
-            .expect("METTLE should be a known FEC scheme");
+            .expect("RaptorQ should be a known FEC scheme");
 
         let unknown = LosslessSessionManifest {
             block_size: 1024,
@@ -339,37 +331,12 @@ mod tests {
             mode: LosslessSessionMode::Fec(LosslessSessionFecMode {
                 scheme: 99,
                 symbols_per_block: 8,
-                coded_rate_num: 1,
-                coded_rate_den: 1,
                 tree_ids: vec![1, 3],
             }),
         };
         assert_eq!(
             unknown.validate(),
             Err(LosslessSessionValidationError::UnknownFecScheme { scheme: 99 })
-        );
-    }
-
-    #[test]
-    fn manifest_validation_rejects_invalid_fec_coded_rate() {
-        let bad = LosslessSessionManifest {
-            block_size: 1024,
-            total_bytes: 1024,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
-                8,
-                vec![1, 3],
-                19,
-                20,
-            )),
-        };
-
-        assert_eq!(
-            bad.validate(),
-            Err(LosslessSessionValidationError::InvalidFecCodedRate {
-                numerator: 19,
-                denominator: 20,
-            })
         );
     }
 

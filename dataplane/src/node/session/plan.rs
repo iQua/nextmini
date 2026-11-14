@@ -250,7 +250,7 @@ mod tests {
     }
 
     #[test]
-    fn symbol_geometry_accepts_large_mettle_scale_k() {
+    fn symbol_geometry_accepts_large_32_bit_k() {
         let block_size = 1_073_741_824usize;
         let symbols = SymbolGeometry::new(block_size, 131_072).expect("large K geometry");
 

@@ -1,12 +1,11 @@
 use bytes::Bytes;
 use std::collections::BTreeMap;
-use std::num::NonZeroUsize;
 use tokio::sync::mpsc;
 use tokio::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 use nextmini_messages::lossless_session::{
-    FecScheme, LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport,
+    LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport,
 };
 
 use crate::node::processor::{LosslessIngressContract, SendOutcome};
@@ -15,7 +14,7 @@ use crate::node::session::api::SessionOutcome;
 use crate::node::session::control;
 use crate::node::session::fec as session_fec;
 use crate::node::session::fec::{BlockParams, Encoder};
-use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
+use crate::node::session::plan::{BlockPlan, SymbolGeometry};
 
 use super::block_symbol_frame;
 
@@ -32,13 +31,9 @@ pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
     /// Index of the first block that may still have unsent source symbols.
     ///
-    /// Invariant: every block before it has `next_source_symbol >= source_phase_symbol_limit()`.
+    /// Invariant: every block before it has `next_source_symbol >= symbols_per_block`.
     source_cursor: usize,
-    scheme: FecScheme,
     symbols_per_block: u32,
-    initial_symbol_count: u32,
-    mettle_stream_symbol_limit: u32,
-    mettle_overhead: mettle::OverheadRatio,
     tree_ids: Vec<u16>,
     symbol_retry_sweep_width: usize,
     geometry: SymbolGeometry,
@@ -63,129 +58,6 @@ struct FecBlockState {
     required_extra_symbols: u32,
     emitted_extra_symbols: u32,
     encoder: Option<Encoder>,
-    mettle_stream: Option<MettleSymbolStream>,
-}
-
-/// Per-block finite-stream METTLE encoder state.
-///
-/// It keeps only the paper encoder's rolling coupling window plus any
-/// finalized bins emitted ahead of the currently retried symbol.
-struct MettleSymbolStream {
-    encoder: Option<mettle::stream::Encoder>,
-    span: BlockSpan,
-    geometry: SymbolGeometry,
-    real_source_count: u64,
-    next_source_id: u64,
-    finished: bool,
-    buffered_bins: BTreeMap<u32, Vec<u8>>,
-    /// Reusable refcounted view of the source symbols, materialized lazily on
-    /// the first call to `advance` so that subsequent pushes pass `&[u8]`
-    /// straight through to the paper encoder without re-allocating a fresh
-    /// `Vec<u8>` per source. The Bytes share their backing buffer with
-    /// `BlockSource::bytes` (or its synthetic-padded equivalent), so the
-    /// total memory footprint stays at one source-image copy regardless of
-    /// stream length.
-    source_cache: Option<Vec<Bytes>>,
-    advance_calls: u64,
-    source_symbols_pushed: u64,
-    bins_buffered_total: u64,
-}
-
-impl MettleSymbolStream {
-    fn new(
-        span: BlockSpan,
-        geometry: SymbolGeometry,
-        seed: u64,
-        real_source_count: u64,
-        mettle_overhead: mettle::OverheadRatio,
-    ) -> Option<Self> {
-        let source_symbol_bytes = NonZeroUsize::new(geometry.symbol_size())?;
-        Some(Self {
-            encoder: Some(mettle::stream::Encoder::new_terminated(
-                mettle::MettleParams::new(mettle_overhead),
-                source_symbol_bytes,
-                seed,
-                real_source_count,
-            )),
-            span,
-            geometry,
-            real_source_count,
-            next_source_id: 0,
-            finished: false,
-            buffered_bins: BTreeMap::new(),
-            source_cache: None,
-            advance_calls: 0,
-            source_symbols_pushed: 0,
-            bins_buffered_total: 0,
-        })
-    }
-
-    fn symbol_payload(&mut self, source: &super::BlockSource, symbol_id: u32) -> Option<Vec<u8>> {
-        while !self.buffered_bins.contains_key(&symbol_id) {
-            if !self.advance(source)? {
-                break;
-            }
-        }
-        // Sends are strictly increasing in `symbol_id` and each successful send
-        // is followed by `discard_through(symbol_id)`, so the just-fetched bin
-        // will never be needed again. Take it instead of cloning to save one
-        // `symbol_size`-byte allocation+memcpy per send on the WAN hot path.
-        self.buffered_bins.remove(&symbol_id)
-    }
-
-    fn advance(&mut self, source: &super::BlockSource) -> Option<bool> {
-        self.advance_calls = self.advance_calls.saturating_add(1);
-        let bins = if self.next_source_id < self.real_source_count {
-            let source_index = usize::try_from(self.next_source_id).ok()?;
-            let cache = self
-                .source_cache
-                .get_or_insert_with(|| source.source_symbols(self.span, self.geometry));
-            let payload = cache.get(source_index)?;
-            self.next_source_id += 1;
-            self.source_symbols_pushed = self.source_symbols_pushed.saturating_add(1);
-            // `Bytes` derefs to `&[u8]`; the encoder reads it without taking
-            // ownership, so refcount-only sharing replaces the per-source
-            // 8KB allocate+memcpy from `BlockSource::source_symbol_payload`.
-            self.encoder.as_mut()?.push_source(payload.as_ref())
-        } else {
-            if self.finished {
-                return Some(false);
-            }
-            self.finished = true;
-            // Drop the source cache once we've consumed all real sources;
-            // the finish-tail emits zero-touched bins which do not depend on
-            // any source payload.
-            self.source_cache = None;
-            self.encoder.take()?.finish()
-        };
-        self.buffer_bins(bins)?;
-        Some(true)
-    }
-
-    fn buffer_bins(&mut self, bins: Vec<mettle::stream::EncodedBin>) -> Option<()> {
-        self.bins_buffered_total = self
-            .bins_buffered_total
-            .saturating_add(u64::try_from(bins.len()).unwrap_or(u64::MAX));
-        for bin in bins {
-            let (bin_id, payload) = bin.into_parts();
-            let bin_id = u32::try_from(bin_id).ok()?;
-            self.buffered_bins.insert(bin_id, payload);
-        }
-        Some(())
-    }
-
-    fn discard_through(&mut self, symbol_id: u32) {
-        let Some(next_symbol_id) = symbol_id.checked_add(1) else {
-            self.buffered_bins.clear();
-            return;
-        };
-        self.buffered_bins = self.buffered_bins.split_off(&next_symbol_id);
-    }
-
-    #[cfg(test)]
-    fn buffered_bin_count(&self) -> usize {
-        self.buffered_bins.len()
-    }
 }
 
 #[derive(Debug)]
@@ -248,8 +120,7 @@ impl FecSender {
     ///
     /// FEC symbols are striped across `manifest.fec.tree_ids` in flat
     /// round-robin order. The sender does not consume solver-derived tree
-    /// weights: METTLE has no notion of weighted trees in the paper, and the
-    /// RaptorQ path here matches that behavior.
+    /// weights.
     pub(super) fn new(
         manifest: &LosslessSessionManifest,
         plan: BlockPlan,
@@ -257,35 +128,12 @@ impl FecSender {
         let LosslessSessionMode::Fec(fec) = &manifest.mode else {
             return Err("attempted to build fec sender for plain manifest");
         };
-        let scheme = fec
-            .scheme_kind()
-            .ok_or("unsupported fec scheme for fec sender")?;
+        if fec.scheme_kind().is_none() {
+            return Err("unsupported fec scheme for fec sender");
+        }
         let geometry = plan
             .symbol_geometry(fec.symbols_per_block)
             .map_err(|_| "invalid symbol geometry for fec sender")?;
-        let source_symbols = usize::try_from(fec.symbols_per_block)
-            .map_err(|_| "symbols_per_block does not fit this host")?;
-        let mettle_overhead = session_fec::mettle_overhead_from_fec_mode(fec)
-            .ok_or("invalid METTLE coded rate in fec sender manifest")?;
-        let initial_symbol_count = session_fec::initial_symbol_count(
-            BlockParams::with_scheme(source_symbols, geometry.symbol_size(), 0, scheme),
-            mettle_overhead,
-        )
-        .ok_or("invalid initial fec symbol count")?;
-        let mettle_stream_symbol_limit = if scheme == FecScheme::Mettle {
-            mettle::block::BlockParams::with_overhead(
-                source_symbols,
-                geometry.symbol_size(),
-                0,
-                mettle_overhead,
-            )
-            .metadata()
-            .ok()
-            .and_then(|metadata| u32::try_from(metadata.symbol_count()).ok())
-            .ok_or("invalid METTLE finite stream symbol count")?
-        } else {
-            0
-        };
         let block_count =
             usize::try_from(plan.total_blocks()).map_err(|_| "too many blocks for fec sender")?;
         let tree_ids = fec.tree_ids.clone();
@@ -295,23 +143,14 @@ impl FecSender {
             blocks: (0..block_count)
                 .map(|_| FecBlockState {
                     next_source_symbol: 0,
-                    next_fountain_symbol: if scheme == FecScheme::Mettle {
-                        0
-                    } else {
-                        initial_symbol_count
-                    },
+                    next_fountain_symbol: fec.symbols_per_block,
                     required_extra_symbols: 0,
                     emitted_extra_symbols: 0,
                     encoder: None,
-                    mettle_stream: None,
                 })
                 .collect(),
             source_cursor: 0,
-            scheme,
             symbols_per_block: fec.symbols_per_block,
-            initial_symbol_count,
-            mettle_stream_symbol_limit,
-            mettle_overhead,
             tree_ids,
             symbol_retry_sweep_width,
             geometry,
@@ -333,10 +172,6 @@ impl FecSender {
     /// Main send loop for FEC mode.
     ///
     /// RaptorQ sends raw source symbols before feedback-driven repairs.
-    /// METTLE uses one paper-native finite object stream: the sender pushes
-    /// the real object symbols into a terminated stream and then emits the
-    /// encoder's finish tail. SourceDone is not used to estimate a finite
-    /// repair budget for METTLE.
     pub(super) async fn run(
         &mut self,
         shared: &mut super::SenderShared,
@@ -403,7 +238,7 @@ impl FecSender {
         }
         self.ingress_contract_checked = true;
 
-        if self.scheme != FecScheme::RaptorQ || self.tree_ids.len() <= 1 {
+        if self.tree_ids.len() <= 1 {
             return;
         }
 
@@ -443,8 +278,7 @@ impl FecSender {
     /// - `next_source_symbol` only ever increases (it starts at 0 and is bumped by one in
     ///   `send_source_symbol`; finishing a report round resets only the extra-symbol counters), so
     ///   a block that has reached the limit never becomes sendable again;
-    /// - `source_phase_symbol_limit()` is derived from `initial_symbol_count` and
-    ///   `mettle_stream_symbol_limit`, which are fixed at construction;
+    /// - the source-phase limit `symbols_per_block` is fixed at construction;
     /// - `blocks` is never resized or replaced.
     ///
     /// Later rounds flip `phase` back to `SendingData` without resetting source counters, so the
@@ -454,9 +288,8 @@ impl FecSender {
         if self.phase != RoundPhase::SendingData {
             return None;
         }
-        let source_phase_limit = self.source_phase_symbol_limit();
         while let Some(block) = self.blocks.get(self.source_cursor) {
-            if block.next_source_symbol < source_phase_limit {
+            if block.next_source_symbol < self.symbols_per_block {
                 return Some((self.source_cursor as u64, block.next_source_symbol));
             }
             self.source_cursor += 1;
@@ -472,22 +305,10 @@ impl FecSender {
         for (block_idx, block) in self.blocks.iter_mut().enumerate() {
             let block_id = block_idx as u64;
             if block.emitted_extra_symbols < block.required_extra_symbols {
-                if self.scheme == FecScheme::Mettle
-                    && block.next_fountain_symbol >= self.mettle_stream_symbol_limit
-                {
-                    continue;
-                }
                 return Some((block_id, block.next_fountain_symbol));
             }
         }
         None
-    }
-
-    fn source_phase_symbol_limit(&self) -> u32 {
-        match self.scheme {
-            FecScheme::RaptorQ => self.initial_symbol_count,
-            FecScheme::Mettle => self.mettle_stream_symbol_limit,
-        }
     }
 
     /// Encode and send one source symbol in FEC mode.
@@ -515,7 +336,6 @@ impl FecSender {
             };
             block.next_source_symbol = next_symbol;
         }
-        self.discard_sent_mettle_symbol(block_id, symbol_id);
         true
     }
 
@@ -542,7 +362,6 @@ impl FecSender {
             block.emitted_extra_symbols = block.emitted_extra_symbols.saturating_add(1);
             block.next_fountain_symbol += 1;
         }
-        self.discard_sent_mettle_symbol(block_id, symbol_id);
         true
     }
 
@@ -597,15 +416,11 @@ impl FecSender {
                 );
                 match submission.outcome {
                     SendOutcome::Queued => {
-                        if self.scheme == FecScheme::RaptorQ {
-                            if let Some(stall_started) = stall_started.take() {
-                                self.stats.record_stall(stall_started.elapsed());
-                            }
-                            if self.stats.record_queued() {
-                                self.stats.log(shared.session.session_id, &self.tree_ids);
-                            }
-                        } else {
-                            self.stats.record_queued();
+                        if let Some(stall_started) = stall_started.take() {
+                            self.stats.record_stall(stall_started.elapsed());
+                        }
+                        if self.stats.record_queued() {
+                            self.stats.log(shared.session.session_id, &self.tree_ids);
                         }
                         self.note_queued_symbol(
                             shared, block_id, symbol_id, tree_id, idx, tree_count,
@@ -614,11 +429,9 @@ impl FecSender {
                     }
                     SendOutcome::WouldBlock => {
                         saw_would_block = true;
-                        if self.scheme == FecScheme::RaptorQ {
-                            stall_started.get_or_insert_with(Instant::now);
-                            if self.stats.record_would_block(idx) {
-                                self.stats.log(shared.session.session_id, &self.tree_ids);
-                            }
+                        stall_started.get_or_insert_with(Instant::now);
+                        if self.stats.record_would_block(idx) {
+                            self.stats.log(shared.session.session_id, &self.tree_ids);
                         }
                     }
                     SendOutcome::Closed => {
@@ -657,22 +470,13 @@ impl FecSender {
         self.next_tree_rr = (idx + 1) % tree_count;
     }
 
-    /// Return the next initial data-phase symbol payload for one block.
-    ///
-    /// RaptorQ sends raw source symbols here; METTLE sends paper-native coded
-    /// bins whose ids happen to be in the initial departure prefix.
+    /// Return the next raw source-symbol payload for one block.
     fn source_symbol_payload(
         &mut self,
         shared: &super::SenderShared,
         block_id: u64,
         symbol_id: u32,
     ) -> Option<Bytes> {
-        if self.scheme == FecScheme::Mettle {
-            return self
-                .extra_symbol_payload(shared, block_id, symbol_id)
-                .map(Bytes::from);
-        }
-
         ensure_source_symbol_cache(&shared.source, shared.plan, self, block_id)?;
         let (_, symbols) = self.current_source_cache.as_ref()?;
         let idx = usize::try_from(symbol_id).ok()?;
@@ -686,20 +490,15 @@ impl FecSender {
         block_id: u64,
         symbol_id: u32,
     ) -> Option<Vec<u8>> {
-        if self.scheme == FecScheme::Mettle {
-            return self.mettle_symbol_payload(shared, block_id, symbol_id);
-        }
-
         let need_encoder = fec_block_ref(self, block_id).map(|block| block.encoder.is_none())?;
 
         if need_encoder {
             let span = shared.plan.block_span(block_id)?;
             let source_block = shared.source.padded_symbol_bytes(span, self.geometry);
-            let params = BlockParams::with_scheme(
+            let params = BlockParams::new(
                 usize::try_from(self.symbols_per_block).ok()?,
                 self.geometry.symbol_size(),
                 session_fec::block_seed(shared.session.session_id, block_id),
-                self.scheme,
             );
             let block = fec_block_mut(self, block_id)?;
             if block.encoder.is_none() {
@@ -710,45 +509,6 @@ impl FecSender {
         fec_block_ref(self, block_id)
             .and_then(|block| block.encoder.as_ref())
             .and_then(|encoder| encoder.coded_symbol(symbol_id))
-    }
-
-    fn mettle_symbol_payload(
-        &mut self,
-        shared: &super::SenderShared,
-        block_id: u64,
-        symbol_id: u32,
-    ) -> Option<Vec<u8>> {
-        let needs_stream =
-            fec_block_ref(self, block_id).map(|block| block.mettle_stream.is_none())?;
-        if needs_stream {
-            let span = shared.plan.block_span(block_id)?;
-            let stream = MettleSymbolStream::new(
-                span,
-                self.geometry,
-                session_fec::block_seed(shared.session.session_id, block_id),
-                u64::from(self.symbols_per_block),
-                self.mettle_overhead,
-            )?;
-            let block = fec_block_mut(self, block_id)?;
-            if block.mettle_stream.is_none() {
-                block.mettle_stream = Some(stream);
-            }
-        }
-
-        fec_block_mut(self, block_id)
-            .and_then(|block| block.mettle_stream.as_mut())
-            .and_then(|stream| stream.symbol_payload(&shared.source, symbol_id))
-    }
-
-    fn discard_sent_mettle_symbol(&mut self, block_id: u64, symbol_id: u32) {
-        if self.scheme != FecScheme::Mettle {
-            return;
-        }
-        if let Some(stream) =
-            fec_block_mut(self, block_id).and_then(|block| block.mettle_stream.as_mut())
-        {
-            stream.discard_through(symbol_id);
-        }
     }
 
     async fn begin_report_round(&mut self, shared: &mut super::SenderShared) {
@@ -808,9 +568,6 @@ impl super::ModeHooks for FecSender {
         round_id: u32,
         report: NeedReport,
     ) {
-        if self.accept_mettle_early_complete(shared, peer_id, round_id, &report) {
-            return;
-        }
         if self.phase != RoundPhase::WaitingForReports {
             debug!(
                 session_id = shared.session.session_id,
@@ -833,36 +590,6 @@ impl super::ModeHooks for FecSender {
             return;
         }
         if let Some(existing) = self.round_reports.get(&peer_id) {
-            if self.scheme == FecScheme::Mettle {
-                match (existing, &report) {
-                    (NeedReport::Complete, NeedReport::Fec { .. }) => {
-                        debug!(
-                            session_id = shared.session.session_id,
-                            peer_id,
-                            round_id,
-                            "Lossless METTLE sender ignored a stale deficit after Complete"
-                        );
-                        return;
-                    }
-                    (NeedReport::Fec { .. }, NeedReport::Complete) => {
-                        self.round_reports.insert(peer_id, report.clone());
-                        shared
-                            .quorum_liveness
-                            .note_feedback_progress(tokio::time::Instant::now());
-                        if self
-                            .round_reports
-                            .values()
-                            .all(|status| matches!(status, NeedReport::Complete))
-                            && self.round_reports.len()
-                                == shared.active_quorum.active_members().len()
-                        {
-                            self.round_complete = true;
-                        }
-                        return;
-                    }
-                    _ => {}
-                }
-            }
             if existing != &report {
                 warn!(
                     session_id = shared.session.session_id,
@@ -914,51 +641,6 @@ impl super::ModeHooks for FecSender {
 }
 
 impl FecSender {
-    fn accept_mettle_early_complete(
-        &mut self,
-        shared: &mut super::SenderShared,
-        peer_id: usize,
-        round_id: u32,
-        report: &NeedReport,
-    ) -> bool {
-        if self.scheme != FecScheme::Mettle
-            || self.phase != RoundPhase::SendingData
-            || !matches!(report, NeedReport::Complete)
-        {
-            return false;
-        }
-        if round_id > self.current_round_id {
-            debug!(
-                session_id = shared.session.session_id,
-                peer_id,
-                round_id,
-                current_round_id = self.current_round_id,
-                "Lossless METTLE sender dropped early Complete for a future round"
-            );
-            return true;
-        }
-        if let Some(existing) = self.round_reports.get(&peer_id) {
-            if !matches!(existing, NeedReport::Complete) {
-                warn!(
-                    session_id = shared.session.session_id,
-                    peer_id,
-                    round_id,
-                    "Lossless METTLE sender rejected changed early Complete from a quorum peer"
-                );
-                self.protocol_error = true;
-            }
-            return true;
-        }
-        self.round_reports.insert(peer_id, report.clone());
-        shared
-            .quorum_liveness
-            .note_feedback_progress(tokio::time::Instant::now());
-        if self.round_reports.len() == shared.active_quorum.active_members().len() {
-            self.round_complete = true;
-        }
-        true
-    }
-
     fn has_pending_repair_work(&self) -> bool {
         self.blocks
             .iter()
@@ -980,13 +662,6 @@ impl FecSender {
     }
 
     fn record_requested_repairs(&mut self, blocks: &[NeedBlock]) {
-        if self.scheme == FecScheme::Mettle {
-            for block in blocks {
-                self.schedule_mettle_repair_pass(block.block_id);
-            }
-            return;
-        }
-
         for block in blocks {
             if let Some(entry) = self
                 .blocks
@@ -997,21 +672,6 @@ impl FecSender {
                     .max(u32::from(block.deficit_symbols));
             }
         }
-    }
-
-    fn schedule_mettle_repair_pass(&mut self, block_id: u64) {
-        let symbol_limit = self.mettle_stream_symbol_limit;
-        let Some(block) = fec_block_mut(self, block_id) else {
-            return;
-        };
-        if block.next_fountain_symbol == 0 || block.next_fountain_symbol >= symbol_limit {
-            block.next_fountain_symbol = 0;
-            block.mettle_stream = None;
-        }
-        if symbol_limit == 0 {
-            return;
-        }
-        block.required_extra_symbols = block.required_extra_symbols.max(symbol_limit);
     }
 
     fn recalculate_repair_window(&mut self, shared: &super::SenderShared) {
@@ -1175,7 +835,7 @@ mod tests {
         assert_eq!(sender.symbol_retry_sweep_width, 1);
         assert_eq!(
             sender.next_tree_rr,
-            sender.initial_symbol_count as usize % sender.tree_ids.len()
+            sender.symbols_per_block as usize % sender.tree_ids.len()
         );
     }
 
@@ -1281,350 +941,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn mettle_sender_accepts_small_experimental_k() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(16, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-
-        assert!(FecSender::new(&manifest, plan).is_ok());
-    }
-
-    #[test]
-    fn mettle_sender_accepts_large_stream_scale_k() {
-        let k = 131_072u32;
-        let block_size = 1_073_741_824u32;
-        let manifest = LosslessSessionManifest {
-            block_size,
-            total_bytes: u64::from(block_size),
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
-                k,
-                vec![7],
-                21,
-                20,
-            )),
-        };
-        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
-
-        let sender = FecSender::new(&manifest, plan).expect("large-K METTLE sender");
-        let expected_initial = mettle::block::BlockParams::with_overhead(
-            k as usize,
-            8192,
-            0,
-            mettle::OverheadRatio::new(1, 20).expect("valid overhead"),
-        )
-        .metadata()
-        .expect("large-K METTLE metadata")
-        .initial_symbol_count();
-
-        assert_eq!(sender.symbols_per_block, k);
-        assert_eq!(
-            sender.initial_symbol_count as usize, expected_initial,
-            "METTLE keeps the configured coded-rate parameter for the stream graph"
-        );
-    }
-
-    #[test]
-    fn mettle_sender_accepts_large_multiblock_objects() {
-        let k = 131_072u32;
-        let block_size = 1_073_741_824u32;
-        let total_blocks = 16u64;
-        let manifest = LosslessSessionManifest {
-            block_size,
-            total_bytes: u64::from(block_size) * total_blocks,
-            total_blocks,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
-        };
-        let plan = BlockPlan::new(manifest.total_bytes, block_size as usize).expect("valid plan");
-
-        let sender = FecSender::new(&manifest, plan).expect("multiblock METTLE sender");
-
-        assert_eq!(sender.blocks.len(), total_blocks as usize);
-        assert_eq!(sender.symbols_per_block, k);
-        assert_eq!(
-            sender.source_phase_symbol_limit(),
-            sender.mettle_stream_symbol_limit
-        );
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_data_phase_streams_until_completion() {
-        let k = 128u32;
-        let block_size = 8192u32;
-        let manifest = LosslessSessionManifest {
-            block_size,
-            total_bytes: u64::from(block_size),
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
-                k,
-                vec![7],
-                21,
-                20,
-            )),
-        };
-        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
-        let metadata = mettle::block::BlockParams::with_overhead(
-            k as usize,
-            64,
-            0,
-            mettle::OverheadRatio::new(1, 20).expect("valid overhead"),
-        )
-        .metadata()
-        .expect("METTLE metadata");
-        let expected_initial =
-            u32::try_from(metadata.initial_symbol_count()).expect("initial fits u32");
-        let expected_symbol_count =
-            u32::try_from(metadata.symbol_count()).expect("symbol count fits u32");
-
-        assert_eq!(sender.initial_symbol_count, expected_initial);
-        assert_eq!(sender.source_phase_symbol_limit(), expected_symbol_count);
-
-        sender.blocks[0].next_source_symbol = sender.initial_symbol_count;
-        assert_eq!(
-            sender.next_source_symbol(),
-            Some((0, sender.initial_symbol_count)),
-            "METTLE should emit the paper-native finite-stream tail instead of stopping at a session window"
-        );
-
-        sender.blocks[0].next_source_symbol = sender.mettle_stream_symbol_limit;
-        assert_eq!(
-            sender.next_source_symbol(),
-            None,
-            "METTLE should stop after the paper finite-stream symbol count"
-        );
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_accepts_early_complete_while_sending_data() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
-        let mut shared = test_sender_shared(manifest);
-        shared.active_quorum.record_ready(22);
-        shared.active_quorum.freeze();
-
-        sender.on_need(&mut shared, 22, 0, NeedReport::Complete);
-
-        assert!(sender.round_complete);
-        assert_eq!(sender.round_reports.get(&22), Some(&NeedReport::Complete));
-        assert!(!sender.protocol_error);
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_opens_retransmission_pass_after_deficit() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
-        let mut shared = test_sender_shared(manifest);
-        shared.active_quorum = ActiveSessionQuorum::new([22, 23]);
-        shared.active_quorum.record_ready(22);
-        shared.active_quorum.record_ready(23);
-        shared.active_quorum.freeze();
-        shared.start_quorum_feedback_wait();
-        sender.phase = RoundPhase::WaitingForReports;
-
-        let deficit = NeedReport::Fec {
-            blocks: vec![NeedBlock {
-                block_id: 0,
-                deficit_symbols: 1,
-            }],
-        };
-        sender.on_need(&mut shared, 22, 0, deficit.clone());
-        sender.on_need(&mut shared, 23, 0, deficit);
-
-        assert!(!sender.protocol_error);
-        assert!(!sender.round_complete);
-        assert_eq!(sender.phase, RoundPhase::WaitingForReports);
-        assert!(
-            sender.round_reports.len() == 2,
-            "METTLE should retain the incomplete quorum feedback for this round"
-        );
-        assert_eq!(
-            sender.next_extra_symbol(),
-            Some((0, 0)),
-            "METTLE repair should restart the finite stream so lost bins can be retransmitted"
-        );
-
-        sender.blocks[0].emitted_extra_symbols = sender.mettle_stream_symbol_limit;
-        sender.blocks[0].next_fountain_symbol = sender.mettle_stream_symbol_limit;
-        sender.finish_report_round(&mut shared);
-
-        assert_eq!(sender.phase, RoundPhase::SendingData);
-        assert_eq!(sender.current_round_id, 1);
-        assert!(!sender.protocol_error);
-
-        sender.phase = RoundPhase::WaitingForReports;
-        sender.current_round_id = 1;
-        sender.round_reports.clear();
-        sender.on_need(
-            &mut shared,
-            22,
-            1,
-            NeedReport::Fec {
-                blocks: vec![NeedBlock {
-                    block_id: 0,
-                    deficit_symbols: 1,
-                }],
-            },
-        );
-
-        assert_eq!(
-            sender.next_extra_symbol(),
-            Some((0, 0)),
-            "a later incomplete round should start another retransmission pass"
-        );
-
-        sender.on_need(&mut shared, 22, 0, NeedReport::Complete);
-        assert!(!sender.round_complete);
-        sender.on_need(&mut shared, 23, 1, NeedReport::Complete);
-
-        assert!(!sender.round_complete);
-        assert!(!sender.protocol_error);
-    }
-
-    #[tokio::test]
-    async fn mettle_retransmission_pass_rebuilds_exhausted_stream() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
-        let mut shared = test_sender_shared(manifest);
-        shared.active_quorum.record_ready(22);
-        shared.active_quorum.freeze();
-        sender.phase = RoundPhase::WaitingForReports;
-
-        let last_symbol = sender.mettle_stream_symbol_limit - 1;
-        sender
-            .source_symbol_payload(&shared, 0, last_symbol)
-            .expect("last finite-stream symbol");
-        assert!(
-            sender.blocks[0]
-                .mettle_stream
-                .as_ref()
-                .is_some_and(|stream| stream.finished),
-            "the data phase should leave an exhausted finite stream"
-        );
-
-        sender.on_need(
-            &mut shared,
-            22,
-            0,
-            NeedReport::Fec {
-                blocks: vec![NeedBlock {
-                    block_id: 0,
-                    deficit_symbols: 1,
-                }],
-            },
-        );
-
-        assert!(
-            sender.blocks[0].mettle_stream.is_none(),
-            "retransmission starts from bin zero with a fresh METTLE stream"
-        );
-        let payload = sender
-            .extra_symbol_payload(&shared, 0, 0)
-            .expect("retransmitted first bin");
-        assert_eq!(payload.len(), 4);
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_streams_large_k_symbols_on_demand() {
-        let k = 131_072u32;
-        let block_size = 1_073_741_824u32;
-        let manifest = LosslessSessionManifest {
-            block_size,
-            total_bytes: u64::from(block_size),
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(k, vec![7])),
-        };
-        let plan = BlockPlan::new(u64::from(block_size), block_size as usize).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("large-K METTLE sender");
-        let mut source = vec![0u8; 16 * 1024];
-        source[..8192].fill(0xA5);
-        source[8192..].fill(0x5A);
-        let shared = test_sender_shared_with_source(manifest, Bytes::from(source));
-
-        let first = sender
-            .source_symbol_payload(&shared, 0, 0)
-            .expect("first METTLE bin");
-
-        assert_eq!(first.len(), 8192);
-        let stream = sender.blocks[0]
-            .mettle_stream
-            .as_ref()
-            .expect("stream encoder should be initialized lazily");
-        assert_eq!(
-            stream.next_source_id, 1,
-            "requesting bin 0 should not scan or materialize the whole block"
-        );
-        // `symbol_payload` removes the just-fetched bin from the buffer to avoid
-        // an unnecessary `symbol_size`-byte clone on the WAN hot path; the
-        // sender owns the returned `Vec<u8>` directly.
-        assert_eq!(stream.buffered_bin_count(), 0);
-
-        sender.discard_sent_mettle_symbol(0, 0);
-        assert_eq!(
-            sender.blocks[0]
-                .mettle_stream
-                .as_ref()
-                .expect("stream still present")
-                .buffered_bin_count(),
-            0
-        );
-    }
-
-    #[tokio::test]
-    async fn mettle_sender_emits_finish_tail_after_real_object_prefix() {
-        let manifest = LosslessSessionManifest {
-            block_size: 16,
-            total_bytes: 16,
-            total_blocks: 1,
-            mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(4, vec![7])),
-        };
-        let plan = BlockPlan::new(16, 16).expect("valid plan");
-        let mut sender = FecSender::new(&manifest, plan).expect("METTLE sender");
-        let source = Bytes::from(vec![0xA5; 16]);
-        let shared = test_sender_shared_with_source(manifest, source);
-
-        let payload = sender
-            .source_symbol_payload(&shared, 0, 8)
-            .expect("finish-tail METTLE bin");
-
-        assert_eq!(payload.len(), 4);
-        let stream = sender.blocks[0]
-            .mettle_stream
-            .as_ref()
-            .expect("stream encoder should be initialized lazily");
-        assert_eq!(stream.next_source_id, stream.real_source_count);
-        assert!(
-            stream.finished,
-            "requesting a future bin should finish the terminated METTLE stream"
-        );
-    }
-
     /// The original full rescan of every block, kept as the reference ordering.
     fn reference_next_source_symbol(sender: &FecSender) -> Option<(u64, u32)> {
-        let limit = sender.source_phase_symbol_limit();
+        let limit = sender.symbols_per_block;
         for (block_idx, block) in sender.blocks.iter().enumerate() {
             if block.next_source_symbol < limit && sender.phase == RoundPhase::SendingData {
                 return Some((block_idx as u64, block.next_source_symbol));
@@ -1643,7 +962,7 @@ mod tests {
         };
         let plan = BlockPlan::new(manifest.total_bytes, 64).expect("valid plan");
         let mut sender = FecSender::new(&manifest, plan).expect("FEC sender");
-        let limit = sender.source_phase_symbol_limit();
+        let limit = sender.symbols_per_block;
 
         let mut sent = Vec::new();
         while let Some(next) = sender.next_source_symbol() {
@@ -1669,11 +988,6 @@ mod tests {
         assert_source_order_matches_full_scan(LosslessSessionFecMode::new_raptorq(4, vec![7, 9]));
     }
 
-    #[test]
-    fn source_cursor_preserves_mettle_many_block_send_order() {
-        assert_source_order_matches_full_scan(LosslessSessionFecMode::new_mettle(8, vec![7]));
-    }
-
     fn test_manifest() -> LosslessSessionManifest {
         LosslessSessionManifest {
             block_size: 16,
@@ -1684,13 +998,7 @@ mod tests {
     }
 
     fn test_sender_shared(manifest: LosslessSessionManifest) -> SenderShared {
-        test_sender_shared_with_source(manifest, Bytes::from_static(b"abcdefghijklmnop"))
-    }
-
-    fn test_sender_shared_with_source(
-        manifest: LosslessSessionManifest,
-        source_buffer: Bytes,
-    ) -> SenderShared {
+        let source_buffer = Bytes::from_static(b"abcdefghijklmnop");
         let processors = ProcessorHandle::new(LocalConfig {
             node_id: 0,
             n_nodes: 1,
