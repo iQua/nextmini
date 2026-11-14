@@ -255,23 +255,14 @@ impl Dataplane {
         rt().block_on(store_session_handle(&self.session_registry, session))
     }
 
-    #[cfg(feature = "python-extension")]
-    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
-        let mut guard = rt().block_on(self.buffer_registry.lock());
-        guard.insert(session_id, buf);
-    }
-}
-
-#[pymethods]
-impl Dataplane {
+    /// Shared body of `send_data` and `send_data_from_file`.
     #[allow(clippy::too_many_arguments)]
-    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, block_size=8500, src_port=None, dst_port=None))]
-    fn send_data(
+    fn send_source(
         &self,
         group_id: u64,
         dest_ip: &str,
         receiver_ids: Vec<usize>,
-        buffer: PacketView,
+        source: Bytes,
         block_size: usize,
         src_port: Option<u16>,
         dst_port: Option<u16>,
@@ -288,10 +279,10 @@ impl Dataplane {
             return Err(PyRuntimeError::new_err("block_size must be positive."));
         }
 
-        let total_bytes = buffer.inner.len() as u64;
+        let total_bytes = source.len() as u64;
         if total_bytes == 0 {
             return Err(PyRuntimeError::new_err(
-                "buffer is empty; nothing to transmit.",
+                "source is empty; nothing to transmit.",
             ));
         }
 
@@ -323,7 +314,7 @@ impl Dataplane {
                     pacing: runtime_config.data_bucket.clone(),
                     receiver_ids,
                     total_bytes,
-                    source_buffer: buffer.inner.clone(),
+                    source_buffer: source,
                     ready_grace_ms: runtime_config.ready_grace_ms,
                     peer_report_timeout_ms: runtime_config.peer_report_timeout_ms,
                 };
@@ -340,6 +331,87 @@ impl Dataplane {
         let _ = total_bytes;
 
         Ok(sid)
+    }
+
+    #[cfg(feature = "python-extension")]
+    fn remember_buffer_sink(&self, session_id: u64, buf: Arc<Mutex<Vec<u8>>>) {
+        let mut guard = rt().block_on(self.buffer_registry.lock());
+        guard.insert(session_id, buf);
+    }
+}
+
+/// Memory-map `path` read-only and expose it as zero-copy `Bytes`.
+fn map_file_bytes(path: &std::path::Path) -> PyResult<Bytes> {
+    let file = std::fs::File::open(path).map_err(|err| {
+        PyRuntimeError::new_err(format!("failed to open {}: {err}", path.display()))
+    })?;
+    let meta = file.metadata().map_err(|err| {
+        PyRuntimeError::new_err(format!("failed to stat {}: {err}", path.display()))
+    })?;
+    if meta.len() == 0 {
+        return Err(PyRuntimeError::new_err(
+            "source is empty; nothing to transmit.",
+        ));
+    }
+    // SAFETY: the mapping is read-only; callers are documented to keep the file unchanged while
+    // the session runs, as with any mmap-backed buffer.
+    let mmap = unsafe { memmap2::Mmap::map(&file) }.map_err(|err| {
+        PyRuntimeError::new_err(format!("failed to mmap {}: {err}", path.display()))
+    })?;
+    Ok(Bytes::from_owner(mmap))
+}
+
+#[pymethods]
+impl Dataplane {
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, buffer, *, block_size=8500, src_port=None, dst_port=None))]
+    fn send_data(
+        &self,
+        group_id: u64,
+        dest_ip: &str,
+        receiver_ids: Vec<usize>,
+        buffer: PacketView,
+        block_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<u64> {
+        self.send_source(
+            group_id,
+            dest_ip,
+            receiver_ids,
+            buffer.inner.clone(),
+            block_size,
+            src_port,
+            dst_port,
+        )
+    }
+
+    /// Send a file's contents without copying it into Python memory first.
+    ///
+    /// The file is memory-mapped read-only and handed to the sender as the source buffer, so it
+    /// must not be modified or truncated while the session is running.
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_id, dest_ip, receiver_ids, path, *, block_size=8500, src_port=None, dst_port=None))]
+    fn send_data_from_file(
+        &self,
+        group_id: u64,
+        dest_ip: &str,
+        receiver_ids: Vec<usize>,
+        path: std::path::PathBuf,
+        block_size: usize,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<u64> {
+        let source = map_file_bytes(&path)?;
+        self.send_source(
+            group_id,
+            dest_ip,
+            receiver_ids,
+            source,
+            block_size,
+            src_port,
+            dst_port,
+        )
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1035,4 +1107,36 @@ fn nextmini_py(_py: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
 fn parse_ipv4(addr: &str) -> PyResult<Ipv4Addr> {
     addr.parse::<Ipv4Addr>()
         .map_err(|e| PyRuntimeError::new_err(format!("invalid IPv4 address \"{addr}\": {e}")))
+}
+
+#[cfg(test)]
+mod file_source_tests {
+    use super::map_file_bytes;
+
+    fn temp_path(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("nextmini-py-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn maps_file_contents_without_copying() {
+        let path = temp_path("map");
+        std::fs::write(&path, b"hello mmap").expect("temp file should write");
+        let bytes = map_file_bytes(&path).expect("file should map");
+        assert_eq!(&bytes[..], b"hello mmap");
+        assert_eq!(&bytes.slice(6..)[..], b"mmap");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_empty_file() {
+        let path = temp_path("empty");
+        std::fs::write(&path, b"").expect("temp file should write");
+        assert!(map_file_bytes(&path).is_err());
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn rejects_missing_file() {
+        assert!(map_file_bytes(&temp_path("missing")).is_err());
+    }
 }

@@ -100,7 +100,7 @@ fn manifest(total_bytes: u64) -> LosslessSessionManifest {
 
 async fn send_frame(tx: &mpsc::Sender<InboundFrame>, bytes: Vec<u8>) {
     tx.send(InboundFrame {
-        bytes,
+        bytes: bytes.into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await

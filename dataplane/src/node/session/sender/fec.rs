@@ -30,6 +30,10 @@ enum RoundPhase {
 /// FEC-mode sender state and scheduling cursors.
 pub(super) struct FecSender {
     blocks: Vec<FecBlockState>,
+    /// Index of the first block that may still have unsent source symbols.
+    ///
+    /// Invariant: every block before it has `next_source_symbol >= source_phase_symbol_limit()`.
+    source_cursor: usize,
     scheme: FecScheme,
     symbols_per_block: u32,
     initial_symbol_count: u32,
@@ -302,6 +306,7 @@ impl FecSender {
                     mettle_stream: None,
                 })
                 .collect(),
+            source_cursor: 0,
             scheme,
             symbols_per_block: fec.symbols_per_block,
             initial_symbol_count,
@@ -431,15 +436,30 @@ impl FecSender {
     }
 
     /// Return the next source symbol to send in FEC mode.
+    ///
+    /// This is the first block whose `next_source_symbol` is below the source-phase limit, found
+    /// from `source_cursor` instead of rescanning every block per symbol. That is equivalent to a
+    /// full scan because, for the lifetime of the sender:
+    /// - `next_source_symbol` only ever increases (it starts at 0 and is bumped by one in
+    ///   `send_source_symbol`; finishing a report round resets only the extra-symbol counters), so
+    ///   a block that has reached the limit never becomes sendable again;
+    /// - `source_phase_symbol_limit()` is derived from `initial_symbol_count` and
+    ///   `mettle_stream_symbol_limit`, which are fixed at construction;
+    /// - `blocks` is never resized or replaced.
+    ///
+    /// Later rounds flip `phase` back to `SendingData` without resetting source counters, so the
+    /// cursor stays at the end and source scheduling correctly yields nothing. Anything that ever
+    /// lowers a counter or the limit must also reset `source_cursor` to 0.
     fn next_source_symbol(&mut self) -> Option<(u64, u32)> {
+        if self.phase != RoundPhase::SendingData {
+            return None;
+        }
         let source_phase_limit = self.source_phase_symbol_limit();
-        for (block_idx, block) in self.blocks.iter_mut().enumerate() {
-            let block_id = block_idx as u64;
-            if block.next_source_symbol < source_phase_limit
-                && self.phase == RoundPhase::SendingData
-            {
-                return Some((block_id, block.next_source_symbol));
+        while let Some(block) = self.blocks.get(self.source_cursor) {
+            if block.next_source_symbol < source_phase_limit {
+                return Some((self.source_cursor as u64, block.next_source_symbol));
             }
+            self.source_cursor += 1;
         }
         None
     }
@@ -1600,6 +1620,58 @@ mod tests {
             stream.finished,
             "requesting a future bin should finish the terminated METTLE stream"
         );
+    }
+
+    /// The original full rescan of every block, kept as the reference ordering.
+    fn reference_next_source_symbol(sender: &FecSender) -> Option<(u64, u32)> {
+        let limit = sender.source_phase_symbol_limit();
+        for (block_idx, block) in sender.blocks.iter().enumerate() {
+            if block.next_source_symbol < limit && sender.phase == RoundPhase::SendingData {
+                return Some((block_idx as u64, block.next_source_symbol));
+            }
+        }
+        None
+    }
+
+    fn assert_source_order_matches_full_scan(mode: LosslessSessionFecMode) {
+        let total_blocks = 48u64;
+        let manifest = LosslessSessionManifest {
+            block_size: 64,
+            total_bytes: 64 * total_blocks,
+            total_blocks,
+            mode: LosslessSessionMode::Fec(mode),
+        };
+        let plan = BlockPlan::new(manifest.total_bytes, 64).expect("valid plan");
+        let mut sender = FecSender::new(&manifest, plan).expect("FEC sender");
+        let limit = sender.source_phase_symbol_limit();
+
+        let mut sent = Vec::new();
+        while let Some(next) = sender.next_source_symbol() {
+            assert_eq!(Some(next), reference_next_source_symbol(&sender));
+            sent.push(next);
+            // Mirror send_source_symbol's counter bump.
+            sender.blocks[next.0 as usize].next_source_symbol += 1;
+        }
+        assert_eq!(reference_next_source_symbol(&sender), None);
+        assert_eq!(sent.len() as u64, total_blocks * u64::from(limit));
+        // Blocks are drained in order, one full block at a time.
+        assert!(sent.windows(2).all(|pair| pair[0] <= pair[1]));
+
+        // Later rounds return to SendingData without resetting source counters.
+        sender.phase = RoundPhase::WaitingForReports;
+        assert_eq!(sender.next_source_symbol(), None);
+        sender.phase = RoundPhase::SendingData;
+        assert_eq!(sender.next_source_symbol(), None);
+    }
+
+    #[test]
+    fn source_cursor_preserves_raptorq_many_block_send_order() {
+        assert_source_order_matches_full_scan(LosslessSessionFecMode::new_raptorq(4, vec![7, 9]));
+    }
+
+    #[test]
+    fn source_cursor_preserves_mettle_many_block_send_order() {
+        assert_source_order_matches_full_scan(LosslessSessionFecMode::new_mettle(8, vec![7]));
     }
 
     fn test_manifest() -> LosslessSessionManifest {

@@ -39,9 +39,31 @@ pub fn build_packet(route: FrameRoute, payload: &[u8]) -> Packet {
     )
 }
 
-/// Submit one session frame through the blocking processor ingress path.
-pub async fn send_frame(processors: &ProcessorHandle, route: FrameRoute, payload: &[u8]) {
-    let packet = build_packet(route, payload);
+/// Build a synthetic TCP packet carrying one `BlockData` frame encoded directly into the packet
+/// allocation, so the payload is copied exactly once.
+pub fn build_block_packet(route: FrameRoute, block_id: u64, payload: &[u8]) -> Packet {
+    Packet::build_ipv4_tcp_packet_with_payload_writer(
+        route.src_ip,
+        route.src_port,
+        route.dst_ip,
+        route.dst_port,
+        Some(LosslessTransportMeta {
+            session_id: route.session_id,
+            tree_id: route.tree_id,
+        }),
+        lossless_session::block_data_frame_len(payload.len()),
+        |buf| lossless_session::encode_block_data_into(buf, route.session_id, block_id, payload),
+    )
+}
+
+/// Submit one `BlockData` frame through the blocking processor ingress path.
+pub async fn send_block_frame(
+    processors: &ProcessorHandle,
+    route: FrameRoute,
+    block_id: u64,
+    payload: &[u8],
+) {
+    let packet = build_block_packet(route, block_id, payload);
     processors.process_packet(packet).await;
 }
 
@@ -81,6 +103,36 @@ pub async fn send_control(
 mod tests {
     use super::*;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn block_packets_match_separately_encoded_frame_packets() {
+        for tree_id in [None, Some(3)] {
+            let route = FrameRoute {
+                session_id: 17,
+                tree_id,
+                src_ip: Ipv4Addr::new(10, 0, 0, 1),
+                src_port: 4100,
+                dst_ip: Ipv4Addr::new(10, 0, 0, 2),
+                dst_port: 5100,
+            };
+            // Empty tail, typical, and the largest payload that fits one framed packet.
+            for payload_len in [0usize, 1, 8500, 65451] {
+                let payload: Vec<u8> = (0..payload_len).map(|i| (i % 251) as u8).collect();
+                let frame = lossless_session::encode_block_data(17, 9, &payload);
+                let expected = build_packet(route, &frame);
+                let actual = build_block_packet(route, 9, &payload);
+                assert_eq!(
+                    actual.bytes(),
+                    expected.bytes(),
+                    "payload_len {payload_len}"
+                );
+                assert_eq!(
+                    lossless_session::block_data_frame_len(payload_len),
+                    frame.len()
+                );
+            }
+        }
+    }
 
     #[test]
     fn control_packets_clear_payload_tree_ids() {

@@ -3,10 +3,22 @@ use super::{
     LosslessSessionBlockSymbol, LosslessSessionHeader, LosslessSessionKind,
 };
 
+/// Return the encoded size of a `BlockData` frame carrying `payload_len` payload bytes.
+pub fn block_data_frame_len(payload_len: usize) -> usize {
+    LosslessSessionHeader::LEN + 8 + payload_len
+}
+
 /// Encode a `BlockData` frame into a fresh `Vec<u8>`.
 pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(block_data_frame_len(payload.len()));
+    encode_block_data_into(&mut out, session_id, block_id, payload);
+    out
+}
+
+/// Append a `BlockData` frame to `out` without zero-filling the payload region.
+pub fn encode_block_data_into(out: &mut Vec<u8>, session_id: u64, block_id: u64, payload: &[u8]) {
     let body_len = 8 + payload.len() as u32;
-    let mut out = vec![0u8; LosslessSessionHeader::LEN + body_len as usize];
+    let mut header = [0u8; LosslessSessionHeader::LEN];
     LosslessSessionHeader {
         magic: LOSSLESS_SESSION_MAGIC,
         version: LOSSLESS_SESSION_VERSION,
@@ -15,12 +27,11 @@ pub fn encode_block_data(session_id: u64, block_id: u64, payload: &[u8]) -> Vec<
         session_id,
         body_len,
     }
-    .encode_into(&mut out[..LosslessSessionHeader::LEN]);
-    let mut pos = LosslessSessionHeader::LEN;
-    out[pos..pos + 8].copy_from_slice(&block_id.to_be_bytes());
-    pos += 8;
-    out[pos..pos + payload.len()].copy_from_slice(payload);
-    out
+    .encode_into(&mut header);
+    out.reserve(block_data_frame_len(payload.len()));
+    out.extend_from_slice(&header);
+    out.extend_from_slice(&block_id.to_be_bytes());
+    out.extend_from_slice(payload);
 }
 
 const BLOCK_SYMBOL_FIXED_BODY_LEN: usize = 8 + 4 + 2 + 2;
@@ -176,6 +187,34 @@ mod tests {
         assert_eq!(hdr.session_id, 42);
         assert_eq!(data.block_id, 7);
         assert_eq!(body, payload);
+    }
+
+    #[test]
+    fn block_data_into_appends_frame_identical_to_zero_filled_encoding() {
+        for payload_len in [0usize, 1, 8500, 65451] {
+            let payload: Vec<u8> = (0..payload_len).map(|i| (i % 251) as u8).collect();
+
+            // Reference: the original allocate-zeroed-then-copy encoding.
+            let mut expected = vec![0u8; block_data_frame_len(payload_len)];
+            LosslessSessionHeader {
+                magic: LOSSLESS_SESSION_MAGIC,
+                version: LOSSLESS_SESSION_VERSION,
+                kind: LosslessSessionKind::BlockData,
+                ctrl_kind: 0,
+                session_id: 42,
+                body_len: 8 + payload_len as u32,
+            }
+            .encode_into(&mut expected[..LosslessSessionHeader::LEN]);
+            expected[LosslessSessionHeader::LEN..LosslessSessionHeader::LEN + 8]
+                .copy_from_slice(&7u64.to_be_bytes());
+            expected[LosslessSessionHeader::LEN + 8..].copy_from_slice(&payload);
+
+            let mut appended = vec![0xEE, 0xEF];
+            encode_block_data_into(&mut appended, 42, 7, &payload);
+            assert_eq!(&appended[..2], &[0xEE, 0xEF]);
+            assert_eq!(&appended[2..], &expected[..]);
+            assert_eq!(encode_block_data(42, 7, &payload), expected);
+        }
     }
 
     #[test]

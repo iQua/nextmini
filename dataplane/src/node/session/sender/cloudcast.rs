@@ -155,14 +155,13 @@ impl CloudcastSender {
             return;
         };
         let payload = shared.source.block_payload(span);
-        let frame = nextmini_messages::lossless_session::encode_block_data(
-            shared.session.session_id,
-            block_id,
-            &payload,
-        );
         let tree_id = self.stripe_selector.tree_id_for_block(block_id);
-        shared.pace(frame.len()).await;
-        control::send_frame(
+        shared
+            .pace(nextmini_messages::lossless_session::block_data_frame_len(
+                payload.len(),
+            ))
+            .await;
+        control::send_block_frame(
             &shared.processors,
             control::FrameRoute {
                 session_id: shared.session.session_id,
@@ -172,7 +171,8 @@ impl CloudcastSender {
                 dst_ip: shared.route.dst_ip,
                 dst_port: shared.route.dst_port,
             },
-            &frame,
+            block_id,
+            &payload,
         )
         .await;
     }

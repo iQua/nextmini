@@ -188,7 +188,8 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
                     mode: LosslessSessionMode::Plain,
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -207,7 +208,7 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         .enumerate()
     {
         tx.send(InboundFrame {
-            bytes: lossless_session::encode_block_data(0xA11C_E102, block_id as u64, block),
+            bytes: lossless_session::encode_block_data(0xA11C_E102, block_id as u64, block).into(),
             peer_id: Some(SOURCE_NODE_ID),
         })
         .await
@@ -218,7 +219,8 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         bytes: lossless_session::encode_control(
             0xA11C_E102,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -365,7 +367,8 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
                     )),
                 },
             },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await
@@ -399,7 +402,7 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
                 symbol,
             );
             tx.send(InboundFrame {
-                bytes,
+                bytes: bytes.into(),
                 peer_id: Some(SOURCE_NODE_ID),
             })
             .await
@@ -418,7 +421,8 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         bytes: lossless_session::encode_control(
             0xA11C_E104,
             &LosslessSessionControl::SourceDone { round_id: 0 },
-        ),
+        )
+        .into(),
         peer_id: Some(SOURCE_NODE_ID),
     })
     .await

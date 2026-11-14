@@ -13,8 +13,8 @@ mod types;
 mod validation;
 
 pub use block_frames::{
-    block_symbol_packet_len, decode_block_data, decode_block_symbol, encode_block_data,
-    encode_block_symbol,
+    block_data_frame_len, block_symbol_packet_len, decode_block_data, decode_block_symbol,
+    encode_block_data, encode_block_data_into, encode_block_symbol,
 };
 pub use control_frames::{
     decode_control, encode_control, fec_need_packet_len, max_fec_need_blocks,
