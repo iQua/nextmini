@@ -6,7 +6,7 @@
     "multi-dc",
     "swarm-curl",
     "sba-swarm",
-    "pytorch-sba",
+    "pytorch",
     "ring_allreduce-sba"
   ]
 }

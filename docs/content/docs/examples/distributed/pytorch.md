@@ -1,6 +1,6 @@
 ---
-title: "Distributed PyTorch Trainers on Sim, Boston and Arbutus"
-description: "Runs distributed PyTorch trainer workflows across Sim, Boston, and Arbutus nodes."
+title: "Distributed PyTorch Trainers on a Multi-VM Docker Swarm"
+description: "Runs PyTorch DDP training over a Nextmini overlay across multiple Linux VMs (4-node example)."
 ---
 
 
@@ -16,13 +16,11 @@ And remove all the Nextmini related networks, for example, `nextmini_network`.
 docker network rm nextmini_network
 ```
 
-Then add `"examples/sba-swarm/ring-emu"` to `/nextmini/Cargo.toml`.
+Before running this example, at least three Linux VMs (or bare-metal hosts) need to be available with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and one or more worker instances. The walkthrough below uses a 4-node setup (one controller + manager VM that also runs `node1`, plus three worker VMs that run `node2`, `node3`, and `node4`). Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has a small disk partition. You can refer to [Arbutus Cloud Deployment](/docs/examples/deployment/arbutus) for setup guidance.
 
-Before running this example, at least three linux machines (or virtual machine instances) need to be set up with Ubuntu 24.04, including one controller instance, one Docker Swarm manager, and multiple worker instances. Docker needs to be pre-installed with `sudo` privileges. It is suggested that the docker directory is moved out of root which usually has small disk partition. You can refer to [Arbutus Cloud Deployment](/docs/examples/deployment/arbutus) for setup guidance.
+### Step 1: Build the controller image and prepare config
 
-### Step 1
-
-On the controller instance, build controller and postgres image:
+On the controller instance, build the controller image and pull Postgres:
 
 ```bash
 cd nextmini/examples/sba-swarm
@@ -41,18 +39,11 @@ database = "nextmini"
 port = "5432"
 ```
 
-Controller and postgres services can be started by:
-
-```bash
-docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
-# docker compose -f controller-swarm.yml build --no-cache; docker compose -f controller-swarm.yml up
-```
-
 On the manager instance, `<CONTROLLER_IP>` in `dataplane-swarm.yml` should be altered accordingly.
 
-### Step 2
+### Step 2: Build the dataplane image on every VM
 
-Build the pytorch base image on all manager and work instances :
+Build the pytorch base image on all manager and worker instances:
 
 ```bash
 cd nextmini/
@@ -60,29 +51,39 @@ docker build -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
 # docker build --no-cache --pull -t nextmini_datapath_pytorch -f ./examples/pytorch/Dockerfile .
 ```
 
-### Step 3
+### Step 3: Initialize the Docker Swarm
 
-On the manager instance, start the docker swarm:
+Initialize the swarm on the manager *before* starting any compose stack so libnetwork is in its final state when compose creates its bridge network:
 
 ```bash
 docker swarm init --advertise-addr <Manager IP>
 ```
 
-On all worker instances, join into the swarm network with the swarm token logged out:
+On each worker instance, join the swarm with the token printed by the manager:
 
 ```bash
 docker swarm join --token SWMTKN-1-xxxx <SWARM_MANAGER_IP>:<port>
 ```
 
-On the manager instance, you can check the status of nodes by:
+On the manager instance, verify that all nodes are listed:
 
 ```bash
 docker node ls
 ```
 
-### Step 4
+### Step 4: Start the controller and Postgres stack
 
-After all workers has joined the swarm, deploy services on the manager instance by:
+With the swarm already initialized, bring up the controller and Postgres compose stack on the controller instance:
+
+```bash
+cd nextmini/examples/sba-swarm
+docker compose -f controller-swarm.yml build; docker compose -f controller-swarm.yml up
+# docker compose -f controller-swarm.yml build --no-cache; docker compose -f controller-swarm.yml up
+```
+
+### Step 5: Deploy the dataplane stack
+
+After the controller is healthy, deploy the dataplane services on the manager instance:
 
 ```bash
 cd examples/sba-swarm
@@ -94,7 +95,7 @@ To check the status of services, use:
 docker service ls
 ```
 
-### Step 5
+### Step 6: Run mpirun and start training
 
 On the manager instance, find the container ID for node1 by:
 
@@ -150,7 +151,7 @@ To clean up the dataplane worker nodes: use the command below:
 docker stack rm nextmini
 ```
 
-To clean up the controller & db VM instance in DigitalOcean, use the command:
+To clean up the controller & Postgres VM, use the command:
 
 ```bash
 docker compose -f controller-swarm.yml down

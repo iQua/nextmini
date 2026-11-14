@@ -92,7 +92,7 @@ This script stops the tmux session (if present), brings down the controller cont
 
 ### Launching a virtual machine
 
-This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). As shown in this figure, `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
+This example can be tested with the `c16-180-576` configuration in the Arbutus cloud (a part of the Digital Research Alliance of Canada). `c16-180-576` is the name of `Flavor` in the Arbutus cloud, which manage the sizes for the compute, memory and storage capacity of the instance.
 
 
 For testing, you can directly launch an instance using the pre-configured snapshot `ns-test-2510`, which includes all necessary dependencies and configurations.
@@ -197,8 +197,7 @@ Example (default settings):
 
 Before running any commands, the port security on each instance should be disabled to allow traffic between instances.
 
-Choose `Edit port security group` and click `Edit Port` button.
-Then the following window will pop up, uncheck `Port Security` and click `Update` button.
+In the Edit Port dialog, uncheck `Port Security` and click `Update`.
 
 
 These steps are required to be done on all instances before running the example.

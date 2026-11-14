@@ -6,3 +6,10 @@ full_mesh_config = { n_nodes = 4 }
 
 [routing]
 protocol = "shortest_path"
+
+[db]
+user = "pgusr"
+password = "pgpwrd"
+host = "postgres"
+database = "nextmini"
+port = "5432"
