@@ -9,6 +9,7 @@ use tracing::{error, info, warn};
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 use crate::node::{FlowId, NodeId};
@@ -275,6 +276,7 @@ impl TcpMaxClient {
             self.processor.clone(),
             self.reporter.clone(),
             remote_node_id,
+            TransportScope::Default,
         )
         .await;
 

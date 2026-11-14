@@ -11,6 +11,25 @@ pub struct OverheadRatio {
 }
 
 impl OverheadRatio {
+    /// Experimental zero-overhead setting for controlled measurements.
+    ///
+    /// `new` intentionally rejects zero because paper-style METTLE runs choose
+    /// a positive channel-dependent `c`. This constant lets integration
+    /// experiments isolate the cost of the finite-stream expansion.
+    pub const ZERO: Self = Self {
+        numerator: 0,
+        denominator: 1,
+    };
+
+    /// Local convenience default used when callers do not specify `c`.
+    ///
+    /// The METTLE paper treats `c` as channel-dependent, so paper-oriented
+    /// experiments should pass an explicit overhead ratio.
+    pub const DEFAULT: Self = Self {
+        numerator: 1,
+        denominator: 20,
+    };
+
     pub fn new(numerator: u32, denominator: u32) -> Result<Self, ParamsError> {
         if denominator == 0 {
             return Err(ParamsError::ZeroDenominator);
@@ -40,8 +59,11 @@ pub struct MettleParams {
 }
 
 impl MettleParams {
+    // Paper: one TLE edge plus three non-TLE edges per source.
     pub const EDGE_COUNT: usize = 4;
+    // Paper: non-TLE edges sample inside a 600-source coupling window.
     pub const COUPLING_WINDOW: u64 = 600;
+    // Paper: reciprocal probabilities for the second, third, and fourth edges.
     pub const NON_TLE_PROFILE: [(u32, u32); 3] = [(1, 2), (1, 4), (1, 8)];
 
     pub const fn new(overhead: OverheadRatio) -> Self {
@@ -56,6 +78,7 @@ impl MettleParams {
         u128::from(self.overhead.numerator()) + u128::from(self.overhead.denominator())
     }
 
+    // Paper: TLE bin is floor((1 + overhead) * source_id).
     pub(crate) fn tle_bin_id(self, source_id: u64) -> u128 {
         (u128::from(source_id) * self.expansion_numerator())
             / u128::from(self.overhead.denominator())
@@ -95,8 +118,48 @@ impl MettleParams {
         edge_bin_ids
     }
 
+    pub(crate) fn unique_edge_bin_ids_with_terminal_source_count(
+        self,
+        source_id: u64,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+    ) -> Vec<u128> {
+        let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer_with_terminal_source_count(
+            source_id,
+            seed,
+            terminal_source_count,
+        );
+        edge_bin_ids[..edge_count].to_vec()
+    }
+
+    pub(crate) fn unique_edge_bin_id_buffer_with_terminal_source_count(
+        self,
+        source_id: u64,
+        seed: u64,
+        terminal_source_count: Option<u64>,
+    ) -> ([u128; Self::EDGE_COUNT], usize) {
+        // Paper: the graph is a binary source-to-bin adjacency. If seeded edge
+        // sampling picks the same bin more than once, that source still has one
+        // coefficient in the bin equation.
+        let mut edge_bin_ids =
+            self.edge_bin_ids_with_terminal_source_count(source_id, seed, terminal_source_count);
+        edge_bin_ids.sort_unstable();
+
+        let mut unique_edge_bin_ids = [0; Self::EDGE_COUNT];
+        let mut edge_count = 0usize;
+        for bin_id in edge_bin_ids {
+            if edge_count == 0 || unique_edge_bin_ids[edge_count - 1] != bin_id {
+                unique_edge_bin_ids[edge_count] = bin_id;
+                edge_count += 1;
+            }
+        }
+
+        (unique_edge_bin_ids, edge_count)
+    }
+
     #[cfg_attr(not(test), allow(dead_code))]
     fn window_end_exclusive(self, source_id: u64) -> u128 {
+        // Paper: uncompressed non-TLE support is [TLE(source), right boundary).
         let scaled = (u128::from(source_id) + u128::from(Self::COUPLING_WINDOW))
             * self.expansion_numerator();
         let denominator = u128::from(self.overhead.denominator());
@@ -137,7 +200,7 @@ impl MettleParams {
         div_ceil(uncompressed_width * factor_denominator, factor_numerator)
     }
 
-    fn window_end_exclusive_with_terminal_source_count(
+    pub(crate) fn window_end_exclusive_with_terminal_source_count(
         self,
         source_id: u64,
         terminal_source_count: Option<u64>,
@@ -330,18 +393,43 @@ fn mix_entropy(seed: u64, source_id: u64, edge_index: u64) -> u64 {
 #[cfg_attr(not(test), allow(dead_code))]
 fn sample_power_of_two_binomial(trials: u128, denominator: u32, mut state: u64) -> u128 {
     debug_assert!(denominator.is_power_of_two());
-    let mask = u64::from(denominator - 1);
+    let bit_planes = denominator.trailing_zeros();
     let mut successes = 0;
     let mut remaining = trials;
 
-    while remaining != 0 {
-        if next_entropy(&mut state) & mask == 0 {
-            successes += 1;
-        }
-        remaining -= 1;
+    while remaining >= u128::from(u64::BITS) {
+        successes += u128::from(sample_power_of_two_binomial_chunk(
+            u64::BITS,
+            bit_planes,
+            &mut state,
+        ));
+        remaining -= u128::from(u64::BITS);
+    }
+
+    if remaining != 0 {
+        successes += u128::from(sample_power_of_two_binomial_chunk(
+            remaining as u32,
+            bit_planes,
+            &mut state,
+        ));
     }
 
     successes
+}
+
+fn sample_power_of_two_binomial_chunk(width: u32, bit_planes: u32, state: &mut u64) -> u32 {
+    debug_assert!((1..=u64::BITS).contains(&width));
+
+    let mut success_mask = u64::MAX;
+    for _ in 0..bit_planes {
+        success_mask &= !next_entropy(state);
+    }
+
+    if width != u64::BITS {
+        success_mask &= (1u64 << width) - 1;
+    }
+
+    success_mask.count_ones()
 }
 
 #[cfg_attr(not(test), allow(dead_code))]
@@ -485,7 +573,7 @@ mod tests {
     #[test]
     fn second_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 363);
+        assert_eq!(params.second_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 362);
     }
 
     #[test]
@@ -510,7 +598,7 @@ mod tests {
     #[test]
     fn third_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 509);
+        assert_eq!(params.third_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 511);
     }
 
     #[test]
@@ -545,7 +633,7 @@ mod tests {
     #[test]
     fn fourth_edge_matches_fixed_golden() {
         let params = MettleParams::new(OverheadRatio::new(1, 20).expect("valid overhead"));
-        assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 590);
+        assert_eq!(params.fourth_edge_bin_id(37, 0x1234_5678_9ABC_DEF0), 574);
     }
 
     #[test]

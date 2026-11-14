@@ -31,7 +31,7 @@ fn non_fec_flow_not_starved() {
         .expect("non-fec packet should enqueue");
 
     let mut batch = Vec::new();
-    queue.collect_packets(&mut batch);
+    queue.collect_packets(&mut batch, usize::MAX);
 
     assert!(
         !batch.is_empty(),

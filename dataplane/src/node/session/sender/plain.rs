@@ -68,6 +68,9 @@ impl super::ModeHooks for PlainSender {
             return;
         }
         self.round_reports.insert(peer_id, report);
+        shared
+            .quorum_liveness
+            .note_feedback_progress(tokio::time::Instant::now());
         match self.round_reports.get(&peer_id) {
             Some(NeedReport::Complete) => {}
             Some(NeedReport::Plain { ranges }) => {
@@ -289,7 +292,6 @@ impl PlainSender {
             &frame,
         )
         .await;
-        shared.mark_payload_emitted();
     }
 }
 
@@ -406,11 +408,10 @@ mod tests {
                 Duration::from_millis(30),
             ),
             plan: BlockPlan::new(4, 4).expect("valid plan"),
-            source: BlockSource::new(Bytes::from_static(b"abcd")),
+            source: BlockSource::new(Bytes::from_static(b"abcd"), 4),
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,
-            payload_emitted: false,
         }
     }
 }

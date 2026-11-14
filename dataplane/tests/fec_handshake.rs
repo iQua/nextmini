@@ -7,7 +7,7 @@ use bytes::Bytes;
 use tokio::time::timeout;
 
 use nextmini::node::NodeIdExt;
-use nextmini::node::config::LocalConfig;
+use nextmini::node::config::{LocalConfig, LosslessFecScheme};
 use nextmini::node::processor::ProcessorHandle;
 use nextmini::node::session::api::{
     LosslessRuntimeHandle, LosslessSessionHandle, SessionOutcome, StartError,
@@ -15,7 +15,6 @@ use nextmini::node::session::api::{
 use nextmini::node::session::runtime::{
     PreflightError, SenderRequest, SessionConfig, TransportRoute,
 };
-use nextmini_messages::OperatingMode;
 use nextmini_messages::lossless_session::{
     self, LosslessSessionControl, LosslessSessionMode, NeedReport,
 };
@@ -41,7 +40,7 @@ async fn start_runtime_sender(
     runtime_cfg.fec_default_tree_ids = vec![1, 3];
     let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
     let runtime = LosslessRuntimeHandle::new(capture.processors.clone(), runtime_cfg);
-    runtime.set_topology_ready(true);
+    runtime.set_topology_ready(true).await;
 
     let session = runtime
         .start_sender(SenderRequest {
@@ -154,6 +153,109 @@ async fn start_sender_rejects_zero_symbols_per_block_without_clamping() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_defaults_to_raptorq_fec_scheme() {
+    let mut harness = start_runtime_sender(true, 400, 0x0FEC_2005).await;
+
+    let manifest_packet = common::recv_packet(&mut harness.capture.packet_rx).await;
+    let manifest_payload = manifest_packet
+        .tcp_payload()
+        .expect("manifest packet should include payload");
+    let (_, control) =
+        lossless_session::decode_control(manifest_payload).expect("expected manifest control");
+    let LosslessSessionControl::Manifest { manifest } = control else {
+        panic!("unexpected control frame");
+    };
+    let LosslessSessionMode::Fec(fec) = manifest.mode else {
+        panic!("expected FEC manifest");
+    };
+
+    assert_eq!(
+        fec.scheme_kind(),
+        Some(nextmini_messages::lossless_session::FecScheme::RaptorQ)
+    );
+
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::ready_frame(harness.session_id, 2),
+        )
+        .await;
+    drop(harness.session);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_accepts_small_experimental_mettle_symbols_per_block() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_scheme = LosslessFecScheme::Mettle;
+    runtime_cfg.fec_default_symbols_per_block = 16;
+    runtime_cfg.fec_default_tree_ids = vec![1];
+
+    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2006).await;
+
+    assert_eq!(started.expect("small-K METTLE should start"), 0x0FEC_2006);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn start_sender_accepts_16gb_mettle_with_configured_block_size() {
+    let cfg = LocalConfig {
+        node_id: 1,
+        n_nodes: 2,
+        num_packet_processors: 1,
+        channel_capacity: 512,
+        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
+        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
+        ..Default::default()
+    };
+    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
+    runtime_cfg.fec_enabled = true;
+    runtime_cfg.fec_default_scheme = LosslessFecScheme::Mettle;
+    runtime_cfg.fec_default_symbols_per_block = 131_072;
+    runtime_cfg.fec_default_tree_ids = vec![1];
+    let peer_report_timeout_ms = runtime_cfg.peer_report_timeout_ms;
+    let processors = ProcessorHandle::new(cfg.clone());
+    let runtime = LosslessRuntimeHandle::new(processors, runtime_cfg);
+    runtime.set_topology_ready(true).await;
+
+    let session = runtime
+        .start_sender(SenderRequest {
+            session: SessionConfig {
+                session_id: 0x0FEC_2007,
+                block_size: 1_073_741_824,
+            },
+            route: TransportRoute {
+                src_ip: cfg
+                    .node_id
+                    .ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                dst_ip: 2usize.ip_addr(cfg.user_space_base_addr, cfg.local_netmask),
+                src_port: 4410,
+                dst_port: 5410,
+            },
+            pacing: None,
+            receiver_ids: vec![2],
+            total_bytes: 16_393_000_960,
+            source_buffer: Bytes::new(),
+            ready_grace_ms: 1,
+            peer_report_timeout_ms,
+        })
+        .await
+        .expect("16GB METTLE should keep the configured 1GiB block size");
+
+    assert_eq!(session.id(), 0x0FEC_2007);
+    drop(session);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
     let cfg = LocalConfig {
         node_id: 1,
@@ -179,38 +281,6 @@ async fn start_sender_rejects_unsorted_duplicate_fec_tree_ids() {
             ))
         ),
         "tree ids should be validated, not canonicalized"
-    );
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn start_sender_rejects_multitree_fec_when_ingress_contract_is_shared_queue() {
-    let cfg = LocalConfig {
-        node_id: 1,
-        n_nodes: 2,
-        num_packet_processors: 1,
-        channel_capacity: 512,
-        operating_mode: OperatingMode::Max,
-        feature: nextmini::node::config::Feature::Sequential,
-        channel_backpressure: true,
-        user_space_base_addr: Ipv4Addr::new(10, 0, 0, 0),
-        local_netmask: Ipv4Addr::new(255, 255, 255, 0),
-        ..Default::default()
-    };
-    let mut runtime_cfg = cfg.lossless_runtime_config.clone();
-    runtime_cfg.fec_enabled = true;
-    runtime_cfg.fec_default_symbols_per_block = 4;
-    runtime_cfg.fec_default_tree_ids = vec![1, 3];
-
-    let started = start_sender_with_runtime_config(cfg, runtime_cfg, 0x0FEC_2004).await;
-
-    assert!(
-        matches!(
-            started,
-            Err(StartError::Preflight(
-                PreflightError::MultiTreeRequiresTreeVisibleIngress
-            ))
-        ),
-        "multi-tree FEC should be rejected when processor ingress collapses onto a shared queue"
     );
 }
 
@@ -250,10 +320,13 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness.runtime.deliver(
-        harness.session_id,
-        common::ready_frame(harness.session_id, 2),
-    );
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::ready_frame(harness.session_id, 2),
+        )
+        .await;
 
     let mut saw_block_data = false;
     let mut saw_source_done = false;
@@ -273,10 +346,13 @@ async fn plain_sender_waits_for_ready_before_emitting_block_data() {
         }
     }
 
-    harness.runtime.deliver(
-        harness.session_id,
-        common::plain_status_frame(harness.session_id, 2, 0, NeedReport::Complete),
-    );
+    harness
+        .runtime
+        .deliver(
+            harness.session_id,
+            common::plain_status_frame(harness.session_id, 2, 0, NeedReport::Complete),
+        )
+        .await;
     let completed = timeout(Duration::from_secs(5), harness.session.wait())
         .await
         .expect("sender runtime wait should not time out");

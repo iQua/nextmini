@@ -6,7 +6,7 @@ use nextmini_messages::lossless_session::{
     LosslessSessionFecMode, LosslessSessionMode, MAX_MANIFEST_TREE_IDS,
 };
 
-use crate::node::config::LosslessConfig;
+use crate::node::config::{LosslessConfig, LosslessFecScheme};
 
 /// Errors reported before a sender session is started.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -17,7 +17,7 @@ pub enum PreflightError {
     MissingTreeIds,
     TreeIdsMustBeSortedUnique { tree_ids: Vec<u16> },
     TooManyTreeIds { configured: usize, max: usize },
-    MultiTreeRequiresTreeVisibleIngress,
+    InvalidMettleCodedRate { numerator: u32, denominator: u32 },
 }
 
 /// Runtime-derived sender policy after local validation succeeds.
@@ -52,16 +52,35 @@ pub(super) fn derive_sender_policy(
 
     let tree_ids = derive_sender_tree_ids(runtime_config)?;
 
-    Ok(SenderPolicy {
-        mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_raptorq(
-            symbols_per_block,
-            tree_ids,
-        )),
-    })
+    let mode = match runtime_config.fec_default_scheme {
+        LosslessFecScheme::RaptorQ => LosslessSessionMode::Fec(
+            LosslessSessionFecMode::new_raptorq(symbols_per_block, tree_ids),
+        ),
+        LosslessFecScheme::Mettle => {
+            let numerator = runtime_config.mettle_default_coded_rate_num;
+            let denominator = runtime_config.mettle_default_coded_rate_den;
+            if denominator == 0 || numerator < denominator {
+                return Err(PreflightError::InvalidMettleCodedRate {
+                    numerator,
+                    denominator,
+                });
+            }
+            LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle_with_coded_rate(
+                symbols_per_block,
+                tree_ids,
+                numerator,
+                denominator,
+            ))
+        }
+    };
+
+    Ok(SenderPolicy { mode })
 }
 
 /// Resolve and validate the tree set used for FEC symbol striping.
-fn derive_sender_tree_ids(runtime_config: &LosslessConfig) -> Result<Vec<u16>, PreflightError> {
+pub(super) fn derive_sender_tree_ids(
+    runtime_config: &LosslessConfig,
+) -> Result<Vec<u16>, PreflightError> {
     let requested_tree_ids = runtime_config.fec_default_tree_ids.clone();
 
     if requested_tree_ids.is_empty() {
@@ -110,9 +129,12 @@ impl Display for PreflightError {
                 f,
                 "configured fec tree_ids length {configured} exceeds wire manifest capacity {max}"
             ),
-            Self::MultiTreeRequiresTreeVisibleIngress => write!(
+            Self::InvalidMettleCodedRate {
+                numerator,
+                denominator,
+            } => write!(
                 f,
-                "collaborative multi-tree fec requires tree-visible non-blocking ingress for this session path"
+                "mettle_default_coded_rate_num/den must describe a rate >= 1 with non-zero denominator (got {numerator}/{denominator})"
             ),
         }
     }

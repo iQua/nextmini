@@ -36,6 +36,7 @@ async fn sender_stripes_symbols_across_configured_trees() {
         ready_grace_ms: 200,
         peer_report_timeout_ms: 200,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(32);

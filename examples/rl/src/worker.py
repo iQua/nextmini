@@ -4,8 +4,8 @@ import tempfile
 from pathlib import Path
 import torch
 import asyncio
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from . import config
+from .model_loader import load_policy_model, load_tokenizer
 
 try:
     import nextmini_py as nm
@@ -17,19 +17,36 @@ except ImportError as exc:
     ) from exc
 
 
+def configured_model_dtype(device: str):
+    raw = config.MODEL_DTYPE.strip().lower()
+    if raw in {"", "auto"}:
+        return "auto"
+    aliases = {
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "half": torch.float16,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    if raw not in aliases:
+        raise ValueError(f"unsupported MODEL_DTYPE={config.MODEL_DTYPE!r}")
+    if not str(device).startswith("cuda") and aliases[raw] == torch.float16:
+        print("Warning: MODEL_DTYPE=float16 on CPU is for broadcast-only runs; CPU generation may be slow or unsupported.", flush=True)
+    return aliases[raw]
+
+
 class Worker:
     def __init__(self, rank: int, device_id: int = 0, config_path: str = None):
         self.rank = rank
         self.device = f"cuda:{device_id}" if torch.cuda.is_available() else "cpu"
         
-        print(f"Worker {rank} initializing on {self.device}...")
+        print(f"Worker {rank} initializing on {self.device} with model {config.MODEL_NAME}...")
         
-        self.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
-        self.model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            dtype=torch.float16,
-            trust_remote_code=True
-        ).to(self.device)
+        self.tokenizer = load_tokenizer(config.MODEL_NAME)
+        model_dtype = configured_model_dtype(self.device)
+        self.model = load_policy_model(config.MODEL_NAME, dtype=model_dtype).to(self.device)
         self.model.eval()
         
         # Get worker configuration
@@ -232,11 +249,8 @@ class Worker:
                     
                     # Load model from sharded checkpoint
                     print(f"Worker {self.rank}: Loading model from sharded checkpoint...", flush=True)
-                    self.model = AutoModelForCausalLM.from_pretrained(
-                        str(tmpdir),
-                        torch_dtype=torch.float16,
-                        trust_remote_code=True
-                    ).to(self.device)
+                    model_dtype = configured_model_dtype(self.device)
+                    self.model = load_policy_model(str(tmpdir), dtype=model_dtype).to(self.device)
                     self.model.eval()
                     
                 print(f"Worker {self.rank}: Sharded weights loaded successfully.", flush=True)

@@ -1,8 +1,9 @@
-//! Thin, wire-agnostic adapter between session logic and `raptorq` primitives.
+//! Thin, wire-agnostic bridge between session logic and FEC primitives.
 //!
 //! The lossless session subsystem can use this module without taking a direct
 //! dependency on frame layout or transport metadata.
 
+use nextmini_messages::lossless_session::{FecScheme, LosslessSessionFecMode};
 use raptorq::{
     EncodingPacket, ObjectTransmissionInformation, PayloadId, SourceBlockDecoder,
     SourceBlockEncoder,
@@ -10,6 +11,29 @@ use raptorq::{
 
 const FEC_BLOCK_SEED_SESSION_MULTIPLIER: u64 = 0x9E37_79B9_7F4A_7C15;
 const FEC_BLOCK_SEED_BLOCK_MULTIPLIER: u64 = 0xBF58_476D_1CE4_E5B9;
+
+/// Convert the configured METTLE coded-rate knob into the overhead ratio `c`.
+///
+/// `1/1` maps to `c=0`; `21/20` maps to `c=1/20`.
+pub(crate) fn mettle_overhead_from_coded_rate(
+    numerator: u32,
+    denominator: u32,
+) -> Option<mettle::OverheadRatio> {
+    if denominator == 0 || numerator < denominator {
+        return None;
+    }
+    if numerator == denominator {
+        return Some(mettle::OverheadRatio::ZERO);
+    }
+    mettle::OverheadRatio::new(numerator - denominator, denominator).ok()
+}
+
+/// Return the METTLE overhead encoded in the session manifest.
+pub(crate) fn mettle_overhead_from_fec_mode(
+    fec_mode: &LosslessSessionFecMode,
+) -> Option<mettle::OverheadRatio> {
+    mettle_overhead_from_coded_rate(fec_mode.coded_rate_num, fec_mode.coded_rate_den)
+}
 
 /// Deterministically derives the FEC block seed shared by sender and receiver.
 #[must_use]
@@ -24,16 +48,30 @@ pub struct BlockParams {
     pub source_symbols: usize,
     pub symbol_size: usize,
     pub seed: u64,
+    pub scheme: FecScheme,
 }
 
 impl BlockParams {
+    /// Build a reusable RaptorQ encoder/decoder parameter bundle for one logical block.
+    #[must_use]
+    #[allow(dead_code)]
+    pub const fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
+        Self::with_scheme(source_symbols, symbol_size, seed, FecScheme::RaptorQ)
+    }
+
     /// Build a reusable encoder/decoder parameter bundle for one logical block.
     #[must_use]
-    pub const fn new(source_symbols: usize, symbol_size: usize, seed: u64) -> Self {
+    pub const fn with_scheme(
+        source_symbols: usize,
+        symbol_size: usize,
+        seed: u64,
+        scheme: FecScheme,
+    ) -> Self {
         Self {
             source_symbols,
             symbol_size,
             seed,
+            scheme,
         }
     }
 
@@ -53,26 +91,43 @@ impl BlockParams {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecodeError {
     InsufficientSymbols,
+    InvalidSymbol,
 }
 
 impl std::fmt::Display for DecodeError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "InsufficientSymbols")
+        match self {
+            Self::InsufficientSymbols => write!(f, "InsufficientSymbols"),
+            Self::InvalidSymbol => write!(f, "InvalidSymbol"),
+        }
     }
 }
 
 /// Opaque received symbol for decoder input.
 #[derive(Debug, Clone)]
 pub struct ReceivedSymbol {
-    esi: u32,
+    kind: ReceivedSymbolKind,
     payload: Vec<u8>,
 }
 
-/// Thin encoder wrapper around `raptorq::SourceBlockEncoder`.
+#[derive(Debug, Clone)]
+enum ReceivedSymbolKind {
+    RaptorQ { esi: u32 },
+}
+
+/// Thin encoder wrapper around block-materialized FEC backends.
+///
+/// METTLE intentionally does not use this path: its sender advances the
+/// paper-native streaming encoder directly and produces coded bins on demand.
 #[derive(Debug)]
 pub struct Encoder {
-    inner: SourceBlockEncoder,
+    inner: EncoderInner,
     k: usize,
+}
+
+#[derive(Debug)]
+enum EncoderInner {
+    RaptorQ(SourceBlockEncoder),
 }
 
 impl Encoder {
@@ -85,19 +140,35 @@ impl Encoder {
         if source_block.len() != params.source_symbols * params.symbol_size {
             return None;
         }
-        let inner = SourceBlockEncoder::new(0, &params.oti(), source_block);
+        let inner = match params.scheme {
+            FecScheme::RaptorQ => {
+                EncoderInner::RaptorQ(SourceBlockEncoder::new(0, &params.oti(), source_block))
+            }
+            FecScheme::Mettle => return None,
+        };
         Some(Self {
             inner,
             k: params.source_symbols,
         })
     }
 
-    /// Generates a deterministic coded symbol payload for the provided ESI (ESI >= K).
+    /// Generates a deterministic RaptorQ repair symbol payload for the provided ESI.
     #[must_use]
-    pub fn coded_symbol(&self, esi: u32) -> Vec<u8> {
-        let coded_index = esi.saturating_sub(self.k as u32);
-        let packets = self.inner.repair_packets(coded_index, 1);
-        packets.into_iter().next().unwrap().data().to_vec()
+    pub fn coded_symbol(&self, esi: u32) -> Option<Vec<u8>> {
+        match &self.inner {
+            EncoderInner::RaptorQ(inner) => {
+                let repair_index = self.repair_index(esi)?;
+                let packets = inner.repair_packets(repair_index, 1);
+                packets
+                    .into_iter()
+                    .next()
+                    .map(|packet| packet.data().to_vec())
+            }
+        }
+    }
+
+    fn repair_index(&self, esi: u32) -> Option<u32> {
+        esi.checked_sub(u32::try_from(self.k).ok()?)
     }
 }
 
@@ -112,50 +183,70 @@ pub struct DecodeOutput {
 pub struct Decoder {
     k: usize,
     symbol_size: usize,
-    oti: ObjectTransmissionInformation,
-    block_length: u64,
+    params: BlockParams,
 }
 
 impl Decoder {
-    /// Construct a decoder for one logical block.
-    #[must_use]
-    pub fn new(source_symbols: usize, symbol_size: usize, _seed: u64) -> Self {
-        let params = BlockParams::new(source_symbols, symbol_size, _seed);
-        let oti = params.oti();
-        Self {
-            k: source_symbols,
-            symbol_size,
-            oti,
-            block_length: (source_symbols * symbol_size) as u64,
-        }
-    }
-
     /// Construct a decoder from shared block parameters.
     #[must_use]
     pub fn from_block(params: BlockParams) -> Self {
-        Self::new(params.source_symbols, params.symbol_size, params.seed)
+        Self {
+            k: params.source_symbols,
+            symbol_size: params.symbol_size,
+            params,
+        }
     }
 
     /// Builds a source symbol in decoder input format.
     #[must_use]
     pub fn source_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
         assert!((esi as usize) < self.k, "source ESI must be less than K");
-        ReceivedSymbol { esi, payload }
+        assert_eq!(
+            self.params.scheme,
+            FecScheme::RaptorQ,
+            "METTLE uses the streaming decoder path, not block decoder symbols"
+        );
+        ReceivedSymbol {
+            kind: ReceivedSymbolKind::RaptorQ { esi },
+            payload,
+        }
     }
 
     /// Builds a coded symbol in decoder input format.
     #[must_use]
     pub fn coded_symbol(&self, esi: u32, payload: Vec<u8>) -> ReceivedSymbol {
-        ReceivedSymbol { esi, payload }
+        assert_eq!(
+            self.params.scheme,
+            FecScheme::RaptorQ,
+            "METTLE uses the streaming decoder path, not block decoder symbols"
+        );
+        ReceivedSymbol {
+            kind: ReceivedSymbolKind::RaptorQ { esi },
+            payload,
+        }
     }
 
     /// Attempt to reconstruct the source symbols from the received symbol set.
     pub fn decode(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
-        let mut decoder = SourceBlockDecoder::new(0, &self.oti, self.block_length);
+        match self.params.scheme {
+            FecScheme::RaptorQ => self.decode_raptorq(symbols),
+            FecScheme::Mettle => Err(DecodeError::InvalidSymbol),
+        }
+    }
+
+    fn decode_raptorq(&self, symbols: &[ReceivedSymbol]) -> Result<DecodeOutput, DecodeError> {
+        let oti = self.params.oti();
+        let block_length = (self.params.source_symbols * self.params.symbol_size) as u64;
+        let mut decoder = SourceBlockDecoder::new(0, &oti, block_length);
         let packets: Vec<EncodingPacket> = symbols
             .iter()
-            .map(|sym| EncodingPacket::new(PayloadId::new(0, sym.esi), sym.payload.clone()))
-            .collect();
+            .map(|sym| match sym.kind {
+                ReceivedSymbolKind::RaptorQ { esi } => Ok(EncodingPacket::new(
+                    PayloadId::new(0, esi),
+                    sym.payload.clone(),
+                )),
+            })
+            .collect::<Result<_, _>>()?;
         match decoder.decode(packets) {
             Some(flat_data) => {
                 let mut source_syms = Vec::with_capacity(self.k);
@@ -181,9 +272,81 @@ impl Decoder {
     }
 }
 
+/// Compute how many future repair symbols are needed for the selected scheme.
+#[must_use]
+#[allow(dead_code)]
+pub fn repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
+    match params.scheme {
+        FecScheme::RaptorQ => {
+            let present = symbol_ids.into_iter().count();
+            if present >= params.source_symbols {
+                1
+            } else {
+                u16::try_from(params.source_symbols - present)
+                    .unwrap_or(u16::MAX)
+                    .max(1)
+            }
+        }
+        FecScheme::Mettle => mettle_repair_deficit(params, symbol_ids),
+    }
+}
+
+/// Return the number of symbols to emit before opening the first FEC feedback
+/// round for the selected scheme.
+#[must_use]
+pub fn initial_symbol_count(
+    params: BlockParams,
+    mettle_overhead: mettle::OverheadRatio,
+) -> Option<u32> {
+    match params.scheme {
+        FecScheme::RaptorQ => u32::try_from(params.source_symbols).ok(),
+        FecScheme::Mettle => mettle::block::BlockParams::with_overhead(
+            params.source_symbols,
+            params.symbol_size,
+            params.seed,
+            mettle_overhead,
+        )
+        .metadata()
+        .ok()
+        .and_then(|metadata| u32::try_from(metadata.initial_symbol_count()).ok()),
+    }
+}
+
+#[allow(dead_code)]
+fn mettle_repair_deficit(params: BlockParams, symbol_ids: impl IntoIterator<Item = u32>) -> u16 {
+    let Ok(metadata) = mettle::block::BlockParams::with_overhead(
+        params.source_symbols,
+        params.symbol_size,
+        params.seed,
+        mettle::OverheadRatio::ZERO,
+    )
+    .metadata() else {
+        return 1;
+    };
+
+    let initial_symbol_count = metadata.initial_symbol_count();
+    let mut initial_bins = Vec::new();
+    let mut repairs = Vec::new();
+    for symbol_id in symbol_ids {
+        if (symbol_id as usize) < initial_symbol_count {
+            initial_bins.push(symbol_id as usize);
+        } else {
+            repairs.push(symbol_id.saturating_sub(initial_symbol_count as u32) as usize);
+        }
+    }
+
+    let additional = match metadata.estimate_repair_deficit(initial_bins, repairs) {
+        Ok(Some(additional)) => additional,
+        _ => return 1,
+    };
+    u16::try_from(additional).unwrap_or(u16::MAX).max(1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PAPER_SCALE_METTLE_K: usize = 2400;
 
     #[test]
     fn block_seed_is_stable_for_known_input() {
@@ -250,7 +413,7 @@ mod tests {
             .collect();
         symbols.extend((0..(k - half_k)).map(|offset| {
             let esi = k as u32 + offset as u32;
-            decoder.coded_symbol(esi, encoder.coded_symbol(esi))
+            decoder.coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
         }));
 
         let output = decoder.decode(&symbols).unwrap();
@@ -293,7 +456,7 @@ mod tests {
             .collect();
         symbols.extend((0..(k - half_k)).map(|offset| {
             let esi = k as u32 + offset as u32;
-            decoder.coded_symbol(esi, encoder.coded_symbol(esi))
+            decoder.coded_symbol(esi, encoder.coded_symbol(esi).expect("coded symbol"))
         }));
 
         let output = decoder.decode(&symbols).unwrap();
@@ -305,5 +468,19 @@ mod tests {
         {
             assert_eq!(decoded, expected, "symbol {i} mismatch");
         }
+    }
+
+    #[test]
+    fn mettle_deficit_accounts_for_non_contiguous_repairs() {
+        let k = PAPER_SCALE_METTLE_K;
+        let params = BlockParams::with_scheme(k, 1, 0xA55A, FecScheme::Mettle);
+        let received_sources = (0..(k - 3)).map(|source_index| source_index as u32);
+        let received_repairs = [10u32, 12, 17].map(|repair_index| k as u32 + repair_index);
+        let deficit = repair_deficit(params, received_sources.chain(received_repairs));
+
+        assert!(
+            deficit > 1,
+            "non-contiguous METTLE repairs should not be treated as an immediately decodable K-count set"
+        );
     }
 }

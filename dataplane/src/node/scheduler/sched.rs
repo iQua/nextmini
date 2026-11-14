@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tokio::sync::{Notify, Semaphore, mpsc};
-use tracing::{debug, error};
+use tracing::error;
 
 use nextmini_messages::{SchedulingDiscipline, TokenBucketSpec};
 
@@ -43,9 +43,69 @@ impl SchedulerHandle {
         let (writer_sender, writer_receiver) = mpsc::unbounded_channel();
         let backpressure = config.channel_backpressure;
 
-        let scheduler = Scheduler::new(config, net_interface, reader_receiver, writer_receiver);
-        scheduler.run();
+        let capacity = config.queue_capacity;
+        let capacity_unit = CapacityUnit::Packets;
 
+        let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
+            DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
+            DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
+        };
+
+        let queue_strategy: Arc<dyn SchedulerQueue + Send + Sync> = match config.scheduler_type {
+            SchedulingDiscipline::Fifo => Arc::new(FifoQueue::new(capacity)),
+            SchedulingDiscipline::Wrr => Arc::new(WrrQueue::new(capacity)),
+        };
+
+        let queues_not_empty = Arc::new(Notify::new());
+
+        // When channel backpressure is enabled, also apply it to the scheduler queue so we block
+        // instead of dropping when the queue reaches capacity.
+        let capacity_semaphore = if config.channel_backpressure && capacity > 0 {
+            Some(Arc::new(Semaphore::new(capacity)))
+        } else {
+            None
+        };
+
+        let mut reader = SchedulerReader::new(
+            queue_strategy.clone(),
+            packet_drop,
+            queues_not_empty.clone(),
+            capacity,
+            capacity_semaphore.clone(),
+            reader_receiver,
+            config.scheduler_type,
+        );
+
+        let mut writer = SchedulerWriter::new(
+            queue_strategy,
+            net_interface,
+            queues_not_empty,
+            capacity_semaphore,
+            writer_receiver,
+        );
+
+        tokio::task::spawn(async move {
+            let _ = reader.run().await;
+        });
+
+        tokio::task::spawn(async move {
+            let _ = writer.run().await;
+        });
+
+        Self {
+            reader_sender,
+            writer_sender,
+            backpressure,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(
+        reader_sender: mpsc::Sender<SchedulerReaderMessage>,
+        backpressure: bool,
+    ) -> Self {
+        let (writer_sender, mut writer_receiver) = mpsc::unbounded_channel();
+        tokio::task::spawn(async move { while writer_receiver.recv().await.is_some() {} });
         Self {
             reader_sender,
             writer_sender,
@@ -100,75 +160,17 @@ impl SchedulerHandle {
     }
 }
 
-pub struct Scheduler {
-    config: LocalConfig,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-impl Scheduler {
-    pub fn new(
-        config: LocalConfig,
-        net_interface: NetworkInterfaceHandle,
-        reader_receiver: mpsc::Receiver<SchedulerReaderMessage>,
-        writer_receiver: mpsc::UnboundedReceiver<SchedulerWriterMessage>,
-    ) -> Self {
-        let capacity = config.queue_capacity;
-        let capacity_unit = CapacityUnit::Packets;
+    #[tokio::test]
+    async fn scheduler_test_handle_keeps_writer_channel_open() {
+        let (reader_sender, _reader_receiver) = mpsc::channel(1);
+        let handle = SchedulerHandle::new_for_test(reader_sender, true);
 
-        let packet_drop: Box<dyn PacketDrop + Send + Sync> = match config.scheduler_drop_strategy {
-            DropStrategy::TailDrop => Box::new(TailDrop::new(capacity, capacity_unit)),
-            DropStrategy::Red => Box::new(Red::new(capacity, capacity_unit, 0.7, 0.9, 0.8)),
-        };
+        tokio::task::yield_now().await;
 
-        let queue_strategy: Arc<dyn SchedulerQueue + Send + Sync> = match config.scheduler_type {
-            SchedulingDiscipline::Fifo => Arc::new(FifoQueue::new(capacity)),
-            SchedulingDiscipline::Wrr => Arc::new(WrrQueue::new(capacity)),
-        };
-
-        let queues_not_empty = Arc::new(Notify::new());
-
-        // When channel backpressure is enabled, also apply it to the scheduler queue so we block
-        // instead of dropping when the queue reaches capacity.
-        let capacity_semaphore = if config.channel_backpressure && capacity > 0 {
-            Some(Arc::new(Semaphore::new(capacity)))
-        } else {
-            None
-        };
-
-        let mut reader = SchedulerReader::new(
-            queue_strategy.clone(),
-            packet_drop,
-            queues_not_empty.clone(),
-            capacity,
-            capacity_semaphore.clone(),
-            reader_receiver,
-            config.scheduler_type,
-        );
-
-        let mut writer = SchedulerWriter::new(
-            queue_strategy,
-            net_interface,
-            queues_not_empty,
-            capacity_semaphore,
-            writer_receiver,
-        );
-
-        tokio::task::spawn(async move {
-            let _ = reader.run().await;
-        });
-
-        tokio::task::spawn(async move {
-            let _ = writer.run().await;
-        });
-
-        Self { config }
-    }
-
-    pub fn run(&self) {
-        // This method is intentionally left empty as the actual run logic is handled in the
-        // FifoReader and FifoWriter tasks spawned above.
-        debug!(
-            "A {:?} scheduler has just been started.",
-            self.config.scheduler_type
-        );
+        assert!(!handle.writer_sender.is_closed());
     }
 }

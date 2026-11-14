@@ -34,7 +34,7 @@ impl SchedulerQueue for WrrQueue {
         flow_queue.push(packet)
     }
 
-    fn collect_packets(&self, batch: &mut Vec<Packet>) {
+    fn collect_packets(&self, batch: &mut Vec<Packet>, max_packets: usize) {
         let flow_queues = self.flow_queues.read().unwrap();
         let flow_weights = self.flow_weights.read().unwrap();
 
@@ -72,12 +72,18 @@ impl SchedulerQueue for WrrQueue {
         // where W is the integer weight of a flow.
         for _ in 0..min_rounds.unwrap() {
             for flow_id in &flow_ids {
+                if batch.len() >= max_packets {
+                    return;
+                }
                 let flow_weights = self.flow_weights.read().unwrap();
                 let flow_queues = self.flow_queues.read().unwrap();
                 let weight = (*flow_weights.get(flow_id).unwrap_or(&1)).max(1);
 
                 if let Some(flow_queue) = flow_queues.get(flow_id) {
                     for _ in 0..weight {
+                        if batch.len() >= max_packets {
+                            return;
+                        }
                         if let Some(packet) = flow_queue.pop() {
                             batch.push(packet);
                         }
@@ -144,7 +150,7 @@ mod tests {
         }
 
         let mut batch = Vec::new();
-        queue.collect_packets(&mut batch);
+        queue.collect_packets(&mut batch, usize::MAX);
 
         let flow_ids: Vec<FlowId> = batch.into_iter().map(|p| p.flow_id).collect();
         assert_eq!(flow_ids.len(), 6);
@@ -186,7 +192,7 @@ mod tests {
         }
 
         let mut batch = Vec::new();
-        queue.collect_packets(&mut batch);
+        queue.collect_packets(&mut batch, usize::MAX);
 
         assert_eq!(batch.len(), 9);
         assert!(batch.iter().all(|p| p.flow_id == 7));

@@ -13,12 +13,13 @@ use crate::node::RECEIVE_BUF_SIZE;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::packet::{Packet, PacketBuf};
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
 
 const HANDSHAKE_MAGIC: u8 = 0xAA;
-const HANDSHAKE_LEN: usize = 1 + std::mem::size_of::<u64>();
+const HANDSHAKE_LEN: usize = 1 + TransportScope::ENCODED_LEN;
 const SOCKET_BUFFER_BYTES: usize = 4 * 1024 * 1024;
 const DEFAULT_UDP_WORKERS: usize = 2;
 
@@ -103,9 +104,14 @@ impl UdpServer {
                     let is_handshake = payload[0] == HANDSHAKE_MAGIC && len == HANDSHAKE_LEN;
 
                     if is_handshake {
-                        let mut node_id_bytes = [0u8; std::mem::size_of::<u64>()];
-                        node_id_bytes.copy_from_slice(&payload[1..]);
-                        let remote_node_id = u64::from_be_bytes(node_id_bytes) as usize;
+                        let mut handshake_buf = [0u8; TransportScope::ENCODED_LEN];
+                        handshake_buf.copy_from_slice(&payload[1..]);
+                        let Some((remote_node_id, scope)) =
+                            TransportScope::decode_handshake(&handshake_buf)
+                        else {
+                            warn!("UDP server received invalid scoped transport handshake.");
+                            continue;
+                        };
 
                         {
                             let peers_guard = peers.lock().await;
@@ -126,12 +132,13 @@ impl UdpServer {
                             processors.clone(),
                             reporter.clone(),
                             remote_node_id,
+                            scope,
                         )
                         .await;
 
                         let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
-                        if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                        if let Err(e) = processors.add_node(remote_node_id, scope, scheduler) {
                             error!(
                                 "Failed to add UDP peer {} (addr {}): {}",
                                 remote_node_id, remote_addr, e
@@ -151,8 +158,8 @@ impl UdpServer {
                         }
 
                         info!(
-                            "UDP connection established with node {} at {}.",
-                            remote_node_id, remote_addr
+                            "UDP {:?} connection established with node {} at {}.",
+                            scope, remote_node_id, remote_addr
                         );
 
                         continue;
@@ -194,7 +201,12 @@ pub struct UdpClient {
 }
 
 impl UdpClient {
-    pub async fn connect(&self, _remote_node_id: usize, remote_addr: &str) -> UdpStream {
+    pub async fn connect(
+        &self,
+        _remote_node_id: usize,
+        remote_addr: &str,
+        scope: TransportScope,
+    ) -> UdpStream {
         let socket = Arc::new(
             UdpSocket::bind("0.0.0.0:0")
                 .await
@@ -213,7 +225,7 @@ impl UdpClient {
         let local_node_id = self.config.node_id;
         let mut handshake = [0u8; HANDSHAKE_LEN];
         handshake[0] = HANDSHAKE_MAGIC;
-        handshake[1..].copy_from_slice(&u64::to_be_bytes(local_node_id as u64));
+        handshake[1..].copy_from_slice(&scope.encode_handshake(local_node_id));
 
         socket
             .send(&handshake)
@@ -293,7 +305,12 @@ pub struct UdpReader {
 }
 
 impl UdpReader {
-    pub fn new(receiver: mpsc::Receiver<PacketBuf>, processors: ProcessorHandle) -> Self {
+    pub fn new(
+        receiver: mpsc::Receiver<PacketBuf>,
+        processors: ProcessorHandle,
+        scope: TransportScope,
+    ) -> Self {
+        let _ = scope;
         Self {
             receiver,
             processors,

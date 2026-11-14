@@ -23,8 +23,11 @@ impl SchedulerQueue for FifoQueue {
         self.queue.push(packet)
     }
 
-    fn collect_packets(&self, batch: &mut Vec<Packet>) {
-        while let Some(packet) = self.queue.pop() {
+    fn collect_packets(&self, batch: &mut Vec<Packet>, max_packets: usize) {
+        while batch.len() < max_packets {
+            let Some(packet) = self.queue.pop() else {
+                break;
+            };
             batch.push(packet);
         }
     }
@@ -65,7 +68,7 @@ mod tests {
         }
 
         let mut batch = Vec::new();
-        queue.collect_packets(&mut batch);
+        queue.collect_packets(&mut batch, usize::MAX);
 
         assert_eq!(batch.len(), 3);
         assert_eq!(batch[0].flow_id, 1);
@@ -103,7 +106,7 @@ mod tests {
         assert_eq!(queue.queue_len(123), 2);
 
         let mut batch = Vec::new();
-        queue.collect_packets(&mut batch);
+        queue.collect_packets(&mut batch, usize::MAX);
 
         assert!(queue.is_empty());
         assert_eq!(batch.len(), 2);

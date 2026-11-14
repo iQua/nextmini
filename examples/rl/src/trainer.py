@@ -8,9 +8,9 @@ from pathlib import Path
 import torch
 import torch.nn.functional as F
 from torch.optim import AdamW
-from transformers import AutoModelForCausalLM, AutoTokenizer
 from . import config
 from .dataset import GSM8KLoader, is_correct
+from .model_loader import load_policy_model, load_tokenizer
 import threading
 from tqdm import tqdm
 
@@ -24,28 +24,38 @@ except ImportError as exc:
     ) from exc
 
 
+def configured_model_dtype():
+    raw = config.MODEL_DTYPE.strip().lower()
+    if raw in {"", "auto"}:
+        return "auto"
+    aliases = {
+        "fp16": torch.float16,
+        "float16": torch.float16,
+        "half": torch.float16,
+        "bf16": torch.bfloat16,
+        "bfloat16": torch.bfloat16,
+        "fp32": torch.float32,
+        "float32": torch.float32,
+    }
+    if raw not in aliases:
+        raise ValueError(f"unsupported MODEL_DTYPE={config.MODEL_DTYPE!r}")
+    return aliases[raw]
+
+
 class Trainer:
     def __init__(self, config_path=None):
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
-        print(f"Trainer initializing on {self.device}...")
+        print(f"Trainer initializing on {self.device} with model {config.MODEL_NAME}...")
         
         # Load Models
-        self.policy_model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            dtype=torch.float32,
-            trust_remote_code=True
-        ).to(self.device)
+        model_dtype = configured_model_dtype()
+        self.policy_model = load_policy_model(config.MODEL_NAME, dtype=model_dtype).to(self.device)
         
         # Reference model (frozen)
-        self.ref_model = AutoModelForCausalLM.from_pretrained(
-            config.MODEL_NAME, 
-            dtype=torch.float32,
-            trust_remote_code=True
-        ).to(self.device)
+        self.ref_model = load_policy_model(config.MODEL_NAME, dtype=model_dtype).to(self.device)
         self.ref_model.eval()
         
-        self.tokenizer = AutoTokenizer.from_pretrained(config.MODEL_NAME, trust_remote_code=True)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
+        self.tokenizer = load_tokenizer(config.MODEL_NAME)
         
         self.optimizer = AdamW(self.policy_model.parameters(), lr=config.LEARNING_RATE)
         
@@ -526,7 +536,11 @@ class Trainer:
             weight_metrics = self.broadcast_weights_sharded()
         else:
             weight_metrics = self.broadcast_weights()
-        
+
+        if config.BROADCAST_ONLY:
+            print("BROADCAST_ONLY=true; skipping rollouts and optimizer update.")
+            return {"weight_metrics": weight_metrics, "broadcast_only": True}
+
         # 2. Send prompts to workers
         prompts = [item["question"] for item in batch]
         ground_truths = [item["answer"] for item in batch]
@@ -815,7 +829,7 @@ class Trainer:
     def run(self):
         """Main training loop"""
         print("Trainer started.")
-        self.accept_workers()
+        self.accept_workers(len(self.worker_connections))
         
         for step in range(config.TRAIN_STEPS):
             print(f"Step {step+1}/{config.TRAIN_STEPS}")

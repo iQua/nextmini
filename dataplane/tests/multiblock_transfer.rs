@@ -48,6 +48,7 @@ async fn plain_sender_retransmits_only_missing_blocks_from_plain_status() {
         ready_grace_ms: 500,
         peer_report_timeout_ms: 500,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
@@ -167,9 +168,11 @@ async fn plain_receiver_writes_and_reports_complete_after_source_done() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -267,6 +270,7 @@ async fn fec_sender_emits_symbols_for_every_block_before_completion() {
         ready_grace_ms: 500,
         peer_report_timeout_ms: 500,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(64);
@@ -338,9 +342,11 @@ async fn fec_receiver_decodes_and_reports_complete_after_source_done() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: true,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));

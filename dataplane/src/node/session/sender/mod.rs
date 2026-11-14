@@ -6,6 +6,7 @@
 //! aggregate round status feedback with extra fountain symbols.
 
 mod block_symbol_frame;
+mod cloudcast;
 mod fec;
 mod plain;
 mod state;
@@ -27,12 +28,12 @@ use crate::node::session::plan::{BlockPlan, BlockSpan, SymbolGeometry};
 use crate::node::session::runtime::{SenderConfig, SessionConfig, TransportRoute};
 use crate::node::session::timing;
 
+use self::cloudcast::CloudcastSender;
 use self::fec::FecSender;
 use self::plain::PlainSender;
 use self::state::{ActiveSessionQuorum, QuorumLiveness};
 
 const MANIFEST_RETRY_INTERVAL: Duration = Duration::from_millis(250);
-const IDLE_WAIT: Duration = Duration::from_millis(10);
 
 /// Run one sender session until completion or channel shutdown.
 pub async fn run(
@@ -94,12 +95,12 @@ pub(super) struct SenderShared {
     pub(super) ready_grace: Duration,
     pub(super) topology_ready: Option<watch::Receiver<bool>>,
     pub(super) pacer: Option<TokenBucket>,
-    pub(super) payload_emitted: bool,
 }
 
 /// Concrete sender mode selected from the manifest.
 enum SenderMode {
     Plain(PlainSender),
+    Cloudcast(CloudcastSender),
     Fec(FecSender),
 }
 
@@ -107,17 +108,29 @@ enum SenderMode {
 #[derive(Clone)]
 pub(super) struct BlockSource {
     bytes: Bytes,
+    total_bytes: u64,
+    synthetic: bool,
 }
 
 impl BlockSource {
     /// Wrap the transfer bytes used by the sender.
-    fn new(bytes: Bytes) -> Self {
-        Self { bytes }
+    fn new(bytes: Bytes, total_bytes: u64) -> Self {
+        let synthetic = bytes.is_empty() && total_bytes > 0;
+        Self {
+            bytes,
+            total_bytes,
+            synthetic,
+        }
     }
 
     /// Materialize one logical block payload for the requested span.
     fn block_payload(&self, span: BlockSpan) -> Vec<u8> {
         let len = span.len();
+        if self.synthetic {
+            let mut out = vec![0u8; len];
+            fill_synthetic_payload(span.offset(), self.total_bytes, &mut out);
+            return out;
+        }
         let Some(offset) = usize::try_from(span.offset()).ok() else {
             return vec![0u8; len];
         };
@@ -156,6 +169,20 @@ impl BlockSource {
     }
 }
 
+fn synthetic_payload_byte(offset: u64) -> u8 {
+    (offset as u8).wrapping_mul(31).wrapping_add(7)
+}
+
+fn fill_synthetic_payload(offset: u64, total_bytes: u64, out: &mut [u8]) {
+    if offset >= total_bytes {
+        return;
+    }
+    let copy_len = usize::try_from((total_bytes - offset).min(out.len() as u64)).unwrap_or(0);
+    for (idx, byte) in out[..copy_len].iter_mut().enumerate() {
+        *byte = synthetic_payload_byte(offset + idx as u64);
+    }
+}
+
 impl SessionSender {
     /// Build sender state from the validated runtime configuration.
     fn new(cfg: SenderConfig, processors: ProcessorHandle) -> Result<Self, &'static str> {
@@ -166,15 +193,23 @@ impl SessionSender {
             .map_err(|_| "invalid block plan for sender")?;
         let pacer = cfg.pacing.map(TokenBucket::new);
         let ready_grace = Duration::from_millis(cfg.ready_grace_ms);
-        let source = BlockSource::new(cfg.source_buffer);
+        let source = BlockSource::new(cfg.source_buffer, manifest.total_bytes);
         let active_quorum = ActiveSessionQuorum::new(cfg.receiver_ids.iter().copied());
         let quorum_liveness = QuorumLiveness::new(
             timing::quorum_solicitation_interval(),
             Duration::from_millis(cfg.peer_report_timeout_ms),
         );
-        let mode = match &manifest.mode {
-            LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
-            LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+        let cloudcast = cfg.cloudcast.clone();
+        let mode = if let Some(cloudcast) = cloudcast.as_ref() {
+            if !matches!(manifest.mode, LosslessSessionMode::Plain) {
+                return Err("cloudcast sender requires a plain manifest");
+            }
+            SenderMode::Cloudcast(CloudcastSender::new(cloudcast)?)
+        } else {
+            match &manifest.mode {
+                LosslessSessionMode::Plain => SenderMode::Plain(PlainSender::default()),
+                LosslessSessionMode::Fec(_) => SenderMode::Fec(FecSender::new(&manifest, plan)?),
+            }
         };
 
         Ok(Self {
@@ -191,7 +226,6 @@ impl SessionSender {
                 ready_grace,
                 topology_ready: cfg.topology_ready,
                 pacer,
-                payload_emitted: false,
             },
             mode,
         })
@@ -211,6 +245,7 @@ impl SessionSender {
         self.shared.wait_topology_ready().await;
         let ready = match &mut self.mode {
             SenderMode::Plain(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
+            SenderMode::Cloudcast(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
             SenderMode::Fec(mode) => self.shared.negotiate_ready(ctrl_rx, mode).await,
         };
         if !ready {
@@ -219,6 +254,7 @@ impl SessionSender {
 
         let outcome = match &mut self.mode {
             SenderMode::Plain(mode) => mode.run(&mut self.shared, ctrl_rx).await,
+            SenderMode::Cloudcast(mode) => mode.run(&mut self.shared, ctrl_rx).await,
             SenderMode::Fec(mode) => mode.run(&mut self.shared, ctrl_rx).await,
         };
         info!(
@@ -240,14 +276,14 @@ impl SenderShared {
             return;
         }
 
-        debug!(
+        info!(
             session_id = self.session.session_id,
             "Lossless sender waiting for topology readiness"
         );
 
         while rx.changed().await.is_ok() {
             if *rx.borrow() {
-                debug!(
+                info!(
                     session_id = self.session.session_id,
                     "Lossless sender observed topology readiness"
                 );
@@ -389,29 +425,6 @@ impl SenderShared {
         }
     }
 
-    /// Wait for either new control input or a short idle retry interval.
-    pub(super) async fn wait_for_signal<M: ModeHooks>(
-        &mut self,
-        ctrl_rx: &mut mpsc::Receiver<InboundFrame>,
-        mode: &mut M,
-    ) -> bool {
-        tokio::select! {
-            maybe_frame = ctrl_rx.recv() => {
-                let Some(frame) = maybe_frame else {
-                    warn!(
-                        session_id = self.session.session_id,
-                        reason = "control_channel_closed",
-                        "Lossless sender aborted while waiting for more control because the control channel closed"
-                    );
-                    return false;
-                };
-                self.handle_control(frame, mode);
-                true
-            }
-            _ = tokio::time::sleep(IDLE_WAIT) => true,
-        }
-    }
-
     /// Freeze the active quorum when the data gate opens.
     pub(super) fn freeze_active_quorum(&mut self) {
         if self.active_quorum.is_frozen() {
@@ -424,11 +437,6 @@ impl SenderShared {
             quorum = ?self.active_quorum.active_members(),
             "Lossless sender froze the active session quorum"
         );
-    }
-
-    /// Mark that a payload frame has actually left the sender.
-    pub(super) fn mark_payload_emitted(&mut self) {
-        self.payload_emitted = true;
     }
 
     /// Begin the fixed-interval solicitation window for the frozen quorum.
@@ -471,6 +479,13 @@ impl SenderShared {
                     return;
                 }
                 self.active_quorum.record_ready(peer_id);
+                info!(
+                    session_id = self.session.session_id,
+                    peer_id,
+                    active_ready = self.active_quorum.active_members().len(),
+                    configured_receivers = self.active_quorum.configured_len(),
+                    "Lossless sender accepted Ready from receiver"
+                );
             }
             LosslessSessionControl::Need { round_id, report } => {
                 let Some(peer_id) = frame.peer_id else {
@@ -510,6 +525,13 @@ impl SenderShared {
 
     /// Send the negotiated manifest to every receiver.
     async fn send_manifest(&mut self) {
+        info!(
+            session_id = self.session.session_id,
+            total_bytes = self.manifest.total_bytes,
+            total_blocks = self.manifest.total_blocks,
+            fec = self.manifest.mode.is_fec(),
+            "Lossless sender emitted manifest"
+        );
         control::send_control(
             &self.processors,
             control::FrameRoute {
@@ -797,6 +819,7 @@ mod tests {
             ready_grace_ms: 1,
             peer_report_timeout_ms: 1500,
             topology_ready: None,
+            cloudcast: None,
         };
         let mut sender = SessionSender::new(cfg, processors).expect("sender should build");
         sender.shared.quorum_liveness =
@@ -870,6 +893,7 @@ mod tests {
             ready_grace_ms: 1,
             peer_report_timeout_ms: 1500,
             topology_ready: None,
+            cloudcast: None,
         };
         let sender = SessionSender::new(cfg, processors).expect("sender should build");
         let (_ctrl_tx, mut ctrl_rx) = mpsc::channel(8);
@@ -887,7 +911,7 @@ mod tests {
 
     #[test]
     fn block_source_zero_fills_when_buffer_is_short() {
-        let source = BlockSource::new(Bytes::from_static(b"ab"));
+        let source = BlockSource::new(Bytes::from_static(b"ab"), 2);
         let plan = BlockPlan::new(8, 4).expect("valid plan");
         let payload = source.block_payload(plan.block_span(1).expect("second block"));
         assert_eq!(payload, b"\0\0\0\0");
@@ -895,7 +919,7 @@ mod tests {
 
     #[test]
     fn block_source_builds_fixed_size_source_symbols() {
-        let source = BlockSource::new(Bytes::from_static(b"abcdef"));
+        let source = BlockSource::new(Bytes::from_static(b"abcdef"), 6);
         let plan = BlockPlan::new(6, 6).expect("valid plan");
         let geometry = plan.symbol_geometry(4).expect("valid geometry");
         let symbols = source.source_symbols(plan.block_span(0).expect("first block"), geometry);
@@ -943,11 +967,10 @@ mod tests {
                 Duration::from_millis(30),
             ),
             plan,
-            source: BlockSource::new(Bytes::from_static(b"abcd")),
+            source: BlockSource::new(Bytes::from_static(b"abcd"), 4),
             ready_grace: Duration::from_millis(1),
             topology_ready: None,
             pacer: None,
-            payload_emitted: false,
         }
     }
 

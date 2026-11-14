@@ -6,13 +6,14 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::time::timeout;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::flow::PROBE_FLOW_ID;
 use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
@@ -45,7 +46,7 @@ impl TcpServer {
             }
         };
 
-        let mut node_id_buf: [u8; 8] = [0; 8];
+        let mut handshake_buf = [0u8; TransportScope::ENCODED_LEN];
 
         loop {
             let mut stream = match listener.accept().await {
@@ -64,14 +65,21 @@ impl TcpServer {
                 warn!("Failed to set TCP_NODELAY on accepted stream: {}", e);
             }
 
-            if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                error!("Failed to read node ID: {}", e);
+            if let Err(e) = stream.read_exact(&mut handshake_buf).await {
+                error!("Failed to read scoped transport handshake: {}", e);
                 continue;
             }
 
-            let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+            let Some((remote_node_id, scope)) = TransportScope::decode_handshake(&handshake_buf)
+            else {
+                warn!("Failed to decode scoped transport handshake.");
+                continue;
+            };
 
-            info!("Incoming connection from node {}...", remote_node_id);
+            info!(
+                "Incoming {:?} transport connection from node {}...",
+                scope, remote_node_id
+            );
 
             // handles an inbound connection from a new client
             let network_interface = NetworkInterfaceHandle::new(
@@ -80,6 +88,7 @@ impl TcpServer {
                 self.processors.clone(),
                 self.reporter.clone(),
                 remote_node_id,
+                scope,
             )
             .await;
 
@@ -87,7 +96,7 @@ impl TcpServer {
             let scheduler = SchedulerHandle::new(self.config.clone(), network_interface);
 
             // adds the scheduler to send packets to the new node
-            if let Err(e) = self.processors.add_node(remote_node_id, scheduler) {
+            if let Err(e) = self.processors.add_node(remote_node_id, scope, scheduler) {
                 error!(
                     "Failed to add node {} with address {}: {}",
                     remote_node_id,
@@ -107,7 +116,12 @@ pub struct TcpClient {
 }
 
 impl TcpClient {
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> TcpStream {
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+        scope: TransportScope,
+    ) -> TcpStream {
         let mut retry_count = 0;
         const MAX_RETRY: usize = 10;
         let mut delay = Duration::from_secs(1);
@@ -121,14 +135,12 @@ impl TcpClient {
                         warn!("Failed to set TCP_NODELAY on client stream: {}", e);
                     }
 
-                    let local_node_id = self.config.node_id; // gets the updated local node_id
-
                     stream
-                        .write_all(&local_node_id.to_be_bytes())
+                        .write_all(&scope.encode_handshake(self.config.node_id))
                         .await
-                        .expect("Failed to send local node id to the node.");
+                        .expect("Failed to send scoped transport handshake to the node.");
 
-                    info!("Connected to node {} with TCP.", remote_node_id);
+                    info!("Connected to node {} with TCP {:?}.", remote_node_id, scope);
                     return stream;
                 }
                 Ok(Err(e)) => {
@@ -203,11 +215,21 @@ impl TcpReader {
 
     pub async fn run(mut self) {
         loop {
-            if let Ok(packet) = framing::read_packet(&mut self.stream).await {
-                if packet.flow_id == PROBE_FLOW_ID {
-                    self.handle_probe(packet);
-                } else {
-                    self.processors.process_packet(packet).await;
+            match framing::read_packet(&mut self.stream).await {
+                Ok(packet) => {
+                    if packet.flow_id == PROBE_FLOW_ID {
+                        self.handle_probe(packet);
+                    } else {
+                        self.processors.process_packet(packet).await;
+                    }
+                }
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                        debug!(error = %error, "TCP packet reader reached EOF");
+                    } else {
+                        warn!(error = %error, "TCP packet reader stopped");
+                    }
+                    break;
                 }
             }
         }
@@ -275,5 +297,45 @@ impl TcpWriter {
     /// Writes multiple packets to the TCP network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         framing::write_packets(&mut self.stream, &packets).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::net::{TcpListener, TcpStream};
+
+    use super::*;
+
+    async fn assert_reader_stops_after(input: &[u8]) {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind test listener");
+        let addr = listener.local_addr().expect("listener address");
+        let client = tokio::spawn(TcpStream::connect(addr));
+        let (server, _) = listener.accept().await.expect("accept test connection");
+        let mut client = client
+            .await
+            .expect("client task should finish")
+            .expect("connect test client");
+        client.write_all(input).await.expect("write test input");
+        client.shutdown().await.expect("close test client");
+
+        let (reader, _writer) = tokio::io::split(server);
+        let reader = TcpReader::new(reader, ProcessorHandle::new(Default::default()), 1, None);
+
+        timeout(Duration::from_secs(1), reader.run())
+            .await
+            .expect("reader loop should stop after framing error");
+    }
+
+    #[tokio::test]
+    async fn tcp_reader_stops_on_oversized_short_and_eof_frames() {
+        assert_reader_stops_after(&u32::MAX.to_be_bytes()).await;
+
+        let mut short_frame = (20u32).to_be_bytes().to_vec();
+        short_frame.extend_from_slice(&[0u8; 5]);
+        assert_reader_stops_after(&short_frame).await;
+
+        assert_reader_stops_after(&[]).await;
     }
 }

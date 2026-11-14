@@ -1,8 +1,8 @@
 //! Wire protocol definitions for dataplane lossless sessions.
 //!
-//! Version 5 is the flag-day `Manifest -> Ready -> payload sweep ->
-//! SourceDone -> Need` protocol. The normative rewrite rules live in
-//! `plans/simple-lossless.md`.
+//! Version 6 is the flag-day `Manifest -> Ready -> payload sweep ->
+//! SourceDone -> Need` protocol with 32-bit FEC `symbols_per_block`.
+//! The normative rewrite rules live in `plans/simple-lossless.md`.
 
 mod block_frames;
 mod control_frames;
@@ -13,8 +13,11 @@ mod types;
 mod validation;
 
 pub use block_frames::{
-    decode_block_data, decode_block_symbol, encode_block_data, encode_block_symbol,
+    block_symbol_packet_len, decode_block_data, decode_block_symbol, encode_block_data,
+    encode_block_symbol,
 };
-pub use control_frames::{decode_control, encode_control};
+pub use control_frames::{
+    decode_control, encode_control, fec_need_packet_len, max_fec_need_blocks,
+};
 pub use header::{LosslessSessionHeader, LosslessSessionRawHeader, peek_header};
 pub use types::*;

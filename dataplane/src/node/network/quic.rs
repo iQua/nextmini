@@ -3,20 +3,21 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::time::Duration;
 
-use tokio::io::AsyncReadExt;
 use tokio::io::Result;
+use tokio::io::{AsyncRead, AsyncReadExt};
 
 use s2n_quic::provider::congestion_controller;
 use s2n_quic::stream::BidirectionalStream;
 use s2n_quic::stream::{ReceiveStream, SendStream};
 use s2n_quic::{Client, Server, client};
-use tracing::{error, info};
+use tracing::{debug, error, info, warn};
 
 use crate::node::config::CongestionControl;
 use crate::node::config::LocalConfig;
 use crate::node::controller::reporter::ControllerReporterHandle;
 use crate::node::network::framing;
 use crate::node::network::interface::{NetworkInterfaceHandle, NetworkStream};
+use crate::node::network::scope::TransportScope;
 use crate::node::packet::Packet;
 use crate::node::processor::ProcessorHandle;
 use crate::node::scheduler::sched::SchedulerHandle;
@@ -73,17 +74,26 @@ impl QuicServer {
             info!("Connection accepted from {:?}.", remote_addr_snapshot);
 
             if let Ok(Some(mut stream)) = connection.accept_bidirectional_stream().await {
-                let mut node_id_buf: [u8; 8] = [0; 8];
+                let mut handshake_buf = [0u8; TransportScope::ENCODED_LEN];
 
-                if let Err(e) = stream.read_exact(&mut node_id_buf).await {
-                    info!("Failed to read node ID: {}", e);
+                if let Err(e) = stream.read_exact(&mut handshake_buf).await {
+                    info!("Failed to read scoped transport handshake: {}", e);
                     connection.close(0u32.into());
                     return;
                 }
 
-                let remote_node_id = u64::from_be_bytes(node_id_buf) as usize;
+                let Some((remote_node_id, scope)) =
+                    TransportScope::decode_handshake(&handshake_buf)
+                else {
+                    info!("Failed to decode scoped transport handshake");
+                    connection.close(0u32.into());
+                    return;
+                };
 
-                info!("Incoming connection from node {}...", remote_node_id);
+                info!(
+                    "Incoming {:?} connection from node {}...",
+                    scope, remote_node_id
+                );
 
                 // handles an inbound connection from a new client
                 let network_interface = NetworkInterfaceHandle::new(
@@ -92,6 +102,7 @@ impl QuicServer {
                     processors.clone(),
                     self.reporter.clone(),
                     remote_node_id,
+                    scope,
                 )
                 .await;
 
@@ -99,7 +110,7 @@ impl QuicServer {
                 let scheduler = SchedulerHandle::new(config.clone(), network_interface);
 
                 // adds the scheduler to send packets to the new node
-                if let Err(e) = processors.add_node(remote_node_id, scheduler) {
+                if let Err(e) = processors.add_node(remote_node_id, scope, scheduler) {
                     let remote_addr_for_log = remote_addr_snapshot
                         .as_ref()
                         .map(|addr| addr.to_string())
@@ -125,7 +136,12 @@ pub struct QuicClient {
 }
 
 impl QuicClient {
-    pub async fn connect(&self, remote_node_id: usize, remote_addr: &str) -> BidirectionalStream {
+    pub async fn connect(
+        &self,
+        remote_node_id: usize,
+        remote_addr: &str,
+        scope: TransportScope,
+    ) -> BidirectionalStream {
         let client = Client::builder()
             .with_tls(Path::new("server_cert.pem"))
             .expect("Failed to set TLS configuration")
@@ -173,34 +189,48 @@ impl QuicClient {
 
         info!("Connecting to node {} with QUIC...", remote_node_id);
 
-        let local_node_id = self.config.node_id;
-
         stream
-            .send(Bytes::copy_from_slice(&local_node_id.to_be_bytes()))
+            .send(Bytes::copy_from_slice(
+                &scope.encode_handshake(self.config.node_id),
+            ))
             .await
-            .expect("Failed to send local node id to the node");
+            .expect("Failed to send scoped transport handshake to the node");
 
-        info!("Connected to node {} with QUIC.", remote_node_id);
+        info!(
+            "Connected to node {} with QUIC {:?}.",
+            remote_node_id, scope
+        );
 
         stream
     }
 }
 
 /// An actor that reads packets from a QUIC stream.
-pub struct QuicReader {
-    stream: ReceiveStream,
+pub struct QuicReader<S = ReceiveStream> {
+    stream: S,
     processors: ProcessorHandle,
 }
 
-impl QuicReader {
-    pub fn new(stream: ReceiveStream, processors: ProcessorHandle) -> Self {
+impl QuicReader<ReceiveStream> {
+    pub fn new(stream: ReceiveStream, processors: ProcessorHandle, scope: TransportScope) -> Self {
+        let _ = scope;
         Self { processors, stream }
     }
+}
 
+impl<S: AsyncRead + Unpin> QuicReader<S> {
     pub async fn run(&mut self) {
         loop {
-            if let Ok(packet) = self.read_packet().await {
-                self.processors.process_packet(packet).await;
+            match self.read_packet().await {
+                Ok(packet) => self.processors.process_packet(packet).await,
+                Err(error) => {
+                    if error.kind() == std::io::ErrorKind::UnexpectedEof {
+                        debug!(error = %error, "QUIC packet reader reached EOF");
+                    } else {
+                        warn!(error = %error, "QUIC packet reader stopped");
+                    }
+                    break;
+                }
             }
         }
     }
@@ -223,5 +253,38 @@ impl QuicWriter {
     /// Writes multiple packets to the QUIC network stream.
     pub async fn write_packets(&mut self, packets: Vec<Packet>) -> Result<()> {
         framing::write_packets(&mut self.stream, &packets).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::{AsyncWriteExt, duplex};
+    use tokio::time::timeout;
+
+    use super::*;
+
+    async fn assert_reader_stops_after(input: &[u8]) {
+        let (mut writer, stream) = duplex(64);
+        writer.write_all(input).await.expect("write test input");
+        writer.shutdown().await.expect("close test writer");
+        let mut reader = QuicReader {
+            stream,
+            processors: ProcessorHandle::new(Default::default()),
+        };
+
+        timeout(Duration::from_secs(1), reader.run())
+            .await
+            .expect("reader loop should stop after framing error");
+    }
+
+    #[tokio::test]
+    async fn quic_reader_stops_on_oversized_short_and_eof_frames() {
+        assert_reader_stops_after(&u32::MAX.to_be_bytes()).await;
+
+        let mut short_frame = (20u32).to_be_bytes().to_vec();
+        short_frame.extend_from_slice(&[0u8; 5]);
+        assert_reader_stops_after(&short_frame).await;
+
+        assert_reader_stops_after(&[]).await;
     }
 }

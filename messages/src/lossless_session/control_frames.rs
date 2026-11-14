@@ -5,10 +5,27 @@ use super::{
     NeedReport,
 };
 
-const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 2 + 2;
+const MANIFEST_FIXED_BODY_LEN: usize = 1 + 1 + 1 + 1 + 4 + 8 + 8 + 4 + 4 + 4;
 const NEED_FIXED_BODY_LEN: usize = 4 + 1 + 2 + 1;
 const NEED_RANGE_LEN: usize = 8 + 8;
 const NEED_BLOCK_LEN: usize = 8 + 2;
+
+/// Return the largest FEC Need block list that fits in one framed packet.
+pub fn max_fec_need_blocks(max_packet_size: usize, transport_overhead: usize) -> Option<usize> {
+    let fixed_len = transport_overhead
+        .checked_add(LosslessSessionHeader::LEN)?
+        .checked_add(NEED_FIXED_BODY_LEN)?;
+    let available = max_packet_size.checked_sub(fixed_len)?;
+    Some(available / NEED_BLOCK_LEN)
+}
+
+/// Return the framed packet size for an FEC Need block list.
+pub fn fec_need_packet_len(block_count: usize, transport_overhead: usize) -> Option<usize> {
+    transport_overhead
+        .checked_add(LosslessSessionHeader::LEN)?
+        .checked_add(NEED_FIXED_BODY_LEN)?
+        .checked_add(block_count.checked_mul(NEED_BLOCK_LEN)?)
+}
 
 /// Stack-friendly scratch size for common control frames.
 ///
@@ -83,12 +100,17 @@ fn encode_control_into<'a>(
     let ctrl_kind = match control {
         LosslessSessionControl::Manifest { manifest } => {
             let body_start = LosslessSessionHeader::LEN;
-            let (scheme, symbols_per_block, tree_ids) = match &manifest.mode {
-                LosslessSessionMode::Plain => (0u8, 0u16, &[][..]),
-                LosslessSessionMode::Fec(fec) => {
-                    (fec.scheme, fec.symbols_per_block, fec.tree_ids.as_slice())
-                }
-            };
+            let (scheme, symbols_per_block, coded_rate_num, coded_rate_den, tree_ids) =
+                match &manifest.mode {
+                    LosslessSessionMode::Plain => (0u8, 0u32, 0u32, 0u32, &[][..]),
+                    LosslessSessionMode::Fec(fec) => (
+                        fec.scheme,
+                        fec.symbols_per_block,
+                        fec.coded_rate_num,
+                        fec.coded_rate_den,
+                        fec.tree_ids.as_slice(),
+                    ),
+                };
             assert!(
                 tree_ids.len() <= MAX_MANIFEST_TREE_IDS,
                 "manifest tree set exceeds wire capacity"
@@ -103,8 +125,9 @@ fn encode_control_into<'a>(
                 .copy_from_slice(&manifest.total_bytes.to_be_bytes());
             buf[body_start + 16..body_start + 24]
                 .copy_from_slice(&manifest.total_blocks.to_be_bytes());
-            buf[body_start + 24..body_start + 26].copy_from_slice(&symbols_per_block.to_be_bytes());
-            buf[body_start + 26..body_start + 28].copy_from_slice(&0u16.to_be_bytes());
+            buf[body_start + 24..body_start + 28].copy_from_slice(&symbols_per_block.to_be_bytes());
+            buf[body_start + 28..body_start + 32].copy_from_slice(&coded_rate_num.to_be_bytes());
+            buf[body_start + 32..body_start + 36].copy_from_slice(&coded_rate_den.to_be_bytes());
 
             let mut pos = body_start + MANIFEST_FIXED_BODY_LEN;
             for tree_id in tree_ids {
@@ -214,7 +237,9 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
             let block_size = u32::from_be_bytes(body[4..8].try_into().ok()?);
             let total_bytes = u64::from_be_bytes(body[8..16].try_into().ok()?);
             let total_blocks = u64::from_be_bytes(body[16..24].try_into().ok()?);
-            let symbols_per_block = u16::from_be_bytes(body[24..26].try_into().ok()?);
+            let symbols_per_block = u32::from_be_bytes(body[24..28].try_into().ok()?);
+            let coded_rate_num = u32::from_be_bytes(body[28..32].try_into().ok()?);
+            let coded_rate_den = u32::from_be_bytes(body[32..36].try_into().ok()?);
 
             if body.len() != MANIFEST_FIXED_BODY_LEN + (tree_count * 2) {
                 return None;
@@ -229,7 +254,12 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
 
             let mode = match mode_kind {
                 LosslessSessionModeKind::Plain => {
-                    if scheme != 0 || symbols_per_block != 0 || !tree_ids.is_empty() {
+                    if scheme != 0
+                        || symbols_per_block != 0
+                        || coded_rate_num != 0
+                        || coded_rate_den != 0
+                        || !tree_ids.is_empty()
+                    {
                         return None;
                     }
                     LosslessSessionMode::Plain
@@ -237,6 +267,8 @@ pub fn decode_control(buf: &[u8]) -> Option<(LosslessSessionHeader, LosslessSess
                 LosslessSessionModeKind::Fec => LosslessSessionMode::Fec(LosslessSessionFecMode {
                     scheme,
                     symbols_per_block,
+                    coded_rate_num,
+                    coded_rate_den,
                     tree_ids,
                 }),
             };
@@ -339,9 +371,28 @@ mod tests {
         fec_manifest, fec_need, plain_manifest, plain_need,
     };
     use crate::lossless_session::{
-        FecScheme, LosslessSessionControl, LosslessSessionHeader, NeedBlock, NeedReport,
-        encode_block_data,
+        FecScheme, LosslessSessionControl, LosslessSessionFecMode, LosslessSessionHeader,
+        LosslessSessionManifest, LosslessSessionMode, NeedBlock, NeedReport, encode_block_data,
     };
+
+    #[test]
+    fn fec_need_packet_sizing_accepts_only_the_framed_boundary() {
+        const MAX_PACKET_SIZE: usize = u16::MAX as usize;
+        const TRANSPORT_OVERHEAD: usize = 56;
+
+        let max_blocks = max_fec_need_blocks(MAX_PACKET_SIZE, TRANSPORT_OVERHEAD)
+            .expect("transport overhead should leave room for a Need frame");
+
+        assert_eq!(max_blocks, 6545);
+        assert!(
+            fec_need_packet_len(max_blocks, TRANSPORT_OVERHEAD)
+                .is_some_and(|len| len <= MAX_PACKET_SIZE)
+        );
+        assert!(
+            fec_need_packet_len(max_blocks + 1, TRANSPORT_OVERHEAD)
+                .is_some_and(|len| len > MAX_PACKET_SIZE)
+        );
+    }
 
     #[test]
     fn roundtrip_controls() {
@@ -404,6 +455,60 @@ mod tests {
         let (hdr, decoded) = decode_control(&buf).expect("decode ready");
         assert_eq!(hdr.body_len, 0);
         assert_eq!(buf.len(), LosslessSessionHeader::LEN);
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn mettle_manifest_roundtrips_as_known_fec_scheme() {
+        let ctrl =
+            LosslessSessionControl::Manifest {
+                manifest: LosslessSessionManifest {
+                    block_size: 1024,
+                    total_bytes: 2048,
+                    total_blocks: 2,
+                    mode: LosslessSessionMode::Fec(
+                        LosslessSessionFecMode::new_mettle_with_coded_rate(8, vec![2, 4], 21, 20),
+                    ),
+                },
+            };
+
+        let encoded = encode_control(88, &ctrl);
+        let body_start = LosslessSessionHeader::LEN;
+        assert_eq!(encoded[body_start + 1], FecScheme::Mettle as u8);
+        assert_eq!(
+            &encoded[body_start + 28..body_start + 32],
+            21u32.to_be_bytes().as_slice()
+        );
+        assert_eq!(
+            &encoded[body_start + 32..body_start + 36],
+            20u32.to_be_bytes().as_slice()
+        );
+        let (_, decoded) = decode_control(&encoded).expect("decode METTLE manifest");
+        assert_eq!(decoded, ctrl);
+    }
+
+    #[test]
+    fn fec_manifest_roundtrips_large_symbols_per_block() {
+        let symbols_per_block = 131_072u32;
+        let ctrl = LosslessSessionControl::Manifest {
+            manifest: LosslessSessionManifest {
+                block_size: 1_073_741_824,
+                total_bytes: 1_073_741_824,
+                total_blocks: 1,
+                mode: LosslessSessionMode::Fec(LosslessSessionFecMode::new_mettle(
+                    symbols_per_block,
+                    vec![2, 4],
+                )),
+            },
+        };
+
+        let encoded = encode_control(89, &ctrl);
+        let body_start = LosslessSessionHeader::LEN;
+        assert_eq!(
+            &encoded[body_start + 24..body_start + 28],
+            symbols_per_block.to_be_bytes().as_slice()
+        );
+        let (_, decoded) = decode_control(&encoded).expect("decode large-K METTLE manifest");
         assert_eq!(decoded, ctrl);
     }
 
@@ -645,7 +750,7 @@ mod tests {
 
         encoded[body_start + 1] = FecScheme::RaptorQ as u8;
         encoded[body_start + 2] = 1;
-        encoded[body_start + 24..body_start + 26].copy_from_slice(&4u16.to_be_bytes());
+        encoded[body_start + 24..body_start + 28].copy_from_slice(&4u32.to_be_bytes());
         encoded.extend_from_slice(&7u16.to_be_bytes());
 
         let body_len = MANIFEST_FIXED_BODY_LEN + 2;

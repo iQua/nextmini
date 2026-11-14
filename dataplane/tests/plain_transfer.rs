@@ -38,9 +38,11 @@ async fn plain_receiver_reports_complete_on_source_done_and_writes_sink() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -146,9 +148,11 @@ async fn plain_receiver_replies_complete_on_later_source_done_after_local_comple
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -264,9 +268,11 @@ async fn plain_receiver_gc_exits_after_passive_complete_idle_timeout() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(Arc::new(Mutex::new(Vec::new()))),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -332,9 +338,11 @@ async fn plain_receiver_waits_for_source_done_before_completion() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -435,9 +443,11 @@ async fn plain_receiver_ignores_removed_legacy_control_ids() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let mut receiver_task =
@@ -516,9 +526,11 @@ async fn plain_receiver_resends_ready_for_identical_manifest_replay() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: None,
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -576,9 +588,11 @@ async fn plain_receiver_ignores_conflicting_manifest_after_install() {
         route: capture.route(),
         local_node_id: capture.cfg.node_id,
         sink_buffer: Some(sink.clone()),
+        sink_file: None,
         progress: None,
         peer_report_timeout_ms: 500,
         fec_enabled: false,
+        cloudcast: None,
     };
     let (tx, rx) = mpsc::channel::<InboundFrame>(64);
     let receiver_task = tokio::spawn(receiver::run(receiver_cfg, rx, capture.processors.clone()));
@@ -698,6 +712,7 @@ async fn plain_sender_completes_after_complete_status() {
         ready_grace_ms: 500,
         peer_report_timeout_ms: 500,
         topology_ready: None,
+        cloudcast: None,
     };
 
     let (ctrl_tx, ctrl_rx) = mpsc::channel(64);

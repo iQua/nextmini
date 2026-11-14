@@ -1,6 +1,6 @@
 #![cfg_attr(not(test), allow(dead_code))]
 
-use std::collections::BTreeMap;
+use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 
 use crate::MettleParams;
@@ -29,7 +29,7 @@ pub(crate) struct MettleEncoder {
     next_departure_bin_id: u128,
     seed: u64,
     terminal_source_count: Option<u64>,
-    open_bins: BTreeMap<u128, Vec<u8>>,
+    open_bins: VecDeque<Option<Vec<u8>>>,
 }
 
 impl MettleEncoder {
@@ -64,7 +64,7 @@ impl MettleEncoder {
             next_departure_bin_id: 0,
             seed,
             terminal_source_count,
-            open_bins: BTreeMap::new(),
+            open_bins: VecDeque::new(),
         }
     }
 
@@ -74,15 +74,17 @@ impl MettleEncoder {
             assert!(self.next_source_id < terminal_source_count);
         }
 
-        let mut padded = vec![0; self.source_symbol_bytes.get()];
-        padded[..payload.len()].copy_from_slice(payload);
-
-        for bin_id in self.edge_bin_ids(self.next_source_id) {
-            let entry = self
-                .open_bins
-                .entry(bin_id)
-                .or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
-            xor_payload(entry, &padded);
+        // Each touched bin is initialized to all-zero `source_symbol_bytes`,
+        // so XORing the (possibly shorter-than-symbol) payload directly is
+        // equivalent to first zero-padding it: bytes beyond `payload.len()`
+        // contribute zero on either side. This avoids a per-source scratch
+        // buffer that would cost an extra `2 * symbol_size` of memory traffic.
+        let (edge_bin_ids, edge_count) = self.unique_edge_bin_id_buffer(self.next_source_id);
+        for &bin_id in &edge_bin_ids[..edge_count] {
+            let slot_index = self.ensure_open_bin_slot(bin_id);
+            let entry = self.open_bins[slot_index]
+                .get_or_insert_with(|| vec![0; self.source_symbol_bytes.get()]);
+            xor_payload(entry, payload);
         }
 
         self.next_source_id += 1;
@@ -103,44 +105,70 @@ impl MettleEncoder {
         self.flush_open_bins()
     }
 
-    fn edge_bin_ids(&self, source_id: u64) -> [u128; MettleParams::EDGE_COUNT] {
-        self.params.edge_bin_ids_with_terminal_source_count(
-            source_id,
-            self.seed,
-            self.terminal_source_count,
-        )
+    fn unique_edge_bin_id_buffer(
+        &self,
+        source_id: u64,
+    ) -> ([u128; MettleParams::EDGE_COUNT], usize) {
+        self.params
+            .unique_edge_bin_id_buffer_with_terminal_source_count(
+                source_id,
+                self.seed,
+                self.terminal_source_count,
+            )
+    }
+
+    fn ensure_open_bin_slot(&mut self, bin_id: u128) -> usize {
+        assert!(bin_id >= self.next_departure_bin_id);
+        let slot_index =
+            usize::try_from(bin_id - self.next_departure_bin_id).expect("open bin index fits");
+        while self.open_bins.len() <= slot_index {
+            self.open_bins.push_back(None);
+        }
+        slot_index
+    }
+
+    #[cfg(test)]
+    fn open_bin_payload(&self, bin_id: u128) -> Option<&Vec<u8>> {
+        if bin_id < self.next_departure_bin_id {
+            return None;
+        }
+        let slot_index = usize::try_from(bin_id - self.next_departure_bin_id).ok()?;
+        self.open_bins.get(slot_index)?.as_ref()
     }
 
     fn take_finalized_bins_until(&mut self, end_exclusive: u128) -> Vec<MettleBin> {
-        let future_bins = self.open_bins.split_off(&end_exclusive);
-        let mut finalized_bins = std::mem::replace(&mut self.open_bins, future_bins).into_iter();
-        let mut next_finalized = finalized_bins.next();
-        let mut emitted = Vec::new();
+        let emit_count =
+            usize::try_from(end_exclusive - self.next_departure_bin_id).expect("emit count fits");
+        while self.open_bins.len() < emit_count {
+            self.open_bins.push_back(None);
+        }
+        let mut emitted = Vec::with_capacity(emit_count);
 
-        for bin_id in self.next_departure_bin_id..end_exclusive {
-            let payload = if next_finalized
-                .as_ref()
-                .is_some_and(|(finalized_bin_id, _)| *finalized_bin_id == bin_id)
-            {
-                let (_, payload) = next_finalized.take().expect("just matched finalized bin");
-                next_finalized = finalized_bins.next();
-                payload
-            } else {
-                vec![0; self.source_symbol_bytes.get()]
-            };
+        for _ in 0..emit_count {
+            let bin_id = self.next_departure_bin_id;
+            let payload = self
+                .open_bins
+                .pop_front()
+                .flatten()
+                .unwrap_or_else(|| vec![0; self.source_symbol_bytes.get()]);
             emitted.push(MettleBin { bin_id, payload });
+            self.next_departure_bin_id += 1;
         }
 
-        self.next_departure_bin_id = end_exclusive;
         emitted
     }
 
     fn flush_open_bins(&mut self) -> Vec<MettleBin> {
-        let remaining_bins = std::mem::take(&mut self.open_bins);
-
-        remaining_bins
+        let start_bin_id = self.next_departure_bin_id;
+        std::mem::take(&mut self.open_bins)
             .into_iter()
-            .map(|(bin_id, payload)| MettleBin { bin_id, payload })
+            .enumerate()
+            .filter_map(|(offset, payload)| {
+                Some(MettleBin {
+                    bin_id: start_bin_id + offset as u128,
+                    payload: payload?,
+                })
+            })
             .collect()
     }
 }
@@ -157,7 +185,7 @@ mod tests {
 
     use crate::{MettleParams, OverheadRatio};
 
-    use super::{MettleBin, MettleEncoder};
+    use super::{MettleBin, MettleEncoder, xor_payload};
 
     #[test]
     fn encoder_keeps_constructor_fields() {
@@ -216,31 +244,28 @@ mod tests {
         }
 
         encoder.push_source(&[0b1010_0000]);
-        assert!(encoder.open_bins.contains_key(&shared_bin));
+        assert_eq!(
+            encoder.open_bin_payload(shared_bin),
+            Some(&vec![0b1010_0000])
+        );
 
         for _ in (first_source_id + 1)..second_source_id {
             encoder.push_source(&[0]);
         }
 
+        let mut expected_shared_payload = encoder
+            .open_bin_payload(shared_bin)
+            .cloned()
+            .expect("first source opened shared bin");
+        xor_payload(&mut expected_shared_payload, &[0b1100_0000]);
+
         let second_emitted = encoder.push_source(&[0b1100_0000]);
 
         assert!(!second_emitted.iter().any(|bin| bin.bin_id == shared_bin));
-        assert_eq!(encoder.open_bins.get(&shared_bin), Some(&vec![0b0110_0000]));
-
-        let release_source_id = ((second_source_id + 1)..)
-            .find(|&next_source_id| params.tle_bin_id(next_source_id) > shared_bin)
-            .expect("future TLE frontier");
-        let shared_bin_payload = ((second_source_id + 1)..=release_source_id)
-            .find_map(|_| {
-                let emitted = encoder.push_source(&[0]);
-                emitted
-                    .into_iter()
-                    .find(|bin| bin.bin_id == shared_bin)
-                    .map(|bin| bin.payload)
-            })
-            .unwrap_or_else(|| panic!("shared bin never emitted"));
-
-        assert_eq!(shared_bin_payload, vec![0b0110_0000]);
+        assert_eq!(
+            encoder.open_bin_payload(shared_bin),
+            Some(&expected_shared_payload)
+        );
     }
 
     #[test]

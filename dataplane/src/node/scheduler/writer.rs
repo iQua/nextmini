@@ -9,6 +9,8 @@ use crate::node::scheduler::queue::SchedulerQueue;
 use crate::node::scheduler::sched::SchedulerWriterMessage;
 use crate::node::scheduler::token_bucket::TokenBucket;
 
+const MAX_PAYLOAD_BATCH_PACKETS: usize = 32;
+
 /// The consumer in the scheduler.
 pub struct SchedulerWriter {
     queue: Arc<dyn SchedulerQueue + Send + Sync>,
@@ -85,16 +87,17 @@ impl SchedulerWriter {
 
             // Collect and send packets from scheduler queues
             let mut batch = Vec::new();
-            self.queue.collect_packets(&mut batch);
+            self.queue
+                .collect_packets(&mut batch, MAX_PAYLOAD_BATCH_PACKETS);
             let drained = batch.len();
+            self.send_packets(&mut batch).await;
             if drained > 0
                 && let Some(semaphore) = &self.capacity_semaphore
             {
-                // Backpressure tracks queue occupancy, not network I/O completion.
-                // Once packets are dequeued, free their slots immediately.
+                // Egress ownership should reflect actual send progress. Only free
+                // queue slots after the batch has been handed off to the network.
                 semaphore.add_permits(drained);
             }
-            self.send_packets(&mut batch).await;
 
             // After each round of queue processing, yield to the producer task
             tokio::task::yield_now().await;

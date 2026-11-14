@@ -373,6 +373,7 @@ impl Dataplane {
                     route,
                     local_node_id: self.cfg.node_id,
                     sink_buffer: Some(sink_buf.clone()),
+                    sink_file: None,
                     progress: Some(Arc::new(session::runtime::ReceiverProgress::default())),
                 };
                 // Direct registration - both sender and receiver compute same session_id
@@ -390,6 +391,75 @@ impl Dataplane {
 
         #[cfg(not(feature = "python-extension"))]
         let _ = (src_port, dst_port);
+
+        Ok(sid)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    #[pyo3(signature = (group_id, source_node_id, output_path, *, src_port=None, dst_port=None))]
+    fn receive_data_to_file(
+        &self,
+        group_id: u64,
+        source_node_id: usize,
+        output_path: &str,
+        src_port: Option<u16>,
+        dst_port: Option<u16>,
+    ) -> PyResult<u64> {
+        let sid = multicast_session_id(group_id, source_node_id);
+        #[cfg(feature = "python-extension")]
+        {
+            if let Some(handle) = &self.lossless_runtime {
+                let path = std::path::Path::new(output_path);
+                if let Some(parent) = path.parent()
+                    && !parent.as_os_str().is_empty()
+                {
+                    std::fs::create_dir_all(parent).map_err(|err| {
+                        PyRuntimeError::new_err(format!(
+                            "failed to create receiver output directory {parent:?}: {err}"
+                        ))
+                    })?;
+                }
+                let file = std::fs::OpenOptions::new()
+                    .create(true)
+                    .truncate(true)
+                    .write(true)
+                    .open(path)
+                    .map_err(|err| {
+                        PyRuntimeError::new_err(format!(
+                            "failed to open receiver output file {output_path}: {err}"
+                        ))
+                    })?;
+                let route = session::runtime::TransportRoute {
+                    src_ip: self
+                        .cfg
+                        .node_id
+                        .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask),
+                    dst_ip: source_node_id
+                        .ip_addr(self.cfg.user_space_base_addr, self.cfg.local_netmask),
+                    src_port: src_port.unwrap_or(self.cfg.user_space_client_port),
+                    dst_port: dst_port.unwrap_or(self.cfg.user_space_server_port),
+                };
+                let cfg = session::runtime::ReceiverRequest {
+                    session_id: sid,
+                    route,
+                    local_node_id: self.cfg.node_id,
+                    sink_buffer: None,
+                    sink_file: Some(Arc::new(Mutex::new(file))),
+                    progress: Some(Arc::new(session::runtime::ReceiverProgress::default())),
+                };
+                let session = rt().block_on(handle.start_receiver(cfg)).map_err(|err| {
+                    PyRuntimeError::new_err(format!(
+                        "lossless receiver start rejected session {sid}: {err}"
+                    ))
+                })?;
+                let session_id = session.id();
+                self.remember_session(session);
+                return Ok(session_id);
+            }
+        }
+
+        #[cfg(not(feature = "python-extension"))]
+        let _ = (src_port, dst_port, output_path);
 
         Ok(sid)
     }
@@ -432,6 +502,7 @@ impl Dataplane {
                         route,
                         local_node_id,
                         sink_buffer: Some(sink_buf.clone()),
+                        sink_file: None,
                         progress: Some(Arc::new(session::runtime::ReceiverProgress::default())),
                     };
 

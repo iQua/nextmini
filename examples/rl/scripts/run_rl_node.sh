@@ -36,11 +36,11 @@ uv pip install numpy >/dev/null
 if [[ "${role}" == "trainer" ]]; then
   uv pip install cvxopt >/dev/null
 fi
-uv pip install torch>=2.4.0 >/dev/null
-uv pip install transformers>=4.30.0 >/dev/null
-uv pip install datasets>=2.0.0 >/dev/null
+uv pip install "torch>=2.8.0" >/dev/null
+uv pip install "transformers>=4.57.0" >/dev/null
+uv pip install "datasets>=4.4.0" >/dev/null
 uv pip install accelerate >/dev/null
-uv pip install tqdm>=4.65.0 >/dev/null
+uv pip install "tqdm>=4.67.0" >/dev/null
 
 # Build or install nextmini_py wheel
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then

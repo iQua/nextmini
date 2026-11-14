@@ -47,6 +47,9 @@ impl PlainReceiver {
         shared.mark_first_payload_unit();
         shared.write_block(data.block_id, payload).await;
         shared.complete_blocks.insert(data.block_id);
+        if shared.has_all_blocks() {
+            shared.mark_object_complete();
+        }
     }
 
     pub(super) async fn handle_source_done(

@@ -81,11 +81,23 @@ struct FailureRateEstimate {
     trials: usize,
     local_residual_events: usize,
     isolated_error_floor_events: usize,
+    non_isolated_residual_sources_total: usize,
+    non_isolated_residual_sources_max: usize,
+    isolated_sources_total: usize,
+    isolated_sources_max: usize,
 }
 
 impl FailureRateEstimate {
     fn rate(self) -> f64 {
         self.failures as f64 / self.trials as f64
+    }
+
+    fn avg_isolated_sources_per_trial(self) -> f64 {
+        self.isolated_sources_total as f64 / self.trials as f64
+    }
+
+    fn avg_non_isolated_residual_sources_per_trial(self) -> f64 {
+        self.non_isolated_residual_sources_total as f64 / self.trials as f64
     }
 }
 
@@ -646,6 +658,24 @@ fn raptorq_estimated_failure_rate(
         trials,
         local_residual_events: 0,
         isolated_error_floor_events: 0,
+        non_isolated_residual_sources_total: 0,
+        non_isolated_residual_sources_max: 0,
+        isolated_sources_total: 0,
+        isolated_sources_max: 0,
+    }
+}
+
+fn expected_bec_isolated_sources(case: CodingEfficiencyCase, source_count: usize) -> Option<f64> {
+    match case.channel {
+        Channel::Bec {
+            erasure_probability,
+        } => Some(
+            source_count as f64
+                * erasure_probability
+                    .to_f64()
+                    .powi(MettleParams::EDGE_COUNT as i32),
+        ),
+        Channel::Ge { .. } => None,
     }
 }
 
@@ -661,6 +691,10 @@ fn mettle_graph_estimated_failure_rate(
     let mut failures = 0usize;
     let mut local_residual_events = 0usize;
     let mut isolated_error_floor_events = 0usize;
+    let mut non_isolated_residual_sources_total = 0usize;
+    let mut non_isolated_residual_sources_max = 0usize;
+    let mut isolated_sources_total = 0usize;
+    let mut isolated_sources_max = 0usize;
 
     for trial in 0..trials {
         let seed = trial as u64 + 1;
@@ -668,6 +702,11 @@ fn mettle_graph_estimated_failure_rate(
         let delivered_bin_ids = mettle_delivered_bin_ids(case, seed, packet_count);
         let offline_outcome =
             offline_peeling_outcome(params, graph_seed, source_count, &delivered_bin_ids);
+        non_isolated_residual_sources_total += offline_outcome.undecoded_sources;
+        non_isolated_residual_sources_max =
+            non_isolated_residual_sources_max.max(offline_outcome.undecoded_sources);
+        isolated_sources_total += offline_outcome.isolated_sources;
+        isolated_sources_max = isolated_sources_max.max(offline_outcome.isolated_sources);
 
         if offline_outcome.residual_sources() == 0 {
             continue;
@@ -739,6 +778,10 @@ fn mettle_graph_estimated_failure_rate(
         trials,
         local_residual_events,
         isolated_error_floor_events,
+        non_isolated_residual_sources_total,
+        non_isolated_residual_sources_max,
+        isolated_sources_total,
+        isolated_sources_max,
     }
 }
 
@@ -761,6 +804,10 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> F
     let mut failures = 0usize;
     let mut local_residual_events = 0usize;
     let mut isolated_error_floor_events = 0usize;
+    let mut non_isolated_residual_sources_total = 0usize;
+    let mut non_isolated_residual_sources_max = 0usize;
+    let mut isolated_sources_total = 0usize;
+    let mut isolated_sources_max = 0usize;
 
     for trial in 0..trials {
         match mettle_trial_outcome(case, trial as u64 + 1, source_count) {
@@ -781,6 +828,11 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> F
                     source_count,
                     &delivered_bin_ids,
                 );
+                non_isolated_residual_sources_total += offline_outcome.undecoded_sources;
+                non_isolated_residual_sources_max =
+                    non_isolated_residual_sources_max.max(offline_outcome.undecoded_sources);
+                isolated_sources_total += offline_outcome.isolated_sources;
+                isolated_sources_max = isolated_sources_max.max(offline_outcome.isolated_sources);
                 if offline_outcome.is_isolated_error_floor_event() {
                     isolated_error_floor_events += 1;
                     if print_first_failure && isolated_error_floor_events == 1 {
@@ -892,6 +944,10 @@ fn mettle_estimated_failure_rate(case: CodingEfficiencyCase, trials: usize) -> F
         trials,
         local_residual_events,
         isolated_error_floor_events,
+        non_isolated_residual_sources_total,
+        non_isolated_residual_sources_max,
+        isolated_sources_total,
+        isolated_sources_max,
     }
 }
 
@@ -981,6 +1037,28 @@ fn div_ceil(lhs: usize, rhs: usize) -> usize {
     lhs / rhs + (!lhs.is_multiple_of(rhs)) as usize
 }
 
+fn env_usize_list(name: &str, default: &[usize]) -> Vec<usize> {
+    std::env::var(name)
+        .ok()
+        .map(|value| {
+            value
+                .split(',')
+                .filter_map(|part| part.trim().parse().ok())
+                .collect::<Vec<_>>()
+        })
+        .filter(|values| !values.is_empty())
+        .unwrap_or_else(|| default.to_vec())
+}
+
+fn codec_enabled(env_name: &str, codec: &str) -> bool {
+    std::env::var(env_name).map_or(true, |value| {
+        value
+            .split(',')
+            .map(|part| part.trim())
+            .any(|part| part.eq_ignore_ascii_case("all") || part.eq_ignore_ascii_case(codec))
+    })
+}
+
 fn case_params(case: CodingEfficiencyCase) -> MettleParams {
     mettle_params(case.mettle_overhead_ratio)
 }
@@ -1004,6 +1082,30 @@ fn mettle_table_iv_graph_only() -> bool {
     std::env::var("METTLE_TABLE_IV_GRAPH_ONLY")
         .ok()
         .is_some_and(|value| value != "0")
+}
+
+fn env_rational_list(name: &str, default: &[Rational]) -> Vec<Rational> {
+    let Ok(raw) = std::env::var(name) else {
+        return default.to_vec();
+    };
+
+    raw.split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let (numerator, denominator) = value
+                .split_once('/')
+                .unwrap_or_else(|| panic!("{name} entry must be NUM/DEN, got {value}"));
+            Rational::new(
+                numerator
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{name} numerator must be integer: {value}")),
+                denominator
+                    .parse()
+                    .unwrap_or_else(|_| panic!("{name} denominator must be integer: {value}")),
+            )
+        })
+        .collect()
 }
 
 fn mettle_graph_seed(trial_seed: u64) -> u64 {
@@ -1052,8 +1154,11 @@ fn report_paper_coding_efficiency_failure_rates() {
         }
         let mettle_estimate = mettle_estimated_failure_rate(case, trials);
         let raptorq_estimate = raptorq_estimated_failure_rate(case, trials);
+        let mettle_source_count = mettle_table_iv_source_count();
+        let expected_isolated_sources =
+            expected_bec_isolated_sources(case, mettle_source_count).unwrap_or(f64::NAN);
         eprintln!(
-            "channel={} mettle_overhead={:.4}% mettle_stall_failures={}/{} mettle_stall_failure_rate={:.6} mettle_local_residual_events={}/{} mettle_isolated_error_floor_events={}/{} raptorq_k={} raptorq_overhead={:.4}% raptorq_failures={}/{} raptorq_failure_rate={:.6} target={:.6}",
+            "channel={} mettle_overhead={:.4}% mettle_stall_failures={}/{} mettle_stall_failure_rate={:.6} mettle_local_residual_events={}/{} mettle_isolated_error_floor_events={}/{} mettle_avg_non_isolated_residual_sources_per_trial={:.3} mettle_max_non_isolated_residual_sources={} mettle_avg_isolated_sources_per_trial={:.3} mettle_max_isolated_sources={} mettle_expected_bec_isolated_sources={:.3} raptorq_k={} raptorq_overhead={:.4}% raptorq_failures={}/{} raptorq_failure_rate={:.6} target={:.6}",
             case.name,
             case.mettle_overhead_ratio.to_f64() * 100.0,
             mettle_estimate.failures,
@@ -1063,6 +1168,11 @@ fn report_paper_coding_efficiency_failure_rates() {
             mettle_estimate.trials,
             mettle_estimate.isolated_error_floor_events,
             mettle_estimate.trials,
+            mettle_estimate.avg_non_isolated_residual_sources_per_trial(),
+            mettle_estimate.non_isolated_residual_sources_max,
+            mettle_estimate.avg_isolated_sources_per_trial(),
+            mettle_estimate.isolated_sources_max,
+            expected_isolated_sources,
             case.raptorq_k,
             case.raptorq_overhead_ratio.to_f64() * 100.0,
             raptorq_estimate.failures,
@@ -1070,5 +1180,225 @@ fn report_paper_coding_efficiency_failure_rates() {
             raptorq_estimate.rate(),
             TARGET_FAILURE_RATE,
         );
+    }
+}
+
+#[test]
+#[ignore = "manual METTLE BEC graph-only overhead sweep"]
+fn report_mettle_bec_overhead_probe() {
+    let trials = std::env::var("METTLE_BEC_PROBE_TRIALS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1000);
+    let source_count = std::env::var("METTLE_BEC_PROBE_SOURCE_COUNT")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(PAPER_CODING_EFFICIENCY_METTLE_SOURCE_COUNT);
+    let loss = std::env::var("METTLE_BEC_PROBE_LOSS")
+        .ok()
+        .map(|value| {
+            let (numerator, denominator) = value
+                .split_once('/')
+                .unwrap_or_else(|| panic!("METTLE_BEC_PROBE_LOSS must be NUM/DEN, got {value}"));
+            Rational::new(
+                numerator
+                    .parse()
+                    .expect("METTLE_BEC_PROBE_LOSS numerator must be integer"),
+                denominator
+                    .parse()
+                    .expect("METTLE_BEC_PROBE_LOSS denominator must be integer"),
+            )
+        })
+        .unwrap_or_else(|| Rational::new(3, 100));
+    let overheads = env_rational_list(
+        "METTLE_BEC_PROBE_OVERHEADS",
+        &[
+            Rational::new(850, 10_000),
+            Rational::new(900, 10_000),
+            Rational::new(950, 10_000),
+            Rational::new(1000, 10_000),
+        ],
+    );
+    let local_residual_source_limit = mettle_table_iv_local_residual_source_limit();
+    let print_first_failure = std::env::var("METTLE_BEC_PROBE_PRINT_FIRST_FAILURE")
+        .ok()
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
+
+    eprintln!(
+        "loss,nominal_overhead_pct,actual_tx_packets,actual_overhead_pct,trials,stall_failures,stall_failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
+    );
+    for overhead in overheads {
+        let case = CodingEfficiencyCase {
+            name: "BEC-probe",
+            channel: Channel::Bec {
+                erasure_probability: loss,
+            },
+            mettle_overhead_ratio: overhead,
+            raptorq_k: 0,
+            raptorq_overhead_ratio: Rational::new(1, 1),
+        };
+        let params = mettle_params(overhead);
+        let packet_count = terminal_departure_end_exclusive(params, source_count as u64) as usize;
+        let actual_overhead = packet_count as f64 / source_count as f64 - 1.0;
+        let estimate = mettle_graph_estimated_failure_rate(
+            case,
+            trials,
+            source_count,
+            print_first_failure,
+            local_residual_source_limit,
+        );
+        let expected_isolated_sources =
+            expected_bec_isolated_sources(case, source_count).unwrap_or(f64::NAN);
+
+        eprintln!(
+            "{:.6},{:.4},{},{:.4},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
+            loss.to_f64(),
+            overhead.to_f64() * 100.0,
+            packet_count,
+            actual_overhead * 100.0,
+            estimate.trials,
+            estimate.failures,
+            estimate.rate(),
+            estimate.local_residual_events,
+            estimate.isolated_error_floor_events,
+            estimate.avg_non_isolated_residual_sources_per_trial(),
+            estimate.non_isolated_residual_sources_max,
+            estimate.avg_isolated_sources_per_trial(),
+            estimate.isolated_sources_max,
+            expected_isolated_sources,
+        );
+    }
+}
+
+#[test]
+#[ignore = "manual paper-style coding-efficiency surface"]
+fn report_paper_style_efficiency_surface() {
+    let trials = std::env::var("PAPER_STYLE_EFFICIENCY_TRIALS")
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(1000);
+    let ks = env_usize_list(
+        "PAPER_STYLE_EFFICIENCY_KS",
+        &[127, 257, 511, 1002, 2040, 4069],
+    );
+    let losses = env_rational_list(
+        "PAPER_STYLE_EFFICIENCY_LOSSES",
+        &[
+            Rational::new(1, 100),
+            Rational::new(2, 100),
+            Rational::new(3, 100),
+            Rational::new(5, 100),
+            Rational::new(8, 100),
+            Rational::new(10, 100),
+        ],
+    );
+    let overheads = env_rational_list(
+        "PAPER_STYLE_EFFICIENCY_OVERHEADS",
+        &[
+            Rational::new(500, 10_000),
+            Rational::new(600, 10_000),
+            Rational::new(700, 10_000),
+            Rational::new(800, 10_000),
+            Rational::new(900, 10_000),
+            Rational::new(950, 10_000),
+            Rational::new(1000, 10_000),
+            Rational::new(1200, 10_000),
+            Rational::new(1500, 10_000),
+            Rational::new(2000, 10_000),
+            Rational::new(2500, 10_000),
+            Rational::new(3000, 10_000),
+        ],
+    );
+    let local_residual_source_limit = mettle_table_iv_local_residual_source_limit();
+    let run_mettle = codec_enabled("PAPER_STYLE_EFFICIENCY_CODECS", "mettle");
+    let run_raptorq = codec_enabled("PAPER_STYLE_EFFICIENCY_CODECS", "raptorq");
+
+    eprintln!(
+        "metric,codec,k,symbol_size,loss,nominal_overhead_pct,actual_tx_packets,actual_overhead_pct,trials,successes,failures,failure_rate,local_residual_events,isolated_error_floor_events,avg_non_isolated_residual_sources,max_non_isolated_residual_sources,avg_isolated_sources,max_isolated_sources,expected_isolated_sources"
+    );
+    for &k in &ks {
+        for &loss in &losses {
+            for &overhead in &overheads {
+                let channel = Channel::Bec {
+                    erasure_probability: loss,
+                };
+                if run_mettle {
+                    let mettle_case = CodingEfficiencyCase {
+                        name: "paper-style-surface",
+                        channel,
+                        mettle_overhead_ratio: overhead,
+                        raptorq_k: 0,
+                        raptorq_overhead_ratio: Rational::new(1, 1),
+                    };
+                    let mettle_params = mettle_params(overhead);
+                    let mettle_tx_packets =
+                        terminal_departure_end_exclusive(mettle_params, k as u64) as usize;
+                    let mettle_actual_overhead = mettle_tx_packets as f64 / k as f64 - 1.0;
+                    let mettle_estimate = mettle_graph_estimated_failure_rate(
+                        mettle_case,
+                        trials,
+                        k,
+                        false,
+                        local_residual_source_limit,
+                    );
+                    let mettle_expected_isolated =
+                        expected_bec_isolated_sources(mettle_case, k).unwrap_or(f64::NAN);
+                    eprintln!(
+                        "paper_style,mettle,{},{},{:.6},{:.4},{},{:.4},{},{},{},{:.6},{},{},{:.3},{},{:.3},{},{:.3}",
+                        k,
+                        PAPER_CODING_EFFICIENCY_METTLE_SYMBOL_SIZE,
+                        loss.to_f64(),
+                        overhead.to_f64() * 100.0,
+                        mettle_tx_packets,
+                        mettle_actual_overhead * 100.0,
+                        mettle_estimate.trials,
+                        mettle_estimate.trials - mettle_estimate.failures,
+                        mettle_estimate.failures,
+                        mettle_estimate.rate(),
+                        mettle_estimate.local_residual_events,
+                        mettle_estimate.isolated_error_floor_events,
+                        mettle_estimate.avg_non_isolated_residual_sources_per_trial(),
+                        mettle_estimate.non_isolated_residual_sources_max,
+                        mettle_estimate.avg_isolated_sources_per_trial(),
+                        mettle_estimate.isolated_sources_max,
+                        mettle_expected_isolated,
+                    );
+                }
+
+                if run_raptorq && k <= 56_403 {
+                    let raptorq_case = CodingEfficiencyCase {
+                        name: "paper-style-surface",
+                        channel,
+                        mettle_overhead_ratio: Rational::new(1, 1),
+                        raptorq_k: k,
+                        raptorq_overhead_ratio: overhead,
+                    };
+                    let raptorq_tx_packets = total_packet_count(k, overhead);
+                    let raptorq_actual_overhead = raptorq_tx_packets as f64 / k as f64 - 1.0;
+                    let raptorq_estimate = raptorq_estimated_failure_rate(raptorq_case, trials);
+                    eprintln!(
+                        "paper_style,raptorq,{},{},{:.6},{:.4},{},{:.4},{},{},{},{:.6},0,0,0.000,0,0.000,0,nan",
+                        k,
+                        PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE,
+                        loss.to_f64(),
+                        overhead.to_f64() * 100.0,
+                        raptorq_tx_packets,
+                        raptorq_actual_overhead * 100.0,
+                        raptorq_estimate.trials,
+                        raptorq_estimate.trials - raptorq_estimate.failures,
+                        raptorq_estimate.failures,
+                        raptorq_estimate.rate(),
+                    );
+                } else if run_raptorq {
+                    eprintln!(
+                        "paper_style,raptorq,{},{},{:.6},{:.4},unsupported_single_block,unsupported_single_block,{trials},unsupported_single_block,unsupported_single_block,unsupported_single_block,0,0,0.000,0,0.000,0,nan",
+                        k,
+                        PAPER_CODING_EFFICIENCY_RAPTORQ_SYMBOL_SIZE,
+                        loss.to_f64(),
+                        overhead.to_f64() * 100.0,
+                    );
+                }
+            }
+        }
     }
 }

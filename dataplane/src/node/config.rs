@@ -43,6 +43,30 @@ pub enum Feature {
     Concurrent,
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LosslessFecScheme {
+    #[default]
+    RaptorQ,
+    Mettle,
+}
+
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LosslessRuntimeSessionMode {
+    #[default]
+    Plain,
+    Fec,
+    Mettle,
+    Cloudcast,
+}
+
+impl LosslessRuntimeSessionMode {
+    pub const fn is_cloudcast(self) -> bool {
+        matches!(self, Self::Cloudcast)
+    }
+}
+
 #[derive(Parser)]
 #[command(author, version, about)]
 pub struct Args {
@@ -166,6 +190,16 @@ pub struct LocalConfig {
     #[default(1000)]
     #[arg(long)]
     pub channel_capacity: usize,
+
+    /// Per-child pending packet capacity in child-scoped fan-out mode.
+    /// When omitted, this inherits `channel_capacity`.
+    ///
+    /// This capacity applies once per scoped node. Increasing it adds buffering on top of the
+    /// scheduler channel and queue, and delays the `WouldBlock` feedback that drives sender
+    /// tree-switching. Experiments should set it explicitly when that tradeoff matters.
+    #[default(None)]
+    #[arg(long)]
+    pub fanout_pending_capacity: Option<usize>,
 
     /// The address of the local network interface to use for communicating between nodes on the same subnet.
     #[default("".to_string())]
@@ -368,7 +402,16 @@ impl LocalConfig {
     #[allow(dead_code)]
     pub fn from_toml_str(toml_str: &str) -> Result<LocalConfig, toml::de::Error> {
         let mut opt: <LocalConfig as ClapSerde>::Opt = toml::from_str(toml_str)?;
-        Ok(LocalConfig::from(&mut opt))
+        let mut config = LocalConfig::from(&mut opt);
+        config.normalize();
+        Ok(config)
+    }
+
+    /// Returns the normalized per-scoped-node fan-out pending capacity.
+    pub fn effective_fanout_pending_capacity(&self) -> usize {
+        self.fanout_pending_capacity
+            .unwrap_or(self.channel_capacity)
+            .max(1)
     }
 
     /// Converts IP address to node ID, supporting both TUN and user space networks.
@@ -463,10 +506,16 @@ impl LocalConfig {
             cfgs.controller_addr = addr;
         }
 
-        cfgs.normalize_controller_addr();
+        cfgs.normalize();
         cfgs.populate_runtime_defaults();
 
         cfgs
+    }
+
+    /// Normalizes user-provided values that have runtime validity constraints.
+    pub fn normalize(&mut self) {
+        self.normalize_controller_addr();
+        self.fanout_pending_capacity = Some(self.effective_fanout_pending_capacity());
     }
 
     fn normalize_controller_addr(&mut self) {
@@ -592,8 +641,10 @@ impl LocalConfig {
             self.num_packet_processors = num_cpus::get();
         }
 
-        self.lossless_runtime_config.ingress_feature = self.feature.clone();
-        self.lossless_runtime_config.ingress_channel_backpressure = self.channel_backpressure;
+        let lossless_control_capacity = self.channel_capacity.max(1024);
+        self.lossless_runtime_config.runtime_message_capacity = lossless_control_capacity;
+        self.lossless_runtime_config.session_control_inbox_capacity = lossless_control_capacity;
+        self.lossless_runtime_config.session_inbox_capacity = self.channel_capacity.max(1);
     }
 
     pub fn update(&mut self, response: Result<Message, Error>) {
@@ -664,6 +715,10 @@ pub struct LosslessConfig {
     /// Default data block size in bytes.
     pub default_block_size: usize,
 
+    /// Local lossless runtime mode. `cloudcast` uses plain block payloads striped across tree scopes.
+    #[serde(default)]
+    pub session_mode: LosslessRuntimeSessionMode,
+
     /// Optional token-bucket for data pacing (bytes/sec, bucket size bytes).
     pub data_bucket: Option<TokenBucketSpec>,
 
@@ -681,35 +736,72 @@ pub struct LosslessConfig {
 
     /// Default `symbols_per_block` used when runtime derives sender manifests internally.
     #[serde(default = "default_fec_default_symbols_per_block")]
-    pub fec_default_symbols_per_block: u16,
+    pub fec_default_symbols_per_block: u32,
+
+    /// Default FEC scheme used when runtime derives sender manifests internally.
+    #[serde(default)]
+    pub fec_default_scheme: LosslessFecScheme,
 
     /// Tree IDs used for FEC symbol striping.
     #[serde(default = "default_fec_default_tree_ids")]
     pub fec_default_tree_ids: Vec<u16>,
 
-    /// Effective processor ingress policy copied from `LocalConfig.feature`.
-    /// Runtime preflight uses this to enforce sequential-only collaborative multi-tree mode.
-    #[serde(skip)]
-    pub ingress_feature: Feature,
+    /// Optional tree weights used by tree-scoped Cloudcast striping.
+    #[serde(default)]
+    pub fec_default_tree_weights: Vec<f64>,
 
-    /// Effective ingress backpressure policy copied from `LocalConfig.channel_backpressure`.
-    /// Runtime preflight uses this to reject FEC modes that can silently drop on full queues.
+    /// METTLE coded-rate numerator used to derive the stream overhead parameter.
+    #[serde(default = "default_mettle_default_coded_rate_num")]
+    pub mettle_default_coded_rate_num: u32,
+
+    /// METTLE coded-rate denominator used to derive the stream overhead parameter.
+    #[serde(default = "default_mettle_default_coded_rate_den")]
+    pub mettle_default_coded_rate_den: u32,
+
+    /// Number of Cloudcast stripes/partitions used to quantize tree weights.
+    #[serde(default)]
+    pub cloudcast_stripes: usize,
+
+    /// Explicit Cloudcast stripe-to-tree table. Entry `i` is the tree used by stripe `i`.
+    #[serde(default)]
+    pub cloudcast_stripe_tree_ids: Vec<u16>,
+
+    /// Capacity of the runtime actor mailbox that forwards inbound lossless
+    /// frames and lifecycle commands to the background session runtime.
     #[serde(skip)]
-    pub ingress_channel_backpressure: bool,
+    pub runtime_message_capacity: usize,
+
+    /// Capacity of each per-session control inbox between the runtime actor and
+    /// the spawned sender/receiver task.
+    #[serde(skip)]
+    pub session_control_inbox_capacity: usize,
+
+    /// Capacity of each per-session data inbox between the runtime actor and
+    /// the spawned receiver task.
+    #[serde(skip)]
+    pub session_inbox_capacity: usize,
 }
 
 impl Default for LosslessConfig {
     fn default() -> Self {
         Self {
             default_block_size: 8500,
+            session_mode: LosslessRuntimeSessionMode::Plain,
             data_bucket: None,
             ready_grace_ms: 1500,
-            peer_report_timeout_ms: 1500,
+            peer_report_timeout_ms: 15_000,
             fec_enabled: false,
             fec_default_symbols_per_block: 32,
+            fec_default_scheme: LosslessFecScheme::RaptorQ,
             fec_default_tree_ids: vec![0],
-            ingress_feature: Feature::Sequential,
-            ingress_channel_backpressure: true,
+            fec_default_tree_weights: Vec::new(),
+            mettle_default_coded_rate_num: 1,
+            mettle_default_coded_rate_den: 1,
+            cloudcast_stripes: 0,
+            cloudcast_stripe_tree_ids: Vec::new(),
+            runtime_message_capacity: 1024,
+            session_control_inbox_capacity: 1024,
+            session_inbox_capacity: 1024,
         }
     }
 }
@@ -719,19 +811,27 @@ const fn default_ready_grace_ms() -> u64 {
 }
 
 const fn default_peer_report_timeout_ms() -> u64 {
-    1500
+    15_000
 }
 
 const fn default_fec_enabled() -> bool {
     false
 }
 
-const fn default_fec_default_symbols_per_block() -> u16 {
+const fn default_fec_default_symbols_per_block() -> u32 {
     32
 }
 
 fn default_fec_default_tree_ids() -> Vec<u16> {
     vec![0]
+}
+
+const fn default_mettle_default_coded_rate_num() -> u32 {
+    1
+}
+
+const fn default_mettle_default_coded_rate_den() -> u32 {
+    1
 }
 
 #[allow(dead_code)]
@@ -759,6 +859,10 @@ pub struct IntegrationTestConfig {
     pub artifact_dir: String,
     #[serde(default)]
     pub payload_path: String,
+    #[serde(default)]
+    pub synthetic_payload: bool,
+    #[serde(default)]
+    pub payload_size: u64,
     #[serde(default = "default_integration_group_timeout_ms")]
     pub group_timeout_ms: u64,
     #[serde(default = "default_integration_receive_timeout_ms")]
@@ -808,11 +912,11 @@ pub enum IntegrationNodeRole {
 }
 
 fn default_integration_group_timeout_ms() -> u64 {
-    60_000
+    120_000
 }
 
 fn default_integration_receive_timeout_ms() -> u64 {
-    60_000
+    600_000
 }
 
 fn default_integration_poll_interval_ms() -> u64 {
@@ -899,8 +1003,8 @@ fn default_netmask() -> Ipv4Addr {
 #[cfg(test)]
 mod tests {
     use super::{
-        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig,
-        deserialize_edge_pairs,
+        IntegrationNodeRole, IntegrationTestConfig, LocalConfig, LosslessConfig, LosslessFecScheme,
+        LosslessRuntimeSessionMode, deserialize_edge_pairs,
     };
     use serde::Deserialize;
     use std::net::Ipv4Addr;
@@ -914,6 +1018,40 @@ mod tests {
         assert_eq!(gap, Some(Duration::from_micros(500)));
         // Default backlog tolerance is disabled (0) when enforcement is enabled.
         assert_eq!(backlog, 0);
+    }
+
+    #[test]
+    fn fanout_pending_capacity_defaults_to_channel_capacity() {
+        let cfg = LocalConfig {
+            channel_capacity: 37,
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 37);
+    }
+
+    #[test]
+    fn fanout_pending_capacity_accepts_an_explicit_value() {
+        let cfg = LocalConfig {
+            fanout_pending_capacity: Some(11),
+            ..Default::default()
+        };
+
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 11);
+    }
+
+    #[test]
+    fn fanout_pending_capacity_is_clamped_to_one() {
+        let mut cfg = LocalConfig {
+            channel_capacity: 0,
+            fanout_pending_capacity: Some(0),
+            ..Default::default()
+        };
+
+        cfg.normalize();
+
+        assert_eq!(cfg.fanout_pending_capacity, Some(1));
+        assert_eq!(cfg.effective_fanout_pending_capacity(), 1);
     }
 
     #[test]
@@ -979,51 +1117,72 @@ mod tests {
         let lossless = cfg.lossless_runtime_config;
 
         assert_eq!(lossless.default_block_size, 8500);
+        assert_eq!(lossless.session_mode, LosslessRuntimeSessionMode::Plain);
         assert!(
             !lossless.fec_enabled,
             "FEC must be explicit opt-in by default"
         );
         assert_eq!(lossless.fec_default_symbols_per_block, 32);
+        assert_eq!(lossless.fec_default_scheme, LosslessFecScheme::RaptorQ);
         assert_eq!(lossless.fec_default_tree_ids, vec![0]);
-        assert_eq!(lossless.ingress_feature, super::Feature::Sequential);
-        assert!(
-            lossless.ingress_channel_backpressure,
-            "lossless defaults should assume backpressured ingress unless synced from LocalConfig"
-        );
-    }
-
-    #[test]
-    fn populate_runtime_defaults_syncs_lossless_ingress_policy() {
-        let mut cfg = LocalConfig {
-            feature: super::Feature::Concurrent,
-            channel_backpressure: false,
-            private_network_addr: "127.0.0.1".to_string(),
-            public_network_addr: "127.0.0.1".to_string(),
-            ..Default::default()
-        };
-
-        cfg.populate_runtime_defaults();
-
-        assert_eq!(
-            cfg.lossless_runtime_config.ingress_feature,
-            super::Feature::Concurrent
-        );
-        assert!(
-            !cfg.lossless_runtime_config.ingress_channel_backpressure,
-            "runtime ingress backpressure policy must mirror LocalConfig.channel_backpressure"
-        );
+        assert!(lossless.fec_default_tree_weights.is_empty());
+        assert_eq!(lossless.mettle_default_coded_rate_num, 1);
+        assert_eq!(lossless.mettle_default_coded_rate_den, 1);
     }
 
     #[test]
     fn lossless_fec_defaults_are_not_canonicalized() {
         let cfg = LosslessConfig {
             fec_default_symbols_per_block: 0,
+            fec_default_scheme: LosslessFecScheme::Mettle,
             fec_default_tree_ids: vec![5, 1, 5, 3],
+            fec_default_tree_weights: vec![2.0, 1.0],
+            mettle_default_coded_rate_num: 21,
+            mettle_default_coded_rate_den: 20,
             ..Default::default()
         };
 
         assert_eq!(cfg.fec_default_symbols_per_block, 0);
+        assert_eq!(cfg.fec_default_scheme, LosslessFecScheme::Mettle);
         assert_eq!(cfg.fec_default_tree_ids, vec![5, 1, 5, 3]);
+        assert_eq!(cfg.fec_default_tree_weights, vec![2.0, 1.0]);
+        assert_eq!(cfg.mettle_default_coded_rate_num, 21);
+        assert_eq!(cfg.mettle_default_coded_rate_den, 20);
+    }
+
+    #[test]
+    fn lossless_cloudcast_mode_parses_from_config() {
+        #[derive(Deserialize)]
+        struct Wrapper {
+            lossless_runtime_config: LosslessConfig,
+        }
+
+        let parsed: Wrapper = toml::from_str(
+            r#"
+            [lossless_runtime_config]
+            default_block_size = 8192
+            session_mode = "cloudcast"
+            fec_default_tree_ids = [0, 3]
+            fec_default_tree_weights = [2.5, 1.0]
+            cloudcast_stripes = 8
+            cloudcast_stripe_tree_ids = [0, 0, 0, 0, 0, 3, 3, 3]
+            "#,
+        )
+        .expect("cloudcast lossless runtime config should parse");
+
+        assert_eq!(
+            parsed.lossless_runtime_config.session_mode,
+            LosslessRuntimeSessionMode::Cloudcast
+        );
+        assert_eq!(
+            parsed.lossless_runtime_config.fec_default_tree_weights,
+            vec![2.5, 1.0]
+        );
+        assert_eq!(parsed.lossless_runtime_config.cloudcast_stripes, 8);
+        assert_eq!(
+            parsed.lossless_runtime_config.cloudcast_stripe_tree_ids,
+            vec![0, 0, 0, 0, 0, 3, 3, 3]
+        );
     }
 
     #[test]

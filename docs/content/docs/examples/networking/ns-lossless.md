@@ -36,12 +36,14 @@ nodes can reach each other on hosts where `bridge-nf-call-iptables=1`.
 
 `run.sh` expects `127.0.0.1:3000` to be free for the local controller. If another controller or container is already listening on that port, stop it before starting a case.
 
-Legacy named case presets:
+Named case presets:
 
 - `plain-1r`
-- `fec-1r`
-- `fec-2r-block`
-- `fec-2r-symbols`
+- `fec-1r` (RaptorQ)
+- `fec-2r-block` (RaptorQ)
+- `fec-2r-symbols` (RaptorQ)
+- `raptorq-2t-2r-k2400`
+- `mettle-2t-2r-k2400`
 
 Run one custom case without editing the script:
 
@@ -49,7 +51,16 @@ Run one custom case without editing the script:
 ./examples/ns-lossless/run.sh --mode fec --trees 3 --receivers 20
 ```
 
-For custom runs, `--mode` defaults to `fec` when omitted. `plain` mode is only valid with `--trees 1`.
+For custom runs, `--mode` defaults to `fec` when omitted and `--fec-scheme` defaults to `raptorq`.
+Use `--fec-scheme mettle` to run the METTLE backend. METTLE requires `--symbols-per-block >= 2400`.
+For apples-to-apples backend comparisons, keep `--symbols-per-block`, `--block-size`, payload size, topology, and queue settings identical. Use at least two trees for both backends, and do not compare the legacy small-`K` RaptorQ presets against METTLE:
+
+```bash
+./examples/ns-lossless/run.sh --mode fec --fec-scheme raptorq --trees 2 --receivers 2 --symbols-per-block 2400 --block-size $((2400*1024)) --payload-size $((64*1024*1024))
+./examples/ns-lossless/run.sh --mode fec --fec-scheme mettle --trees 2 --receivers 2 --symbols-per-block 2400 --block-size $((2400*1024)) --payload-size $((64*1024*1024))
+```
+
+`plain` mode is only valid with `--trees 1`.
 Use `--packet-processors`, `--channel-capacity`, and `--queue-capacity` to exercise different namespace dataplane concurrency settings without editing the generated config.
 
 Run the two sweep families you asked for:
@@ -58,7 +69,7 @@ Run the two sweep families you asked for:
 ./examples/ns-lossless/run.sh --tree-sweep-max 10 --receiver-sweep-max 100
 ```
 
-That command runs in `fec` mode and uses the script defaults of `20` receivers for the tree sweep and `3` trees for the receiver sweep. Override them with `--tree-sweep-receivers`, `--receiver-sweep-trees`, `--block-size`, `--symbols-per-block`, `--payload-size`, `--receive-timeout-ms`, `--packet-processors`, `--channel-capacity`, `--queue-capacity`, or `--status-timeout-seconds` if needed.
+That command runs in `fec` mode with the default `raptorq` backend and uses the script defaults of `20` receivers for the tree sweep and `3` trees for the receiver sweep. Override them with `--fec-scheme`, `--tree-sweep-receivers`, `--receiver-sweep-trees`, `--block-size`, `--symbols-per-block`, `--payload-size`, `--receive-timeout-ms`, `--packet-processors`, `--channel-capacity`, `--queue-capacity`, or `--status-timeout-seconds` if needed.
 
 Use `--receive-timeout-ms` to override the generated integration session completion timeout (default: `120000`). This is separate from `--status-timeout-seconds`, which controls how long the shell runner waits for case status files.
 
@@ -122,6 +133,7 @@ The `*.status` files tell you whether the source or any receiver timed out. The 
 ## What varies between cases
 
 - plain or FEC mode
+- FEC backend, `raptorq` or `mettle`
 - receiver count
 - tree count
 - `block_size`
